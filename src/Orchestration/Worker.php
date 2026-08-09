@@ -8,12 +8,11 @@ use Symfony\Component\Process\InputStream;
 use Symfony\Component\Process\Process;
 
 /**
- * Parent-side handle to one worker subprocess: it owns the {@see Process} + its
- * streaming {@see InputStream}, buffers stdout, and hands back complete NDJSON
- * messages. All scheduling state (which actions are in flight, timers, attempt
- * counts) lives in {@see WorkerPool}; this class is only lifecycle + framed IO.
+ * Parent-side handle to one worker subprocess: owns the {@see Process} and its streaming
+ * {@see InputStream}, buffers stdout, hands back complete NDJSON messages. Lifecycle and framed IO only —
+ * all scheduling state lives in {@see WorkerPool}.
  *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final class Worker
 {
@@ -37,7 +36,7 @@ final class Worker
         $this->buffer = '';
         $this->input = new InputStream;
 
-        // timeout: null — the parent enforces per-action wall-clock itself.
+        // timeout: null — the parent does its own per-action wall-clock enforcement.
         $process = new Process($this->command, null, $this->env, null, null);
         $process->setInput($this->input);
         $process->start(function (string $type, string $data): void {
@@ -61,8 +60,8 @@ final class Worker
     }
 
     /**
-     * Pump the pipes and return every complete NDJSON message received since the
-     * last drain (partial trailing lines stay buffered).
+     * Pump the pipes and return every complete NDJSON message since the last drain; a partial trailing line
+     * stays buffered.
      *
      * @return list<array<string, mixed>>
      */
@@ -99,7 +98,7 @@ final class Worker
         try {
             $this->input?->close();
         } catch (\Throwable) {
-            // input already closed with the process — ignore.
+            // already closed with the process.
         }
 
         $this->process?->stop(0.1);

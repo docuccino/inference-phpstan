@@ -7,19 +7,18 @@ namespace Docuccino\Inference\PhpStan\Analysis;
 use Docuccino\Inference\PhpStan\Throwing\KnownThrowers;
 
 /**
- * The engine's analysis knobs. Descent bounds are separate on purpose: the
- * inference/trace side descends deeper (4) than exception flow (3) — domain
- * throws cluster within 2 hops and the vendor gate does most of the containment
- * (Spike C).
+ * The engine's analysis knobs. The two descent bounds differ on purpose: inference/trace goes deeper (4)
+ * than exception flow (3), because real throws cluster within 2 hops and the vendor gate does most of the
+ * containment anyway.
  */
 final readonly class EngineConfig
 {
     /**
      * @param  list<string>  $projectPaths  directories treated as descendable project code
-     * @param  string|null  $vendorPath  the app's vendor directory; a trace visitor that follows a
-     *                                   callee's return type may descend into non-vendor app code
-     *                                   OUTSIDE $projectPaths (a modular Queries class) but never into
-     *                                   this tree. Null disables that widening.
+     * @param  string|null  $vendorPath  the app's vendor directory. A trace visitor following a callee's
+     *                                   return type may descend into non-vendor app code outside
+     *                                   $projectPaths (a modular Queries class) but never into this tree;
+     *                                   null disables that widening.
      */
     public function __construct(
         public array $projectPaths,

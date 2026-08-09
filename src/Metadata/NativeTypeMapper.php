@@ -22,12 +22,10 @@ use ReflectionType;
 use ReflectionUnionType;
 
 /**
- * Maps a native PHP `ReflectionType` to a {@see DType}. Used by
- * {@see ClassMetadataFactory}, which resolves property types from native
- * reflection (no scope required). Docblock `@var` refinement of these types is
- * an integration concern (Phase 4); this mapper stays deliberately literal.
+ * Maps a native PHP `ReflectionType` to a {@see DType} for {@see ClassMetadataFactory}, which resolves
+ * property types by reflection alone. Stays literal — docblock `@var` refinement is an integration concern.
  *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final class NativeTypeMapper
 {

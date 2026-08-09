@@ -34,10 +34,10 @@ use PHPStan\PhpDocParser\Ast\Type\TypeNode;
 use PHPStan\PhpDocParser\Ast\Type\UnionTypeNode;
 
 /**
- * Parses a phpstan/phpdoc-parser type string (as written in `#[Response(type: '…')]` and the
- * parameter attributes) into a {@see DType} via the shared {@see PhpDocParserStack} — the same
- * grammar the inference engine uses for docblocks, kept out of `docuccino/core` so core stays free
- * of the phpdoc-parser dependency.
+ * Parses a phpstan/phpdoc-parser type string — as written in `#[Response(type: '…')]` and the parameter
+ * attributes — into a {@see DType} through the shared {@see PhpDocParserStack}, the same grammar the engine
+ * uses for docblocks. It lives here rather than in `docuccino/core` to keep core free of the phpdoc-parser
+ * dependency.
  */
 final class TypeStringParser
 {

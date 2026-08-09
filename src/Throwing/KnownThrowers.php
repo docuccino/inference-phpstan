@@ -5,17 +5,15 @@ declare(strict_types=1);
 namespace Docuccino\Inference\PhpStan\Throwing;
 
 /**
- * The user-extensible registry of Laravel-semantic throwers (design §6, layer
- * 2). Dual role (Spike C finding B): it *enriches* explicit stubbed points with
- * a status (`authorize` → 403, `validate` → 422) and *rescues* still-implicit
- * forwarders by callee name (static `Model::findOrFail` surfaces only as an
- * implicit bare `Throwable`, so the registry restores ModelNotFoundException/404
- * as `likely`).
+ * The user-extensible registry of Laravel-semantic throwers — layer 2 of the throw analysis. It both
+ * enriches explicit stubbed points with a status (`authorize` → 403, `validate` → 422) and rescues
+ * still-implicit forwarders by callee name (static `Model::findOrFail` surfaces only as an implicit bare
+ * `Throwable`, so the registry restores ModelNotFoundException/404 at `likely`).
  *
- * Immutable + additive: `withFunction()` / `withMethod()` return a new registry,
- * so users layer their own throwers on top of the defaults.
+ * Immutable and additive: `withFunction()`/`withMethod()` return a new registry, so users layer their own
+ * throwers over the defaults.
  *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final class KnownThrowers
 {
@@ -76,13 +74,10 @@ final class KnownThrowers
     }
 
     /**
-     * The exception-FQCN → fixed-status map, derived from every registered
-     * thrower that declares a fixed status. This is the SINGLE source of
-     * exception-status knowledge: the throw analyzer consults it to enrich an
-     * explicit throw (layer 1) with the same status the registry uses to rescue
-     * an implicit forwarder (layer 2), so a user's `withMethod()` thrower enriches
-     * both layers rather than only the rescue path. Throwers that fold their
-     * status from a call argument (`abort`) carry no fixed status and are absent.
+     * Exception FQCN → fixed status, from every thrower that declares one. The single source of
+     * exception-status knowledge: layer 1 enriches an explicit throw from the same map layer 2 uses to
+     * rescue an implicit forwarder, so a user's `withMethod()` thrower improves both. Throwers that fold
+     * their status from an argument (`abort`) have no fixed status and don't appear.
      *
      * @return array<string, int>
      */
@@ -98,7 +93,7 @@ final class KnownThrowers
         return $map;
     }
 
-    /** The fixed HTTP status for an exactly-matching exception FQCN, or null. */
+    /** Exact FQCN match only — subclass inheritance is the throw analyzer's job. */
     public function statusForExceptionFqcn(string $fqcn): ?int
     {
         return $this->knownStatuses()[$fqcn] ?? null;

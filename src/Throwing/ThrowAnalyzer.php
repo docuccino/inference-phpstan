@@ -22,23 +22,20 @@ use PHPStan\Type\Constant\ConstantIntegerType;
 use PHPStan\Type\Type;
 
 /**
- * The 3-layer exception-flow engine (design §6, corrected per Spike C):
+ * The 3-layer exception-flow engine (docs/design/inference-embedding.md §6):
  *
- *   1. PHPStan throw points. Noise rule (corrected): drop `!isExplicit()` points
- *      — those are ALWAYS bare `Throwable`; `canContainAnyThrowable` is NOT a
- *      discriminator (nearly every point, signal included, flags it).
- *   2. {@see KnownThrowers} registry — dual role: enrich explicit stubbed points
- *      with a status; rescue still-implicit forwarders (static `findOrFail`) by
- *      callee name, at `likely` confidence.
- *   3. Bounded descent (depth 3) into project-code callees with no `@throws`,
- *      memoised + cycle-guarded; the vendor-file gate — not depth — does the real
- *      containment.
+ *   1. PHPStan throw points. Drop `!isExplicit()` ones — they're always bare `Throwable`. Do NOT filter on
+ *      `canContainAnyThrowable`: nearly every point flags it, signal included.
+ *   2. {@see KnownThrowers}, keyed on callee name — enriches explicit stubbed points with a status, and
+ *      rescues still-implicit forwarders (static `findOrFail`) at `likely` confidence.
+ *   3. Bounded descent (depth 3) into project callees with no `@throws`, cycle-guarded. The vendor-file
+ *      gate, not depth, does the real containment.
  *
- * Result identity is `(fqcn, httpStatusHint)`: two aborts (403/404) are two
- * responses. Vendor-declared 500-class exceptions are demoted to `internal`;
- * dropped bare-`Throwable` noise is counted and never surfaced.
+ * Result identity is `(fqcn, httpStatusHint)` — two aborts (403/404) are two responses, so never dedupe by
+ * FQCN alone. Vendor-declared 500-class exceptions are demoted to `internal`; dropped bare-`Throwable`
+ * noise is counted, never surfaced.
  *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final class ThrowAnalyzer
 {
@@ -105,7 +102,7 @@ final class ThrowAnalyzer
             $callee = $this->calleeResolver->resolve($node, $scope);
             $frame = $this->frame($selfLabel, $scope, $node);
 
-            // --- Layer 2: KnownThrowers registry (keyed on the callee name). ---
+            // Layer 2: KnownThrowers registry, keyed on the callee name.
             $registryResult = $this->applyRegistry($calleeName, $node, $scope, $type, $explicit, $priorChain, $frame);
             if ($registryResult !== null) {
                 $results[] = $registryResult;
@@ -113,7 +110,7 @@ final class ThrowAnalyzer
                 continue;
             }
 
-            // --- Layer 1: explicit concrete type (literal throw, @throws, stub). ---
+            // Layer 1: explicit concrete type (literal throw, @throws, stub).
             if ($explicit && ! $this->isBareThrowable($type)) {
                 foreach ($this->applyExplicit($callee, $node, $type, $priorChain, $frame) as $result) {
                     $results[] = $result;
@@ -122,7 +119,7 @@ final class ThrowAnalyzer
                 continue;
             }
 
-            // --- Layer 3: implicit bare Throwable — descend or drop. ---
+            // Layer 3: implicit bare Throwable — descend or drop.
             if (! $explicit) {
                 $descended = $this->applyDescent($callee, $depth, $visited, $priorChain, $frame);
                 if ($descended !== null) {
@@ -158,8 +155,8 @@ final class ThrowAnalyzer
         $thrower = $this->knownThrowers->forFunction($calleeName);
         $status = null;
         if ($thrower !== null) {
-            // A function thrower either folds its status from a call argument
-            // (abort($status)) or carries a fixed one — never assume arg 0.
+            // A function thrower either folds its status from an argument (`abort($status)`) or carries a
+            // fixed one — never assume arg 0 (`abort_if` puts it at arg 1).
             $status = $thrower->foldsStatusFromArgument()
                 ? $this->foldStatusArg($node, $scope, $thrower->statusArgIndex)
                 : $thrower->fixedStatus;
@@ -174,8 +171,7 @@ final class ThrowAnalyzer
             return null;
         }
 
-        // certain when PHPStan corroborated the same concrete type explicitly;
-        // likely when we rescued a bare-Throwable implicit forwarder.
+        // Certain when PHPStan corroborated the same concrete type; likely when we rescued a bare-Throwable.
         $corroborated = $explicit && in_array($thrower->exceptionFqcn, $type->getObjectClassNames(), true);
 
         return new ThrownException(
@@ -198,11 +194,10 @@ final class ThrowAnalyzer
         array $priorChain,
         Frame $frame,
     ): array {
-        // php-parser v5 models `throw` only as an expression (Node\Expr\Throw_).
+        // php-parser v5 models `throw` only as an expression.
         $isLiteral = $node instanceof Node\Expr\Throw_;
 
-        // A declared (non-literal) exception documents intent only when it comes
-        // from PROJECT code; a vendor call's @throws is internal plumbing.
+        // A declared exception documents intent only from project code; a vendor `@throws` is plumbing.
         $calleeIsProject = ! $isLiteral && $callee !== null
             && $this->projectFilter->isProjectFile($callee->file);
 
@@ -234,8 +229,7 @@ final class ThrowAnalyzer
         array $priorChain,
         Frame $frame,
     ): ?array {
-        // The vendor-file gate — not raw depth — does the real containment: a
-        // callee resolving into vendor code is a terminal, never descended.
+        // The vendor-file gate, not depth, does the containment: vendor is a terminal, never descended.
         if ($callee === null
             || ! $this->projectFilter->isProjectFile($callee->file)
             || $depth >= $this->maxDepth
@@ -330,8 +324,7 @@ final class ThrowAnalyzer
 
     private function statusForType(string $fqcn): int
     {
-        // Single source: the KnownThrowers registry. An exact FQCN match wins;
-        // otherwise a subclass of a known thrower's exception inherits its status.
+        // KnownThrowers is the single source: exact FQCN wins, else a subclass inherits its parent's status.
         $exact = $this->knownThrowers->statusForExceptionFqcn($fqcn);
         if ($exact !== null) {
             return $exact;

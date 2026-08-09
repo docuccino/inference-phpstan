@@ -23,13 +23,11 @@ use SplFileInfo;
 use Throwable;
 
 /**
- * PHPStan 2.2.x / 2.3.x adapter. Everything fragile — container bootstrap,
- * manual `bootstrapFiles`, the dual parser-priming fix, `FileHelper`
- * normalisation, cwd management — lives here (design §2). All of it was proven
- * out by Spike A; every documented trap is honoured with a comment pointing at
- * it.
+ * PHPStan 2.2.x / 2.3.x adapter. Everything not covered by PHPStan's BC promise lives here — container
+ * bootstrap, manual `bootstrapFiles`, dual parser priming, `FileHelper` normalisation, cwd management — so
+ * a new minor needs one new adapter and nothing else. See docs/design/inference-embedding.md §2.
  *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final class RuntimeAdapter implements RuntimeAdapterContract
 {
@@ -49,8 +47,8 @@ final class RuntimeAdapter implements RuntimeAdapterContract
     private ?ReflectionProvider $reflectionProvider = null;
 
     /**
-     * The running analysed-file set (normalised). Grows only — a file is never
-     * un-primed once analysed, so nothing gets routed back to `CleaningParser`.
+     * The running analysed-file set (normalised). Grows only — nothing is ever un-primed, so no file gets
+     * routed back to `CleaningParser`.
      *
      * @var array<string, true>
      */
@@ -92,8 +90,7 @@ final class RuntimeAdapter implements RuntimeAdapterContract
 
         $generatedNeon = $this->writeGeneratedNeon($larastanNeon);
 
-        // Larastan's bootstrap boots the Laravel app from getcwd()/bootstrap/app.php,
-        // so cwd must be the app root before the container is built (Spike A #3).
+        // Larastan boots the app from getcwd()/bootstrap/app.php — cwd must be the app root first.
         chdir($this->config->projectRoot);
 
         $factory = new ContainerFactory($this->config->projectRoot);
@@ -104,9 +101,8 @@ final class RuntimeAdapter implements RuntimeAdapterContract
             $this->config->resolvedAutoloaderPaths(),
         );
 
-        // bootstrapFiles are NOT auto-run by a raw ContainerFactory embed; the CLI
-        // runs them via CommandHelper. Without this, Larastan never boots the app
-        // and LARAVEL_VERSION stays undefined (Spike A #1).
+        // A raw ContainerFactory embed doesn't run bootstrapFiles (the CLI does it via CommandHelper).
+        // Skip this and Larastan never boots the app: `Undefined constant LARAVEL_VERSION`.
         $bootstrapFiles = $container->getParameter('bootstrapFiles');
         if (is_array($bootstrapFiles)) {
             foreach ($bootstrapFiles as $bootstrapFile) {
@@ -125,8 +121,7 @@ final class RuntimeAdapter implements RuntimeAdapterContract
 
         $parser = $container->getService('defaultAnalysisParser');
         $pathRoutingParser = $container->getService('pathRoutingParser');
-        // The parser router is exactly the fragile internal plumbing this single
-        // per-minor adapter exists to confine (design §2) — not BC-covered.
+        // The parser router isn't BC-covered — exactly the plumbing this per-minor adapter confines.
         // @phpstan-ignore phpstanApi.class
         if (! $parser instanceof Parser || ! $pathRoutingParser instanceof PathRoutingParser) {
             throw new BootFailedException('PHPStan parser services are not the expected type.');
@@ -145,10 +140,8 @@ final class RuntimeAdapter implements RuntimeAdapterContract
         $normalised = array_keys($this->analysedFiles);
         sort($normalised);
 
-        // The Spike A body-stripping fix: prime BOTH services. A file absent from
-        // the pathRoutingParser's set is routed to CleaningParser (bodies deleted),
-        // making MethodReturnStatementsNode silently report zero returns/throws.
-        // setAnalysedFiles is internal plumbing this adapter is licensed to touch.
+        // Prime BOTH services. A file missing from the pathRoutingParser's set goes to CleaningParser,
+        // which deletes method bodies, and MethodReturnStatementsNode then silently reports zero returns.
         // @phpstan-ignore phpstanApi.method
         $this->pathRoutingParser()->setAnalysedFiles($normalised);
         $this->nodeScopeResolver()->setAnalysedFiles($normalised);
@@ -156,8 +149,7 @@ final class RuntimeAdapter implements RuntimeAdapterContract
 
     public function processFile(string $file, callable $callback): void
     {
-        // Prime before the first parse so CachedParser caches a body-preserving
-        // copy (Spike C trap #1 — the body-stripping trap one level deeper).
+        // Prime before the first parse, or CachedParser caches a body-stripped copy for good.
         $this->prime([$file]);
 
         $nodes = $this->parser()->parseFile($file);
@@ -242,9 +234,8 @@ final class RuntimeAdapter implements RuntimeAdapterContract
     }
 
     /**
-     * Every bundled `.stub` file (payload/status on JsonResponse, the API-resource conditional +
-     * collection typing …), sorted for a deterministic generated neon. Adding a stub to the `stubs/`
-     * directory registers it — no per-stub wiring here.
+     * Every bundled `.stub`, sorted so the generated neon is deterministic. Dropping a file into `stubs/`
+     * registers it; there's no per-stub wiring.
      *
      * @return list<string>
      */

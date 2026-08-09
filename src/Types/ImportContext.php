@@ -12,11 +12,11 @@ use PhpParser\ParserFactory;
 use Throwable;
 
 /**
- * A file's `use`-imports + declaring namespace, so an unqualified class name written in a
- * `#[Response(type: 'MfaChallengeData|…')]` attribute resolves the way PHP itself would: an alias /
- * imported short name wins, otherwise it is qualified against the file's namespace. Deliberately
- * simple (imports + same-namespace, no group-import edge cases beyond the common form) — a name it
- * cannot resolve is left unqualified for the downstream mapper to handle.
+ * A file's `use`-imports and declaring namespace, so an unqualified class name written in a
+ * `#[Response(type: 'MfaChallengeData|…')]` attribute resolves the way PHP would: an alias or imported short
+ * name wins, otherwise it's qualified against the file's namespace. Kept simple — imports plus
+ * same-namespace, no exotic group-import forms — and an unresolvable name is left as-is for the downstream
+ * mapper.
  */
 final class ImportContext
 {
@@ -73,11 +73,9 @@ final class ImportContext
             return ltrim($this->uses[$key].substr($name, strlen($head)), '\\');
         }
 
-        // A single unqualified segment (`MfaChallengeData`) whose head is not imported falls back to
-        // the file's namespace — how PHP resolves an unqualified class reference. A name that already
-        // carries its own path (`Workbench\App\Data\WidgetData`, an FQCN or a `::class` result) is left
-        // as-is: the #[Response(type: '…')] convention writes either an imported short name or a full
-        // FQCN, never a namespace-relative qualified name, so it must never be re-qualified.
+        // A single un-imported segment falls back to the file's namespace, as PHP does. A name that already
+        // carries a path is left alone: the `#[Response(type: '…')]` convention writes either an imported
+        // short name or a full FQCN, never a namespace-relative one, so re-qualifying would break it.
         if (count($segments) === 1 && $this->namespace !== null && $this->namespace !== '') {
             return $this->namespace.'\\'.$name;
         }
@@ -91,13 +89,12 @@ final class ImportContext
     private static function fromStatements(array $statements): self
     {
         foreach ($statements as $statement) {
-            // A namespaced file: the namespace's own body carries the use statements.
+            // In a namespaced file the use statements live inside the namespace body.
             if ($statement instanceof Namespace_) {
                 return new self(self::collectUses($statement->stmts), $statement->name?->toString());
             }
         }
 
-        // No namespace declaration — file-level use statements only.
         return new self(self::collectUses($statements), null);
     }
 

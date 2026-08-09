@@ -10,17 +10,15 @@ use Docuccino\Core\Inference\ClassMetadata;
 use Docuccino\Core\Inference\ClassRef;
 
 /**
- * The engine's own result cache (design §8). PHPStan's built-in result cache is
- * CLI-rule-oriented and unusable for us; this caches the two serializable engine
- * outputs — per-{@see ActionRef} {@see ActionAnalysis} and per-{@see ClassRef}
- * {@see ClassMetadata} — keyed on the {@see VersionFingerprint} plus per-entry
- * file hashes, with depfile-style invalidation.
+ * The engine's own result cache — PHPStan's is CLI-rule-oriented and unusable for us. Caches the two
+ * serializable outputs, {@see ActionAnalysis} per {@see ActionRef} and {@see ClassMetadata} per
+ * {@see ClassRef}, keyed on the {@see VersionFingerprint} plus per-entry file hashes with depfile-style
+ * invalidation.
  *
- * Contract: a cache *hit* MUST return a value byte-identical (after canonical
- * serialization) to what a *miss* would have recomputed. Implementations tolerate
- * concurrent writers.
+ * The contract: a hit must return a value byte-identical, after canonical serialization, to what a miss
+ * would have recomputed. Implementations tolerate concurrent writers.
  *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 interface EngineResultCache
 {

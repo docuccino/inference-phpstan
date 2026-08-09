@@ -7,13 +7,11 @@ namespace Docuccino\Inference\PhpStan\Support;
 use Closure;
 
 /**
- * Decides whether a file is project code (descendable) or vendor code (never
- * descended). The vendor gate — not raw depth — does the real containment of
- * interprocedural descent (Spike C): descent auto-stops at the first
- * vendor-declared method even when the receiver is a project class (e.g.
- * `Model::findOrFail` on an `App\Models\User`).
+ * Project code (descendable) or vendor code (never descended). This gate, not depth, does the real
+ * containment of interprocedural descent: it stops at the first vendor-declared method even when the
+ * receiver is a project class (`Model::findOrFail` on an `App\Models\User`).
  *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final class ProjectFilter
 {

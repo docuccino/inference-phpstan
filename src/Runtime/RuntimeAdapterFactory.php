@@ -9,15 +9,14 @@ use Docuccino\Inference\PhpStan\Runtime\V2_2\RuntimeAdapter as V2_2Adapter;
 use OutOfRangeException;
 
 /**
- * Selects the {@see RuntimeAdapter} for the installed PHPStan minor. Only one
- * adapter exists in Phase 2a ({@see V2_2Adapter}, targeting 2.2.x/2.3.x); the
- * factory is the seam where additional per-minor adapters slot in (Phase 2b).
+ * Selects the {@see RuntimeAdapter} for the installed PHPStan minor — the seam where a new per-minor adapter
+ * slots in. Today there's one, targeting 2.2.x/2.3.x.
  *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final class RuntimeAdapterFactory
 {
-    /** Tested-minor allowlist (design §1). Widened only as CI goes green. */
+    /** Tested-minor allowlist, widened only as the CI matrix goes green — never open-ended. */
     private const SUPPORTED = '~2.2.0 || ~2.3.0';
 
     public function create(RuntimeConfig $config): RuntimeAdapter

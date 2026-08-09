@@ -16,17 +16,14 @@ use Docuccino\Inference\PhpStan\Cache\EngineResultCache;
 use Docuccino\Inference\PhpStan\Cache\VersionFingerprint;
 
 /**
- * A cache decorator around any {@see TypeEngine} (design §8). `analyzeAction` and
- * `classMetadata` are cacheable — served from the {@see EngineResultCache} on a
- * hit, recomputed then stored on a miss. `trace()` is never cached: it hands
- * live `PhpParser\Node`s to a stateful visitor, which cannot round-trip through a
- * serialized store — it always delegates to the inner engine.
+ * A cache decorator around any {@see TypeEngine}. `analyzeAction` and `classMetadata` are served from the
+ * {@see EngineResultCache} on a hit and stored on a miss; `trace()` never is, since it hands live
+ * `PhpParser\Node`s to a stateful visitor and there's nothing serializable to replay.
  *
- * The hit path returns a value byte-identical to the miss path because the cache
- * stores the canonical `toArray()` and the decorator returns the same object it
- * would have computed.
+ * The hit path is byte-identical to the miss path: the cache stores the canonical `toArray()`, and the
+ * decorator returns the same object it would have computed.
  *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final readonly class CachingTypeEngine implements TypeEngine
 {
@@ -51,9 +48,8 @@ final readonly class CachingTypeEngine implements TypeEngine
 
     public function analyzeCallable(CallableRef $callable): ActionAnalysis
     {
-        // Not cached at the engine level: the inferred-handler integration records the handler
-        // files it read into the route's dependency set, so the pipeline's OperationFragment cache
-        // (design §10) already invalidates the whole route when a handler changes.
+        // Not cached here: the handler files land in the route's dependency set, so the pipeline's
+        // fragment cache already invalidates the whole route when a handler changes.
         return $this->inner->analyzeCallable($callable);
     }
 
@@ -72,9 +68,7 @@ final readonly class CachingTypeEngine implements TypeEngine
 
     public function trace(ActionRef $action, TraceVisitor $visitor): TraceReport
     {
-        // Never cached: the visitor is a live, stateful object handed live
-        // `PhpParser\Node`s, so there is nothing serializable to store or replay.
-        // The inner engine's report (dependency files) passes straight through.
+        // Never cached — a live, stateful visitor holding live nodes has nothing to store or replay.
         return $this->inner->trace($action, $visitor);
     }
 }

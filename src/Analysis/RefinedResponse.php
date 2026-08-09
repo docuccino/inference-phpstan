@@ -12,34 +12,22 @@ use Docuccino\Core\Inference\DType\StatusMarkerT;
 use Docuccino\Core\Inference\DType\UnknownT;
 
 /**
- * The response shape {@see ResponseShapeRefiner} recovered from a return expression that PHPStan had
- * erased to a bare `JsonResponse`/`Response` — a payload shape, a folded HTTP status, and any explicit
- * content type. It is emitted back as a `JsonResponse<payload, status, contentType>` {@see ClassT} the
- * inferred-handler pipeline already understands (the third arg is the refinement's addition; the
- * `response()->json()` extension emits only the first two).
+ * A response shape {@see ResponseShapeRefiner} recovered from a return PHPStan had erased to a bare
+ * `JsonResponse`/`Response`: payload, folded HTTP status, explicit content type. Emitted back as the
+ * `JsonResponse<payload, status, contentType>` {@see ClassT} the pipeline already understands (the third
+ * arg is ours; the `response()->json()` extension emits only the first two).
  *
- * Two members carry recovery HONESTY (design goal: never guess):
- *   - {@see $statusSource} is the {@see ParamAccessor} the status reads from when it is not a
- *     call-independent literal — a callee parameter passed through unchanged, OR an accessor on an enum
- *     parameter (`$problem->status()`). It lets the CALL SITE bind the status once it knows the concrete
- *     argument: a foldable literal (`make($title, 422, …)`), a concrete enum case whose accessor folds
- *     (`make(ProblemType::Forbidden, …)` → `403`), or a caller parameter to re-home one hop out. The
- *     callee analysis itself stays call-independent (it memoises by callee symbol alone). A status that
- *     folds to none of these stays permissive (both null).
- *   - {@see $delegates} marks a return that yielded no response at all (`return null` / void) — the
- *     "delegate to the framework" arm, which is neither a documentable response nor a fold failure.
+ * Three members keep the recovery honest. `$statusSource` is the accessor a non-literal status reads from
+ * — a forwarded parameter, or an accessor on an enum parameter (`$problem->status()`) — so the call site
+ * can bind it once it knows the argument, while the callee's own analysis stays call-independent and
+ * memoises by symbol alone; a status that folds to neither stays permissive. `$delegates` marks a
+ * `return null`/void arm: framework delegation, neither a response nor a fold failure.
+ * `$payloadParamProvenance` does the same job per payload member key, and a member reading the same
+ * accessor as the status becomes a {@see StatusMarkerT} so the response-building seam can fill it with
+ * whatever status the response ends up documented under. Provenance is transient, never serialised —
+ * binding consumes it, and anything unresolved leaves the member widened.
  *
- * A third honesty member carries VALUE-FLOW provenance for the payload body:
- *   - {@see $payloadParamProvenance} maps a top-level payload member key to the {@see ParamAccessor} its
- *     value reads from inside the helper (`['type' => $problem->value, 'status' => $problem->status(), …]`).
- *     It lets the CALL SITE fold a member exactly as the status is bound — call-independent, so the callee
- *     shape still memoises by symbol alone. A member whose accessor is the SAME as the status source is
- *     emitted as a {@see StatusMarkerT} so that when the status does not fold, the response-building seam
- *     still fills it with the concrete status the response is documented under. Provenance is TRANSIENT
- *     (never serialised): binding consumes it, and anything unresolved at emission leaves the member at
- *     its widened type.
- *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final readonly class RefinedResponse
 {
@@ -55,32 +43,27 @@ final readonly class RefinedResponse
         public array $payloadParamProvenance = [],
     ) {}
 
-    /** The "delegates to the framework" arm — a `return null` / void return, not a response. */
+    /** A `return null`/void return: the framework handles it, so there's no response to document. */
     public static function delegation(): self
     {
         return new self(delegates: true);
     }
 
-    /** Whether anything documentable was recovered (a bare, everything-null shape is not worth substituting). */
+    /** An everything-null shape isn't worth substituting for the bare type. */
     public function isDocumentable(): bool
     {
         return $this->payload !== null || $this->status !== null || $this->contentType !== null;
     }
 
-    /**
-     * With the status source bound to a concrete literal recovered at the call site — used when a caller
-     * folds the argument the callee forwards to its status (a literal, or an enum case whose accessor
-     * folds). Clears {@see $statusSource} so the bound shape reads as a resolved literal.
-     */
+    /** Clears {@see $statusSource} so the bound shape reads as resolved. */
     public function withBoundStatus(LiteralT $status): self
     {
         return new self($this->payload, $status, null, $this->contentType, $this->delegates, $this->payloadParamProvenance);
     }
 
     /**
-     * Re-home a pass-through status source onto an OUTER callee's parameter (transitive binding through a
-     * hop): the inner callee forwarded its status from an accessor on parameter X, and the outer call
-     * passed its own parameter Y into X, so from the outer callee's vantage the status reads through Y.
+     * Re-home a pass-through status onto an outer callee's parameter: the inner callee read its status from
+     * parameter X, the outer call passed its own Y into X, so from out there the status reads through Y.
      */
     public function withStatusSource(?ParamAccessor $statusSource): self
     {
@@ -88,9 +71,6 @@ final readonly class RefinedResponse
     }
 
     /**
-     * With the payload body and its member→accessor provenance rewritten (used as a call site folds the
-     * arguments the callee forwarded into its body). Everything else is preserved.
-     *
      * @param  array<string, ParamAccessor>  $payloadParamProvenance
      */
     public function withPayload(?DType $payload, array $payloadParamProvenance): self
@@ -99,12 +79,9 @@ final readonly class RefinedResponse
     }
 
     /**
-     * Bind ONE provenance-tracked body member as a call site resolves the argument the callee forwarded
-     * into it (pure — the refiner classifies the argument via the analysis Scope, this applies the
-     * result): a folded `$literal` pins the member to that value and drops the provenance; a re-homed
-     * `$rehome` accessor carries the provenance one hop out; both null drops the provenance and leaves the
-     * member at its current type (a {@see StatusMarkerT} status member is thereby left for the response
-     * seam to fill). A no-op when the payload is not a keyed shape or the key is absent.
+     * The pure half of binding one member — the refiner classifies the argument, this applies it:
+     * `$literal` pins the member and drops the provenance, `$rehome` carries it one hop out, both null drops
+     * it and leaves the member as-is (so a {@see StatusMarkerT} survives for the response seam).
      */
     public function bindMember(string $key, ?LiteralT $literal, ?ParamAccessor $rehome): self
     {
@@ -123,10 +100,8 @@ final readonly class RefinedResponse
     }
 
     /**
-     * A copy of the constructor-recovered parts with any body member whose value reads from the SAME
-     * accessor that drives the HTTP status marked as a {@see StatusMarkerT} — the call-independent truth
-     * that the member echoes the response status (pure; the refiner supplies the Scope-derived provenance
-     * + status source).
+     * Marks any member reading the same accessor as the status with a {@see StatusMarkerT} — the
+     * call-independent fact that the member echoes the response status.
      *
      * @param  array<string, ParamAccessor>  $payloadParamProvenance  member key → accessor
      */
@@ -143,10 +118,7 @@ final readonly class RefinedResponse
         return new self($payload, $status, $statusSource, $contentType, false, $payloadParamProvenance);
     }
 
-    /**
-     * A copy of a keyed array shape with one member's value type replaced (key + optionality preserved),
-     * or the shape unchanged when the key is absent.
-     */
+    /** Key and optionality preserved; unchanged when the key is absent. */
     private static function replaceFieldType(ArrayShapeT $shape, string $key, DType $type): ArrayShapeT
     {
         return $shape->mapFieldTypes(
@@ -155,10 +127,9 @@ final readonly class RefinedResponse
     }
 
     /**
-     * The recovered shape as a `JsonResponse<payload, status, contentType>` {@see ClassT}, or null when
-     * nothing documentable was recovered. An unfolded status/payload is emitted as an {@see UnknownT}
-     * placeholder so the pipeline can fall back honestly (the exception's own status hint) rather than
-     * silently defaulting; the content-type arg is present only when explicitly recovered.
+     * Null when nothing documentable was recovered. An unfolded status or payload becomes an
+     * {@see UnknownT} placeholder so the pipeline falls back to the exception's own status hint rather than
+     * silently defaulting; the content-type arg appears only when explicitly recovered.
      */
     public function toClassT(string $fqcn): ?ClassT
     {

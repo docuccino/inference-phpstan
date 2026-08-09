@@ -8,17 +8,12 @@ use Docuccino\Inference\PhpStan\Runtime\EngineVersion;
 use Docuccino\Inference\PhpStan\Runtime\RuntimeConfig;
 
 /**
- * The run-wide, process-independent half of every cache key (design §8):
- * `engine version ‖ phpstan version ‖ larastan version ‖ generated-neon hash ‖
- * composer.lock hash`. Everything here is derived from files on disk (never from
- * the running process's own vendor) so the SAME fingerprint is computed whether a
- * parent or a worker builds it, and whether the run is cold or warm — the
- * precondition for byte-identical cache hits.
+ * The run-wide half of every cache key: `engine ‖ phpstan ‖ larastan ‖ generated-neon hash ‖ composer.lock
+ * hash`. All of it is read off disk rather than from the running process's own vendor, so parent and worker
+ * — and cold and warm runs — compute the same fingerprint, which is what makes byte-identical cache hits
+ * possible. {@see FilesystemEngineResultCache} adds the per-entry half at store/lookup time.
  *
- * The per-entry half (action-file hash + each dependency-file hash) is added by
- * {@see FilesystemEngineResultCache} at store/lookup time.
- *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final readonly class VersionFingerprint
 {
@@ -31,9 +26,8 @@ final readonly class VersionFingerprint
     ) {}
 
     /**
-     * Build the fingerprint from files under the host app's {@see RuntimeConfig}.
-     * PHPStan/Larastan versions are read out of the app's `composer.lock` (not the
-     * running process's vendor) so parent and worker agree.
+     * Versions come from the app's `composer.lock`, not the running process's vendor, so parent and worker
+     * agree.
      */
     public static function forRuntime(RuntimeConfig $config): self
     {
@@ -49,9 +43,7 @@ final readonly class VersionFingerprint
         );
     }
 
-    /**
-     * The stable prefix hashed into every per-entry key.
-     */
+    /** The stable prefix hashed into every per-entry key. */
     public function prefix(): string
     {
         return implode("\0", [

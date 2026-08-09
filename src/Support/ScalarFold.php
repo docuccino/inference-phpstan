@@ -9,22 +9,19 @@ use Docuccino\Inference\PhpStan\Trace\TypeScopeImpl;
 use PHPStan\Type\Type;
 
 /**
- * The single Scope-based constant-scalar fold shared by every engine site that pins a value to a
- * literal: the response-shape refiner's `constLiteralOf`/`intLiteralOf`, the enum accessor folder's
- * `constLiteral`, and the {@see TypeScopeImpl} const-value tail. A
- * constant STRING is preferred first (so a bound member reads identically to a directly-written string
- * literal), then any single constant scalar value. Because determinism is a product invariant, keeping
- * ONE implementation removes the bit-drift hazard of copies that must stay identical.
+ * The one constant-scalar fold, shared by every site that pins a value to a literal — the refiner, the enum
+ * accessor folder, and the {@see TypeScopeImpl} const-value tail. A constant string is preferred first, so a
+ * bound member reads identically to a directly-written string literal, then any single constant scalar.
+ * Determinism is a product invariant, so copies of this that must stay bit-identical are a hazard: keep one.
  *
- * @internal Engine implementation detail — not part of the public inference surface.
+ * @internal
  */
 final class ScalarFold
 {
     /**
-     * The single constant scalar a type folds to, wrapped in a 1-tuple so a folded `null` is distinct
-     * from "nothing folded"; null when the type is not a single constant scalar. Callers that emit a
-     * {@see LiteralT} (which is never null-valued) re-check `is_scalar`
-     * on the tuple value; the const-value tail keeps a folded `null` verbatim.
+     * The constant scalar a type folds to, in a 1-tuple so a folded `null` stays distinct from "nothing
+     * folded"; null when it isn't a single constant scalar. Callers emitting a {@see LiteralT} (never
+     * null-valued) re-check `is_scalar`; the const-value tail keeps a folded `null` verbatim.
      *
      * @return array{0: string|int|float|bool|null}|null
      */

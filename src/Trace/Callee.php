@@ -7,11 +7,10 @@ namespace Docuccino\Inference\PhpStan\Trace;
 use Docuccino\Inference\PhpStan\Support\ProjectFilter;
 
 /**
- * The concrete method a call node dispatches to: declaring class, method name,
- * and the file it lives in. Whether it is project or vendor code is decided by
- * {@see ProjectFilter}, not stored here.
+ * The concrete method a call dispatches to: declaring class, method name, file. Project-vs-vendor is
+ * {@see ProjectFilter}'s call, not stored here.
  *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final readonly class Callee
 {

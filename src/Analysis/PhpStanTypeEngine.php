@@ -42,38 +42,27 @@ use PHPStan\Node\ReturnStatementsNode;
 use Throwable;
 
 /**
- * The single-process PHPStan/Larastan {@see TypeEngine} (Phase 2a). It harvests
- * `MethodReturnStatementsNode` for per-return-path types, runs the 3-layer
- * {@see ThrowAnalyzer}, and drives the interprocedural {@see Tracer}. Every
- * method is total: a per-action try/catch turns any failure into `UnknownT` + a
- * warning diagnostic rather than throwing (design §3).
+ * The single-process PHPStan/Larastan {@see TypeEngine}: harvests `MethodReturnStatementsNode` for
+ * per-return-path types, runs the 3-layer {@see ThrowAnalyzer}, and drives the interprocedural
+ * {@see Tracer}. Every method is total — a failure becomes `UnknownT` plus a warning diagnostic, never
+ * an exception. Worker orchestration and result caching wrap this from outside.
  *
- * Not built here (Phase 2b): worker orchestration, recycling/bisection, the
- * engine result cache. The seams are present — `dependencyFiles` feeds the
- * cache key; the adapter is swappable per PHPStan minor — but no stubs.
- *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final class PhpStanTypeEngine implements TypeEngine
 {
     /**
-     * Per-build memo of callable analyses, keyed by {@see CallableRef::symbol()} (arch I1). A render
-     * callback (or any callable) analysed once is reused across every route that reaches it — the
-     * inferred-handler tier queries the same handler bodies for many routes.
-     *
-     * NOTE (deliberate deferral): under the worker orchestrator each worker holds its OWN memo, so a
-     * callable analysed on two workers is analysed twice. A shared cross-worker callable cache is
-     * deferred — it needs the same serialize/transport plumbing as the
-     * engine result cache and is not built here.
+     * Per-build memo of callable analyses, so one handler body queried by many routes is analysed once.
+     * Each worker has its own memo, so a callable reached on two workers is analysed twice — sharing it
+     * would need the same serialize/transport plumbing as the engine result cache.
      *
      * @var array<string, ActionAnalysis>
      */
     private array $callableMemo = [];
 
     /**
-     * The response-shape refiner (helper-indirection recovery), built once per engine so its per-callee
-     * memo is reused across every route reaching a shared helper. Lazy: an engine that never harvests a
-     * bare-response return never builds it.
+     * Built once per engine so its per-callee memo is reused across routes; lazily, so an engine that
+     * never harvests a bare-response return never builds it.
      */
     private ?ResponseShapeRefiner $refiner = null;
 
@@ -106,9 +95,8 @@ final class PhpStanTypeEngine implements TypeEngine
                 dependencyFiles: [$action->file],
             );
         } finally {
-            // See analyzeCallableUncached: drain so a mid-analysis throw cannot leak the refiner's
-            // touched files into the next analysis's dependency set (a no-op on the success path,
-            // which already drained while building its result).
+            // Drain so a mid-analysis throw can't leak the refiner's touched files into the next
+            // analysis's dependency set. No-op on the success path, which already drained.
             $this->drainRefinerFiles();
         }
     }
@@ -170,11 +158,8 @@ final class PhpStanTypeEngine implements TypeEngine
     }
 
     /**
-     * The type of one return expression, with response-shape refinement (design §4 helper indirection):
-     * a bare `JsonResponse`/`Response` built through a project-code helper is followed to the helper's
-     * own return sites and substituted with the richer `JsonResponse<payload, status, contentType>`. A
-     * refinement that resolves to a `return null` / void arm (the "delegate to the framework" path)
-     * yields {@see VoidT}. Anything not a bare response is translated verbatim.
+     * With {@see ResponseShapeRefiner} recovery for a generic-erased response. A refinement resolving to a
+     * `return null`/void arm (framework delegation) yields {@see VoidT}; anything else is verbatim.
      */
     private function siteType(?Node\Expr $expr, Scope $scope): DType
     {
@@ -187,10 +172,8 @@ final class PhpStanTypeEngine implements TypeEngine
             return $type;
         }
 
-        // Already rich (`response()->json()`/`noContent()` typed by the bundled extension): keep it
-        // verbatim — its shape (incl. a void `noContent` payload) is authoritative, nothing to refine.
-        // Only a bare erased response, or a `new JsonResponse(...)` the extension does not cover, is
-        // followed through helper indirection.
+        // Already rich (our extension typed `response()->json()`/`noContent()`) — authoritative, keep it.
+        // Only a bare erased response, or a `new JsonResponse(...)`, goes through helper indirection.
         if ($type->typeArgs !== [] && ! $expr instanceof Node\Expr\New_) {
             return $type;
         }
@@ -207,8 +190,6 @@ final class PhpStanTypeEngine implements TypeEngine
     }
 
     /**
-     * Drain (and reset) the refiner's touched-file set for the current analysis, or `[]` if it never ran.
-     *
      * @return list<string>
      */
     private function drainRefinerFiles(): array
@@ -226,9 +207,6 @@ final class PhpStanTypeEngine implements TypeEngine
         try {
             return $this->doAnalyzeCallable($callable);
         } catch (Throwable $e) {
-            // Drain in a finally: files the refiner touched before a mid-analysis throw would otherwise
-            // leak into the NEXT analysis's dependencyFiles (over-invalidation only, never under — but
-            // an analysis must not inherit a failed sibling's dependencies).
             return new ActionAnalysis(
                 diagnostics: [new Diagnostic(
                     Severity::Warning,
@@ -238,6 +216,7 @@ final class PhpStanTypeEngine implements TypeEngine
                 dependencyFiles: [$callable->file],
             );
         } finally {
+            // An analysis must not inherit a failed sibling's dependencies.
             $this->drainRefinerFiles();
         }
     }
@@ -270,25 +249,17 @@ final class PhpStanTypeEngine implements TypeEngine
     }
 
     /**
-     * Harvest a callable's return sites for a narrowing request. Each site pairs a recovered type (with
-     * response-shape refinement — {@see siteType()}) with the caught-variable class GUARD that makes it
-     * reachable: for an `if ($e instanceof X) return …;` chain, PHPStan's per-return narrowing; for a
-     * `return match (true) { $e instanceof X => …, default => … }` renderer (a common real-world shape), the arm's
-     * own `instanceof` conditions (decomposed here — the outer `match` collapses to one return whose
-     * scope leaves `$e` un-narrowed, so the arms must be read from the AST). The reachable site for the
-     * narrowed type is chosen by SOURCE-ORDER-FIRST-MATCH over the arms — the runtime semantics of both
-     * an `if`-chain and `match (true)`.
+     * Harvest a callable's return sites for a narrowing request. Each site pairs a recovered type with the
+     * caught-variable class guard that makes it reachable — from PHPStan's per-return narrowing for an
+     * `if ($e instanceof X) return …;` chain, or from the arm's own `instanceof` conditions for a
+     * `match (true)` renderer (that outer `match` collapses to one return whose scope leaves `$e`
+     * un-narrowed, so the arms have to be read off the AST). Source-order first match wins, matching the
+     * runtime semantics of both shapes.
      *
-     * Delegation honesty (design §6): a broad `return null` / void arm that does NOT branch on `$e`
-     * (the `if (! $request->expectsJson()) return null;` early-out) must not shadow a later per-type
-     * response arm — the documented API path is the response, not the framework fall-through. So a
-     * broad DELEGATION site is skipped in favour of any response-producing site; only a genuine
-     * per-type null arm (`$e instanceof X => null`, an exact guard) or an all-delegating renderer
-     * resolves to delegation.
-     *
-     * Narrowing honesty (B2): when a broad guard is chosen ahead of a later EXACT `instanceof` match,
-     * or two arms match the type exactly, an info diagnostic is raised so the shape is not passed off
-     * as unambiguous.
+     * Two honesty rules: a broad `return null` early-out (`if (! $request->expectsJson()) return null;`)
+     * must not shadow a later per-type response arm, so a broad delegation site loses to any
+     * response-producing one; and when a broad guard is chosen ahead of a later exact `instanceof` match,
+     * or two arms match exactly, an info diagnostic says so rather than passing the shape off as certain.
      *
      * @return array{returns: list<ReturnSite>, diagnostics: list<Diagnostic>}
      */
@@ -304,8 +275,7 @@ final class PhpStanTypeEngine implements TypeEngine
             $expr = $returnNode->expr;
             $scope = $statement->getScope();
 
-            // A `match (true)` renderer body decomposes into one site per arm (guard = the arm's
-            // `instanceof` conditions), so per-arm exception mapping composes with refinement.
+            // One site per arm, so per-arm exception mapping composes with refinement.
             if ($param !== null && $expr instanceof Node\Expr\Match_) {
                 foreach ($this->matchArmSites($expr, $param, $scope) as $armSite) {
                     $sites[] = $armSite;
@@ -335,8 +305,7 @@ final class PhpStanTypeEngine implements TypeEngine
             ];
         }
 
-        // Deterministic control-flow order, then every arm whose caught-variable guard the narrowed
-        // type satisfies (an empty/unclassed guard is the unconditional default branch).
+        // Control-flow order, then every arm the narrowed type satisfies (empty guard = default branch).
         usort($sites, static fn (array $a, array $b): int => $a['pos'] <=> $b['pos']);
         $satisfiable = array_values(array_filter(
             $sites,
@@ -354,10 +323,8 @@ final class PhpStanTypeEngine implements TypeEngine
     }
 
     /**
-     * Choose the reachable site for the narrowed type: the first (in source order) that is an EXACT
-     * guard match or produces a response — so a broad delegation early-out is skipped in favour of the
-     * per-type response arm. Falls back to the first satisfiable site (a genuinely all-delegating
-     * renderer) when nothing else qualifies.
+     * The first site in source order that either matches the guard exactly or produces a response; falls
+     * back to the first satisfiable one for a genuinely all-delegating renderer.
      *
      * @param  list<array{pos: int, line: int, type: DType, guard: list<string>, delegates: bool}>  $satisfiable
      * @return array{pos: int, line: int, type: DType, guard: list<string>, delegates: bool}|null
@@ -374,9 +341,9 @@ final class PhpStanTypeEngine implements TypeEngine
     }
 
     /**
-     * Expand a `match (true)` body into one site per arm: guard = the `instanceof` classes the arm
-     * conditions test `$param` against (a `default` arm, or a non-`instanceof` condition, is broad),
-     * type = the refined arm-body response. Arm order is preserved via source position.
+     * Expand a `match (true)` body into one site per arm: guard = the `instanceof` classes the arm tests
+     * `$param` against (a `default` arm, or a non-`instanceof` condition, is broad), type = the refined arm
+     * body. Arm order is preserved via source position.
      *
      * @return list<array{pos: int, line: int, type: DType, guard: list<string>, delegates: bool}>
      */
@@ -398,9 +365,8 @@ final class PhpStanTypeEngine implements TypeEngine
     }
 
     /**
-     * The class FQCNs a match arm's conditions test `$param` against — walking `&&`/`||` so a compound
-     * `$e instanceof A && $e instanceof B` contributes both. A condition that is not an `instanceof` on
-     * `$param` contributes nothing (the arm stays broad).
+     * Walks `&&`/`||`, so `$e instanceof A && $e instanceof B` contributes both. Anything that isn't an
+     * `instanceof` on `$param` contributes nothing, leaving the arm broad.
      *
      * @param  array<Node\Expr>  $conds
      * @return list<string>
@@ -449,10 +415,9 @@ final class PhpStanTypeEngine implements TypeEngine
     }
 
     /**
-     * The narrowing-honesty diagnostic (B2): raised when the CHOSEN site is a broad guard shadowing a
-     * later exact `instanceof` match, or two arms claim the type exactly — the shape is then not
-     * unambiguous. An exact chosen site with no rival exact match, or the ordinary
-     * sequential-`instanceof`-plus-default shape, is unambiguous.
+     * Raised when the chosen site is a broad guard shadowing a later exact `instanceof` match, or two arms
+     * claim the type exactly. An exact site with no rival is unambiguous, as is the ordinary
+     * sequential-`instanceof`-plus-default shape.
      *
      * @param  list<array{pos: int, line: int, type: DType, guard: list<string>, delegates: bool}>  $satisfiable
      * @param  array{pos: int, line: int, type: DType, guard: list<string>, delegates: bool}|null  $chosen
@@ -467,7 +432,6 @@ final class PhpStanTypeEngine implements TypeEngine
         $exactMatches = array_filter($satisfiable, static fn (array $s): bool => in_array($narrowTo, $s['guard'], true));
         $chosenIsExact = in_array($narrowTo, $chosen['guard'], true);
 
-        // A broad guard shadowed a later exact match, or two branches claim the type exactly.
         $ambiguous = $chosenIsExact ? count($exactMatches) > 1 : $exactMatches !== [];
         if (! $ambiguous) {
             return [];
@@ -486,8 +450,7 @@ final class PhpStanTypeEngine implements TypeEngine
     }
 
     /**
-     * Whether a return guarded by `$guard` (the caught variable's narrowed class types) is reachable
-     * when the caught variable is `$narrowTo`. Empty guard = the default branch (reachable for any).
+     * An empty guard is the default branch, reachable for anything.
      *
      * @param  list<string>  $guard
      */
@@ -507,8 +470,7 @@ final class PhpStanTypeEngine implements TypeEngine
     }
 
     /**
-     * The concrete class FQCNs a DType carries (a single class, or the members of a union /
-     * intersection) — the caught variable's narrowed type at a return site.
+     * A single class, or the members of a union/intersection.
      *
      * @return list<string>
      */
@@ -538,9 +500,9 @@ final class PhpStanTypeEngine implements TypeEngine
     public function trace(ActionRef $action, TraceVisitor $visitor): TraceReport
     {
         if ($action->class === null) {
-            // A closure located by line (not a class method): its returns ARE the harvest — a named
-            // rate limiter's `RateLimiter::for` closure folded to a concrete limit. Walked in place,
-            // never interprocedurally: a limiter that delegates its limit to a helper does not fold.
+            // A closure located by line: its returns are the harvest (a `RateLimiter::for` closure folded
+            // to a concrete limit). Walked in place, never interprocedurally — a limiter that delegates
+            // its limit to a helper doesn't fold.
             if ($action->method === '{closure}') {
                 $this->traceClosure($action, $visitor);
             }
@@ -562,27 +524,21 @@ final class PhpStanTypeEngine implements TypeEngine
         try {
             $tracer->run($action->class, $action->method, $action->file);
         } catch (Throwable) {
-            // Trace is best-effort; the visitor keeps whatever it harvested and
-            // the report still carries every file the walk reached before failing.
+            // Best-effort: the visitor keeps what it harvested, the report keeps every file reached.
         }
 
         return new TraceReport($tracer->visitedFiles());
     }
 
     /**
-     * Hand a closure's return expressions to the visitor, each with the flow-refined scope in effect
-     * at that return — so it constant-folds them exactly as it would inside a method walk. The
-     * closure is located by start line (from `ReflectionFunction`) and both shapes are reached, so an
-     * idiomatic `fn ($r) => Limit::…` arrow limiter folds, not only a `function () { return …; }` one:
+     * Hand a closure's return expressions to the visitor with the flow-refined scope at each return, so it
+     * folds them as it would inside a method walk. The closure is located by start line, and both shapes
+     * are handled: a full closure (`ClosureReturnStatementsNode`, where `isAlwaysTerminating()` tells a
+     * fall-through body apart so a limiter that doesn't always return stays unrecovered) and an arrow
+     * function (`InArrowFunctionNode`, one implicit return).
      *
-     *   - a full closure (`ClosureReturnStatementsNode`) — every explicit return with its scope, and
-     *     `isAlwaysTerminating()` telling a conditional (fall-through) body apart from an unconditional
-     *     one so a limiter that does not always return is left unrecovered;
-     *   - an arrow function (`InArrowFunctionNode`) — its single implicit return of the body.
-     *
-     * The visitor is driven INSIDE the pass, on the live scope: an arrow function's scope is a lazy
-     * fiber scope that cannot type expressions once the pass has ended, so nothing may be deferred.
-     * Best-effort — any failure leaves the visitor with whatever it already harvested.
+     * The visitor runs inside the pass, on the live scope: an arrow function's scope is a lazy fiber scope
+     * that can't type expressions once the pass has ended, so nothing may be deferred.
      */
     private function traceClosure(ActionRef $action, TraceVisitor $visitor): void
     {
@@ -613,7 +569,7 @@ final class PhpStanTypeEngine implements TypeEngine
                 }
             });
         } catch (Throwable) {
-            // Trace is best-effort; the visitor keeps whatever it harvested.
+            // Best-effort; the visitor keeps whatever it harvested.
         }
     }
 
@@ -636,10 +592,8 @@ final class PhpStanTypeEngine implements TypeEngine
             $this->translator,
             $this->fileAnalyzer,
             new CalleeResolver($this->adapter->reflectionProvider()),
-            // The refiner (and its enum folder) follow error-render helpers across any PRIMED app
-            // source root — a modular monorepo keeps them in `Modules\…`, outside the descend scope
-            // throws/QB-trace use — so it takes the prime-scoped filter, not $this->projectFilter.
-            // Vendor is still never followed (it is not a primed root).
+            // Prime-scoped filter, not $this->projectFilter: render helpers can live in any primed app
+            // root (`Modules\…`), outside the descend scope throws/QB-trace use. Vendor still never folds.
             $this->refinerFilter,
             $this->adapter->reflectionProvider(),
             $this->config->traceDepth,

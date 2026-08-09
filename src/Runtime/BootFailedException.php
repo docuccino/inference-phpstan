@@ -7,10 +7,9 @@ namespace Docuccino\Inference\PhpStan\Runtime;
 use RuntimeException;
 
 /**
- * Thrown when the PHPStan container or Larastan bootstrap fails to come up. The
- * engine factory catches this and falls back to a `NullTypeEngine` so
- * docblock/attribute-only docs still build (design §3).
+ * The PHPStan container or Larastan bootstrap failed to come up. The engine factory catches this and falls
+ * back to a `NullTypeEngine`, so docblock/attribute-only docs still build.
  *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final class BootFailedException extends RuntimeException {}

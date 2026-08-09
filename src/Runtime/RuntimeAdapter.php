@@ -7,45 +7,39 @@ namespace Docuccino\Inference\PhpStan\Runtime;
 use PHPStan\Reflection\ReflectionProvider;
 
 /**
- * The single seam that touches PHPStan's fragile internal plumbing
- * (`ContainerFactory`, `NodeScopeResolver`, the parser router, `FileHelper`) —
- * one implementation per supported PHPStan minor (design §2). The BC-stable
- * surfaces (`Scope`, `Type`, throw points, dynamic-return-type extensions) are
- * used directly by the translator / throw analyzer / tracer and are NOT confined
- * here.
+ * The single seam onto PHPStan's non-BC-covered plumbing (`ContainerFactory`, `NodeScopeResolver`, the
+ * parser router, `FileHelper`), with one implementation per supported PHPStan minor. The BC-stable surfaces
+ * — `Scope`, `Type`, throw points, dynamic-return-type extensions — are used directly by the translator,
+ * throw analyzer and tracer, not confined here.
  *
- * Everything an adapter does upward is expressed in `PhpParser\Node`, PHPStan
- * `Scope`, and `ReflectionProvider` — all BC-promised — so only booting, parser
- * priming and file walking need per-minor attention.
+ * Upward, an adapter speaks only `PhpParser\Node`, `Scope` and `ReflectionProvider`, all BC-promised, so a
+ * new minor means revisiting booting, parser priming and file walking and nothing else.
  *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 interface RuntimeAdapter
 {
     /**
-     * Build the container, run Larastan's bootstrap files (which boot the host
-     * Laravel app), and prime the project's source files. Idempotent.
+     * Build the container, run Larastan's bootstrap files (which boot the host app), and prime the project's
+     * sources. Idempotent.
      *
      * @throws BootFailedException when the container or Larastan bootstrap fails
      */
     public function boot(): void;
 
     /**
-     * Add files to the analysed set on BOTH the `NodeScopeResolver` and the
-     * `pathRoutingParser`, additively (the set only ever grows). This is the
-     * Spike A body-stripping fix: a file not in the parser router's analysed set
-     * is routed to `CleaningParser`, which deletes method bodies, so its returns
-     * and throw points vanish silently. Every newly-analysed file — entry action
-     * or descent target — must be primed BEFORE its first parse.
+     * Add files to the analysed set on BOTH the `NodeScopeResolver` and the `pathRoutingParser`, additively.
+     * PHPStan strips unprimed bodies — a file missing from the parser router's set goes to `CleaningParser`
+     * and its returns and throw points vanish silently — so prime every file, entry action or descent
+     * target, before its first parse.
      *
      * @param  list<string>  $files  raw (un-normalised) paths
      */
     public function prime(array $files): void;
 
     /**
-     * Parse a file and drive `NodeScopeResolver::processNodes` over it, invoking
-     * `$callback(PhpParser\Node $node, PHPStan\Analyser\Scope $scope): void` for
-     * every node. The file is primed first.
+     * Parse a file and drive `NodeScopeResolver::processNodes` over it, calling
+     * `$callback(PhpParser\Node $node, PHPStan\Analyser\Scope $scope): void` per node. Primes the file first.
      */
     public function processFile(string $file, callable $callback): void;
 

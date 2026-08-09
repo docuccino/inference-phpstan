@@ -9,11 +9,10 @@ use ReflectionEnumUnitCase;
 use Throwable;
 
 /**
- * Reads an enum's case names via reflection. Shared by the type translator
- * (scope-driven) and the native type mapper (reflection-driven), which
- * previously carried byte-identical private copies.
+ * An enum's case names by reflection, shared by the scope-driven type translator and the reflection-driven
+ * native type mapper so the two can't drift.
  *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final class EnumCases
 {

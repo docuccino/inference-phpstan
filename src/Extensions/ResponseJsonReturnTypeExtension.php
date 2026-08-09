@@ -14,30 +14,21 @@ use PHPStan\Type\Type;
 use PHPStan\Type\VoidType;
 
 /**
- * Preserves the payload shape AND the folded HTTP status of `response()->json([...], 201)`
- * and `response()->noContent()` (design §7, proven in Spike A). Out of the box the calls
- * infer as a bare `JsonResponse`/`Response` and both the constant array shape and the status
- * literal are discarded; this extension re-attaches them as `JsonResponse<TPayload, TStatus>`
- * (paired with the bundled `JsonResponse.stub`).
+ * Keeps the payload shape and folded status of `response()->json([...], 201)` and
+ * `response()->noContent()`, which otherwise infer as a bare `JsonResponse`/`Response` with both thrown
+ * away. Re-attaches them as `JsonResponse<TPayload, TStatus>`, paired with the bundled `JsonResponse.stub`:
+ * `json($payload, $status = 200)` → `JsonResponse<payloadShape, 200|literalStatus>`, and
+ * `noContent($status = 204)` → `JsonResponse<void, …>` where the void payload means "no body".
  *
- * - `json($payload, $status = 200)` → `JsonResponse<payloadShape, 200|literalStatus>`.
- * - `noContent($status = 204)` → `JsonResponse<void, 204|literalStatus>` (void payload = no body;
- *   the pipeline emits an empty response under the folded status).
+ * The status arg is the call-site type, so a constant int survives as a literal the pipeline can read while
+ * a dynamic one stays a plain int and falls back to the default.
  *
- * The status type arg is the call-site scope type of the status argument: a constant integer
- * survives as such (the pipeline reads the literal), a dynamic status stays a plain int (the
- * pipeline falls back to the phase default). Distinct return paths carry distinct statuses for
- * free — each return statement is harvested with its own recovered type.
+ * Targets the ResponseFactory *contract*, not the concrete class — `response()` is typed as the contract at
+ * the call site, and an extension aimed at the concrete class silently never fires. Laravel classes are
+ * referenced by FQCN string because this package has no illuminate/* dependency; the extension only ever
+ * runs inside a booted host app.
  *
- * It targets the ResponseFactory *contract*, not the concrete class, because `response()` is
- * typed as the contract at the call site — target the concrete class and the extension silently
- * never fires (Spike A observation).
- *
- * Laravel classes are referenced by FQCN string rather than imported: this package carries no
- * hard dependency on illuminate/*, and the extension only ever executes inside a booted host app
- * where those classes exist.
- *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final class ResponseJsonReturnTypeExtension implements DynamicMethodReturnTypeExtension
 {
@@ -47,10 +38,8 @@ final class ResponseJsonReturnTypeExtension implements DynamicMethodReturnTypeEx
 
     public function getClass(): string
     {
-        // The contract is referenced by FQCN string (illuminate/* is not a root
-        // dependency — see the package's static-analysis note), so the literal is
-        // not provably class-string during analysis. It resolves at runtime inside
-        // the host app, where the class exists.
+        // An FQCN string isn't provably class-string during analysis (illuminate/* isn't a dependency
+        // here); it resolves at runtime inside the host app.
         /** @phpstan-ignore return.type */
         return self::RESPONSE_FACTORY_CONTRACT;
     }

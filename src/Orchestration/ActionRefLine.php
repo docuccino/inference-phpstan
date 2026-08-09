@@ -7,10 +7,10 @@ namespace Docuccino\Inference\PhpStan\Orchestration;
 use Docuccino\Core\Inference\ActionRef;
 
 /**
- * An {@see ActionRef} paired with its pre-encoded NDJSON request line and stable
- * request id — the unit the {@see WorkerPool} queues, sends and tracks.
+ * An {@see ActionRef} with its pre-encoded NDJSON request line and stable id — what {@see WorkerPool}
+ * queues, sends and tracks.
  *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final readonly class ActionRefLine
 {

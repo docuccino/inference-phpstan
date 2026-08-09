@@ -11,13 +11,11 @@ use PHPStan\Node\ClosureReturnStatementsNode;
 use PHPStan\Node\MethodReturnStatementsNode;
 
 /**
- * Parses a file once and harvests its virtual `MethodReturnStatementsNode`s,
- * keyed by method name — the structured-harvest node that pairs every `return`
- * with its flow-refined scope and carries the method's throw points (design §2).
- * Memoised per file so descent re-uses a single rich parse; the adapter's
- * priming guarantees bodies survive.
+ * Parses a file once and harvests its virtual `MethodReturnStatementsNode`s by method name — the node that
+ * pairs every `return` with its flow-refined scope and carries the method's throw points. Memoised per file
+ * so descent reuses one rich parse; the adapter's priming is what keeps the bodies from being stripped.
  *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final class FileAnalyzer
 {
@@ -44,8 +42,7 @@ final class FileAnalyzer
 
         $collected = [];
         $this->adapter->processFile($file, static function (Node $node, Scope $scope) use (&$collected): void {
-            // The documented structured-harvest node (design §2, Spike A): watching
-            // for it is the sanctioned way to pair returns with flow-refined scope.
+            // Watching for this virtual node is the sanctioned way to pair returns with refined scope.
             // @phpstan-ignore phpstanApi.instanceofAssumption
             if ($node instanceof MethodReturnStatementsNode) {
                 $collected[$node->getMethodName()] = $node;
@@ -56,10 +53,8 @@ final class FileAnalyzer
     }
 
     /**
-     * Harvest the file's closure return-statement nodes keyed by the closure's start line — the
-     * locator for an exception-handler render callback (design §6 inferred-handler tier), whose
-     * file+line come from `ReflectionFunction`. Same structured-harvest node family as
-     * {@see analyze()}, so returns pair with their flow-refined scope identically.
+     * Keyed by start line — how an exception-handler render callback is located, since `ReflectionFunction`
+     * gives us file+line and nothing else.
      *
      * @return array<int, ClosureReturnStatementsNode>
      */
@@ -82,13 +77,10 @@ final class FileAnalyzer
     }
 
     /**
-     * Harvest the file's `$var = [ ... ]` array-literal assignments, keyed by the containing method name
-     * then by variable name (FIRST assignment wins — the initialiser). It lets the refiner recover the
-     * member→parameter provenance of a response body that is BUILT UP in a local variable before being
-     * handed to `new JsonResponse($body, …)` (the idiomatic shape: a `$body` array literal followed by
-     * conditional `$body[...] = …` appends), not only the inline `new JsonResponse([...], …)` case.
-     * Conditional appends (assignments to an array-dim, not the bare variable) are ignored here — the
-     * payload SHAPE still comes from PHPStan's inferred type of the variable at the return.
+     * The file's `$var = [ ... ]` assignments by method then variable name, first assignment winning. Lets
+     * the refiner recover provenance for a body built up in a local (`$body = [...]` then conditional
+     * `$body[...] = …`) rather than written inline. The appends are ignored — the payload shape still comes
+     * from PHPStan's inferred type of the variable at the return.
      *
      * @return array<string, array<string, Node\Expr\Array_>>
      */
@@ -115,8 +107,7 @@ final class FileAnalyzer
                 return;
             }
 
-            // First assignment wins: the initialiser carries the member→parameter provenance; a later
-            // reassignment in the same method does not overwrite it.
+            // First assignment wins — the initialiser carries the provenance.
             $collected[$method][$node->var->name] ??= $node->expr;
         });
 

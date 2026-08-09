@@ -4,15 +4,12 @@ declare(strict_types=1);
 
 namespace Docuccino\Inference\PhpStan\Runtime;
 
-/**
- * Everything an adapter needs to boot a PHPStan container against a host Laravel
- * app.
- */
+/** Everything an adapter needs to boot a PHPStan container against a host Laravel app. */
 final readonly class RuntimeConfig
 {
     /**
      * @param  string  $projectRoot  the Laravel app root (becomes cwd; Larastan boots the app from here)
-     * @param  string  $tmpDir  PHPStan's compiled-container + result-cache dir; MUST be isolated per invocation (Spike B trap #8)
+     * @param  string  $tmpDir  PHPStan's compiled-container + result-cache dir; MUST be isolated per invocation
      * @param  int  $phpVersion  PHP_VERSION_ID-style integer, e.g. 80500
      * @param  list<string>  $projectPaths  directories whose `.php` files are primed up front and treated as project code
      * @param  string|null  $larastanNeon  absolute path to `larastan/extension.neon`; auto-detected under $projectRoot/vendor when null

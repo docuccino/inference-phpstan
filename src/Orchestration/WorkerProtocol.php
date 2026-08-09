@@ -7,19 +7,18 @@ namespace Docuccino\Inference\PhpStan\Orchestration;
 use Docuccino\Core\Inference\ActionRef;
 
 /**
- * The line-delimited JSON (NDJSON) wire format spoken between the parent
- * orchestrator and its workers over stdin/stdout (design §3). One JSON object per
- * line; every message carries a discriminator `t`:
+ * The NDJSON wire format between the parent orchestrator and its workers over stdin/stdout — one JSON
+ * object per line, each carrying a discriminator `t`:
  *
  *   parent → worker   `{"t":"a","id":..,"file":..,"class":..|null,"method":..,"line":..}`
  *   worker → parent   `{"t":"ready","engine":"phpstan"|"null"}`   (startup handshake)
  *                     `{"t":"r","id":..,"analysis":{…canonical ActionAnalysis…}}`
  *                     `{"t":"bye","reason":"recycle"|"rss"}`       (clean self-exit)
  *
- * The `id` is the {@see ActionRef::symbol()} so the parent can match a result to
- * its request regardless of which worker (or attempt) produced it.
+ * The `id` is the {@see ActionRef::symbol()}, so the parent matches a result to its request no matter which
+ * worker or attempt produced it.
  *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final class WorkerProtocol
 {

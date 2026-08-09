@@ -5,12 +5,11 @@ declare(strict_types=1);
 namespace Docuccino\Inference\PhpStan\Orchestration;
 
 /**
- * Mutable per-worker scheduling state held by {@see WorkerPool}: the live
- * {@see Worker} (null until spawned / after a crash), the ids of its current
- * assignment, which of them have been acknowledged, whether its startup
- * handshake arrived, and when the in-flight action's clock started.
+ * Mutable per-worker scheduling state held by {@see WorkerPool}: the live {@see Worker} (null until spawned
+ * and after a crash), its current assignment and which ids are acknowledged, whether the startup handshake
+ * arrived, and when the in-flight action's clock started.
  *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final class WorkerSlot
 {

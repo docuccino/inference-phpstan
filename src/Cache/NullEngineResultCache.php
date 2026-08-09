@@ -10,11 +10,10 @@ use Docuccino\Core\Inference\ClassMetadata;
 use Docuccino\Core\Inference\ClassRef;
 
 /**
- * The cache off-switch (design §8: "cache is optional"). Every lookup misses and
- * every store is a no-op, so wiring the cache in unconditionally stays correct
- * when caching is disabled.
+ * The cache off-switch: every lookup misses, every store is a no-op, so callers can wire the cache in
+ * unconditionally.
  *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final readonly class NullEngineResultCache implements EngineResultCache
 {

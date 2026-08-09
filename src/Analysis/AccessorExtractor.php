@@ -9,21 +9,19 @@ use PhpParser\Node;
 use PHPStan\Analyser\Scope;
 
 /**
- * The PURE decision logic behind enum-accessor folding — the parts that read an AST shape rather than a
- * PHPStan {@see Scope}, factored out of {@see ResponseShapeRefiner} and
- * {@see EnumAccessorFolder} so they are unit-testable in process (the Scope-dependent parts — constant
- * folding, type resolution — stay in the engine and are proven by the --group=fixture suites). Any name
- * resolution a decision genuinely needs (`self`/aliases → FQCN) is threaded in as a closure so callers
- * pass `$scope->resolveName(...)` and tests pass a fake resolver.
+ * The pure, AST-only decision logic behind enum-accessor folding, split out of
+ * {@see ResponseShapeRefiner} and {@see EnumAccessorFolder} so it is unit-testable in process — anything
+ * needing a PHPStan {@see Scope} stays in the engine and is covered by the fixture suites. Name resolution
+ * (`self`/aliases → FQCN) is threaded in as a closure, so callers pass `$scope->resolveName(...)` and tests
+ * pass a fake.
  *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final class AccessorExtractor
 {
     /**
-     * Classify a value expression as an accessor on one of the current parameters: the parameter itself
-     * (identity), `$param->value` / `$param->name`, or a NO-ARG method `$param->method()`. Null when the
-     * value is not rooted in a parameter.
+     * Classify a value expression as an accessor on one of the current parameters: the parameter itself,
+     * `$param->value`/`$param->name`, or a no-arg `$param->method()`. Null when it isn't rooted in one.
      *
      * @param  list<string>  $paramNames
      */
@@ -62,10 +60,9 @@ final class AccessorExtractor
     }
 
     /**
-     * The member→accessor provenance of a response-body array literal: each STRING-LITERAL-keyed member
-     * whose value reads off one of the current parameters ({@see fromExpr}). Keys are read straight from
-     * the AST (a documentable member always has a literal key; a computed key is skipped — it is not a
-     * stable member to document), so this is Scope-free and unit-testable.
+     * Provenance for each string-literal-keyed member of a response-body array whose value reads off a
+     * parameter. A computed key is skipped — it isn't a stable member to document — which keeps this
+     * Scope-free.
      *
      * @param  list<string>  $paramNames
      * @return array<string, ParamAccessor>
@@ -87,8 +84,8 @@ final class AccessorExtractor
     }
 
     /**
-     * Re-home an accessor one hop out when the argument is a caller PARAMETER: from the caller's vantage
-     * the value reads through the same accessor on the caller's own parameter. Null otherwise.
+     * Re-home an accessor one hop out when the argument is a caller parameter — from out there the value
+     * reads through the same accessor on the caller's own parameter. Null otherwise.
      *
      * @param  list<string>  $paramNames  the caller's parameter names
      */
@@ -102,8 +99,8 @@ final class AccessorExtractor
     }
 
     /**
-     * The concrete enum case a `Enum::Case` constant-fetch names, as `{fqcn, case}`, or null when the
-     * expression is not an enum-case class-constant. `$resolveName` maps a parser `Name` to its FQCN.
+     * The enum case an `Enum::Case` constant-fetch names, or null when the expression isn't one.
+     * `$resolveName` maps a parser `Name` to its FQCN.
      *
      * @param  Closure(Node\Name): string  $resolveName
      * @return array{fqcn: string, case: string}|null
@@ -125,9 +122,8 @@ final class AccessorExtractor
     }
 
     /**
-     * The body expression of the `match ($this)` arm selected for `$caseName` — the arm whose condition
-     * names the case, else the `default` arm — or null when the subject is not `$this` or no arm applies.
-     * `$resolveName` maps a condition's `Name` to its FQCN (so `self::Case` resolves to the enum).
+     * The body of the `match ($this)` arm for `$caseName` — the arm naming the case, else `default` — or
+     * null when the subject isn't `$this` or no arm applies. `$resolveName` lets `self::Case` resolve.
      *
      * @param  Closure(Node\Name): string  $resolveName
      */

@@ -17,26 +17,18 @@ use Docuccino\Inference\PhpStan\Cache\NullEngineResultCache;
 use Docuccino\Inference\PhpStan\Cache\VersionFingerprint;
 
 /**
- * The parent orchestrator (design §3). Given a set of {@see ActionRef}s it drives
- * K worker subprocesses to completion and returns their {@see ActionAnalysis}
- * results keyed by canonical action id — sorted, so scheduling never affects
- * output bytes.
+ * The parent orchestrator: drives K worker subprocesses over a set of {@see ActionRef}s and returns their
+ * {@see ActionAnalysis} keyed by canonical action id, sorted — so scheduling never affects output bytes.
+ * See docs/design/inference-embedding.md §3.
  *
- * Responsibilities beyond dispatch:
- *   - cache front-door: ids already in the {@see EngineResultCache} skip the pool
- *     entirely; fresh results are stored (poison/fallback results are not cached);
- *   - recycling: workers self-exit after N actions or an RSS watermark and are
- *     respawned here;
- *   - failure containment: a worker that crashes or blows the per-action timeout
- *     has its still-unacknowledged actions re-queued as size-1 assignments to
- *     bisect the poison; an action that fails alone degrades to `UnknownT` + an
- *     error diagnostic while its siblings succeed;
- *   - boot-failure fallback: if the first worker reports it booted the
- *     {@see NullTypeEngine} (Larastan could not boot the app), the pool tears the
- *     workers down and finishes in-process, attaching one engine-level fatal
- *     diagnostic per action so docblock/attribute-only docs still build.
+ * Beyond dispatch it is the cache front-door (hits skip the pool; poison and fallback results are never
+ * stored), respawns workers that self-exit on their action/RSS budget, and contains failures: a crash or
+ * per-action timeout re-queues the worker's unacknowledged actions as size-1 assignments to bisect the
+ * poison, and an action that defeats a worker alone degrades to `UnknownT` while its siblings succeed. If
+ * the first worker reports it booted the {@see NullTypeEngine} (Larastan couldn't boot the app), the pool
+ * tears down and finishes in-process so docblock/attribute-only docs still build.
  *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final class WorkerPool
 {
@@ -202,8 +194,7 @@ final class WorkerPool
             }
         }
 
-        // A live worker that has acked its whole batch becomes idle and reassignable
-        // (it may still self-exit to recycle — reapSlot handles that case).
+        // Acked its whole batch ⇒ idle and reassignable (it may still self-exit; reapSlot covers that).
         if ($slot->assignment !== [] && $slot->unacked() === []) {
             $slot->assignment = [];
             $slot->acked = [];
@@ -283,9 +274,8 @@ final class WorkerPool
 
         $unacked = $slot->unacked();
         if ($unacked !== []) {
-            // A clean exit (code 0) with work outstanding is a recycle-truncation —
-            // the worker hit its budget mid-batch and never ran these; just re-run
-            // them. Only a nonzero exit is a genuine crash.
+            // Exit code 0 with work outstanding = hit its budget mid-batch, so just re-run those.
+            // Only a nonzero exit is a real crash.
             $this->contain($slot, $unacked, $lines, $results, $done, $queue, $slot->worker->exitCode() === 0 ? 'truncated' : 'crash');
         }
 
@@ -295,13 +285,9 @@ final class WorkerPool
     }
 
     /**
-     * Failure containment (design §3).
-     *   - `truncated`: a benign recycle boundary — always re-queue, never poison.
-     *   - `crash`/`timeout` on a size-1 assignment: the action is isolated and has
-     *     defeated a whole worker — degrade it to a poison result so the build
-     *     continues.
-     *   - `crash`/`timeout` on a larger batch: re-queue each survivor as its own
-     *     size-1 assignment, bisecting toward the poison action.
+     * `truncated` is a benign recycle boundary — always re-queue, never poison. A `crash`/`timeout` on a
+     * size-1 assignment means that action defeated a whole worker, so poison it; on a larger batch,
+     * re-queue each survivor alone to bisect toward the culprit.
      *
      * @param  list<string>  $unacked
      * @param  array<string, ActionRefLine>  $lines
@@ -341,9 +327,8 @@ final class WorkerPool
     }
 
     /**
-     * Boot-failure fallback: tear workers down, finish everything still pending
-     * in-process (the {@see NullTypeEngine}, since the real boot failed) and tag
-     * each with an engine-level fatal diagnostic.
+     * Tear the workers down, finish what's pending on the {@see NullTypeEngine}, and tag each with an
+     * engine-level fatal diagnostic.
      *
      * @param  array<string, ActionRefLine>  $lines
      * @param  list<list<string>>  $queue

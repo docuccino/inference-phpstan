@@ -9,19 +9,15 @@ use PHPStan\Analyser\Scope;
 use PHPStan\Reflection\ReflectionProvider;
 
 /**
- * The single call-resolution service for BOTH the {@see Tracer} and the throw
- * analyzer. Previously each had its own: the tracer used a native
- * `ReflectionMethod` (throwing on magic/forwarded calls), the throw analyzer used
- * the PHPStan `ReflectionProvider`. Two reflection stacks could classify the same
- * call differently, so they are unified here on the `ReflectionProvider`.
+ * The one call-resolution service for both the {@see Tracer} and the throw analyzer, on PHPStan's
+ * `ReflectionProvider` — two reflection stacks would classify the same call differently.
  *
- * `resolve()` returns null for every "vendor terminal, don't descend" case — a
- * non-method call, an unresolved receiver, a magic/forwarded call
- * (`__call`, e.g. Spatie QB forwarding `paginate`), or a PHP-internal/stub method
- * with no file. That null is exactly the boundary signal both callers act on
- * (Spike B trap #6); the caller then applies its own {@see ProjectFilter} gate.
+ * `resolve()` returns null for every "vendor terminal, don't descend" case: a non-method call, an unresolved
+ * receiver, a magic/forwarded call (`__call`, e.g. Spatie QB forwarding `paginate`), or a PHP-internal/stub
+ * method with no file. That null is the boundary signal both callers act on; each then applies its own
+ * {@see ProjectFilter} gate.
  *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final class CalleeResolver
 {
@@ -29,11 +25,7 @@ final class CalleeResolver
         private readonly ReflectionProvider $reflectionProvider,
     ) {}
 
-    /**
-     * The syntactic callee name (function / method / static-method), or null.
-     * Used by the throw registry, which keys on the name regardless of whether
-     * the call resolves to a concrete method.
-     */
+    /** The throw registry keys on this whether or not the call resolves to a concrete method. */
     public function name(Node $node): ?string
     {
         if ($node instanceof Node\Expr\FuncCall) {
@@ -49,12 +41,7 @@ final class CalleeResolver
         return null;
     }
 
-    /**
-     * Resolve a method/static call to the concrete method it dispatches to
-     * (declaring class, method, file). Returns null for the vendor-terminal
-     * cases described in the class docblock — the first candidate receiver that
-     * resolves wins, so a union receiver is handled deterministically.
-     */
+    /** Null for the vendor-terminal cases above; the first resolvable receiver candidate wins. */
     public function resolve(Node $node, Scope $scope): ?Callee
     {
         if ($node instanceof Node\Expr\MethodCall) {
@@ -73,9 +60,8 @@ final class CalleeResolver
             return null;
         }
 
-        // `getObjectClassNames()` preserves the type's member order, so for a given
-        // resolved receiver the "first resolvable candidate wins" choice is
-        // deterministic across runs — scheduling never affects which callee we pick.
+        // `getObjectClassNames()` preserves member order, so "first resolvable wins" is deterministic
+        // across runs even for a union receiver.
         foreach ($classNames as $class) {
             if (! $this->reflectionProvider->hasClass($class)) {
                 continue;

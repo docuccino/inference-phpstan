@@ -21,22 +21,15 @@ use Docuccino\Core\Inference\TypeEngine;
 use Throwable;
 
 /**
- * The orchestrated {@see TypeEngine} (design §3, task requirement 6). It routes
- * `analyzeAction` transparently through a {@see WorkerPool} so return/throw
- * analysis runs in parallel across worker processes with recycling, containment
- * and the result cache — all invisible behind the plain single-action contract.
+ * Routes `analyzeAction` through a {@see WorkerPool}, so return/throw analysis runs across worker processes
+ * with recycling, containment and the result cache, all behind the plain single-action contract.
  *
- * `classMetadata()` and `trace()` deliberately stay in-process, served by a
- * lazily-booted engine:
- *   - `trace()` hands live `PhpParser\Node`s to a stateful visitor; those cannot
- *     cross a process boundary through NDJSON, so it must run where the caller is;
- *   - `classMetadata()` is cheap, memoised per run, and already cacheable — the
- *     round-trip cost of a worker would dominate its own work.
+ * `trace()` and `classMetadata()` stay in-process: trace hands live `PhpParser\Node`s to a stateful visitor,
+ * which can't cross a process boundary as NDJSON, and classMetadata is cheap enough that a worker
+ * round-trip would cost more than the work. That in-process engine boots on first use, so an analyze-only
+ * run never pays for a second container boot in the parent.
  *
- * The in-process engine boots on first use only, so an analyze-only run never
- * pays for a second container boot in the parent.
- *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final class OrchestratedTypeEngine implements TypeEngine
 {
@@ -67,8 +60,7 @@ final class OrchestratedTypeEngine implements TypeEngine
     }
 
     /**
-     * The batch entry point the pipeline uses to fan many actions across the pool
-     * at once (the single-action {@see analyzeAction()} is a batch of one).
+     * Fan many actions across the pool at once; {@see analyzeAction()} is a batch of one.
      *
      * @param  iterable<ActionRef>  $actions
      * @return array<string, ActionAnalysis> keyed by action id, sorted
@@ -80,8 +72,8 @@ final class OrchestratedTypeEngine implements TypeEngine
 
     public function analyzeCallable(CallableRef $callable): ActionAnalysis
     {
-        // Stays in-process like trace()/classMetadata(): a one-off handler analysis per build does
-        // not amortise a worker round-trip, and it feeds the in-process pipeline directly.
+        // In-process like trace()/classMetadata(): one handler analysis per build doesn't amortise a
+        // worker round-trip, and it feeds the in-process pipeline directly.
         return $this->inProcess()->analyzeCallable($callable);
     }
 

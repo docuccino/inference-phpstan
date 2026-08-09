@@ -5,12 +5,11 @@ declare(strict_types=1);
 /*
  * Fixture-app engine runner (integration-test subprocess).
  *
- * The engine runs INSIDE the host Laravel app's process using the host app's
- * vendor — exactly how it will run in production, and how Phase 2b's workers will
- * run it. Booting it in-process from the root Pest run is not viable: Pest pulls
- * its own symfony/console, which collides with the fixture app's Laravel console
- * when both vendors are active. So the integration tests shell out to this
- * runner, which loads ONLY the fixture app's autoloader plus a hand-registered
+ * The engine runs inside the host Laravel app's process using the host app's vendor,
+ * exactly as it does in production. Booting it in-process from the root Pest run isn't
+ * viable: Pest pulls its own symfony/console, which collides with the fixture app's
+ * Laravel console when both vendors are active. So the integration tests shell out to
+ * this runner, which loads only the fixture app's autoloader plus a hand-registered
  * PSR-4 map for the docuccino packages under test.
  *
  * Usage (one mode per invocation — each maps 1:1 onto a FixtureRunner method):
@@ -27,12 +26,12 @@ declare(strict_types=1);
  *   php engine-runner.php trace-created-resource    <controllerFile> <class> <method>
  *   php engine-runner.php trace-rate-limiter        <file> <ignored> <ignored> <line>
  *
- * Dispatch stays a `match ($mode)` rather than a mode => factory table: each arm is a thin visitor
- * probe carrying a wave-traceability comment, and a test-only harness does not warrant the extra
- * indirection (revisit if the mode set keeps growing).
+ * Dispatch stays a `match ($mode)` rather than a mode => factory table — each arm is a thin
+ * visitor probe and a test-only harness doesn't warrant the indirection. Revisit if the mode
+ * set keeps growing.
  *
- * Emits `@@RESULT@@` followed by a single JSON line (so any incidental host
- * output before it is ignored by the caller).
+ * Emits `@@RESULT@@` followed by a single JSON line, so any incidental host output before
+ * it is ignored by the caller.
  */
 
 use Docuccino\Core\Extensions\Schema\EnumReflection;
@@ -59,8 +58,8 @@ $app = $repoRoot.'/tests/fixture-app/app';
 
 require $app.'/vendor/autoload.php';
 
-// Hand-registered PSR-4 for the packages under test — no root composer vendor is
-// loaded here, so the only phpstan/php-parser in play is the fixture app's.
+// Hand-registered PSR-4 for the packages under test — no root composer vendor is loaded
+// here, so the only phpstan/php-parser in play is the fixture app's.
 spl_autoload_register(static function (string $class) use ($repoRoot): void {
     $map = [
         'Docuccino\\Attributes\\' => $repoRoot.'/packages/attributes/src/',
@@ -68,10 +67,10 @@ spl_autoload_register(static function (string $class) use ($repoRoot): void {
         'Docuccino\\Inference\\PhpStan\\Tests\\' => $repoRoot.'/packages/inference-phpstan/tests/',
         'Docuccino\\Inference\\PhpStan\\' => $repoRoot.'/packages/inference-phpstan/src/',
         // Several adapter-side trace visitors (QB, json-api-paginate, pagination terminal, rules,
-        // created-resource) run here to prove terminal/receiver matching + rule/column recovery on the
-        // REAL engine. They import only core + php-parser (+ their own dep-free facts/config), so the
-        // fixture app's phpstan/php-parser stays the only one in play — hence mapping all of
-        // `Docuccino\Laravel\` here is sound (this was one class at spike-d; it is now the norm).
+        // created-resource) run here to prove terminal/receiver matching and rule/column recovery on
+        // the real engine. They import only core + php-parser (plus their own dep-free facts/config),
+        // so the fixture app's phpstan/php-parser stays the only one in play — which is what makes
+        // mapping all of `Docuccino\Laravel\` here sound.
         'Docuccino\\Laravel\\' => $repoRoot.'/packages/laravel/src/',
     ];
     foreach ($map as $prefix => $dir) {
@@ -95,9 +94,9 @@ $line = (int) ($argv[5] ?? 0);
 $narrowParam = ($argv[6] ?? '') === '' ? null : $argv[6];
 $narrowType = ($argv[7] ?? '') === '' ? null : $argv[7];
 
-// A unique tmp dir per invocation — PID alone is reused across the many subprocesses a
-// fixture-group run forks, violating RuntimeConfig's "MUST be isolated per invocation"
-// contract; uniqid() makes it collision-free. Cleaned up on shutdown so runs don't leak.
+// A unique tmp dir per invocation. PID alone is reused across the many subprocesses a
+// fixture-group run forks, which breaks RuntimeConfig's isolated-per-invocation contract;
+// uniqid() makes it collision-free. Cleaned up on shutdown so runs don't leak.
 $tmp = sys_get_temp_dir().'/docuccino-runner-'.getmypid().'-'.uniqid('', true);
 @mkdir($tmp, 0777, true);
 
@@ -116,9 +115,9 @@ register_shutdown_function(static function () use ($tmp): void {
     @rmdir($tmp);
 });
 
-// The refine-pair mode drives the engine with a deliberately tiny per-analysis file budget (argv[2]) so
-// a shared helper truncates on a budget-spending path and has headroom on a direct one — the
-// determinism/truncation memo guard (ResponseShapeRefiner). Every other mode keeps the real default (40).
+// refine-pair drives the engine with a tiny per-analysis file budget (argv[2]) so a shared helper
+// truncates on a budget-spending path and has headroom on a direct one — the ResponseShapeRefiner
+// truncation-memo guard. Every other mode keeps the real default (40).
 $engineConfig = EngineConfig::forProjectWithVendor($app.'/vendor', $app.'/app');
 if ($mode === 'refine-pair') {
     $engineConfig = new EngineConfig(
@@ -132,10 +131,10 @@ if ($mode === 'refine-pair') {
 }
 
 $engine = (new PhpStanEngineFactory)->create(
-    // PRIME scope (bodies preserved) covers `modules/` too, so a Query class OUTSIDE the descend
-    // scope is not body-stripped when the QB trace follows a `$query->query()` hop into it.
+    // Prime scope (bodies preserved) covers `modules/` too, so a Query class outside the descend
+    // scope isn't body-stripped when the QB trace follows a `$query->query()` hop into it.
     new RuntimeConfig($app, $tmp, PHP_VERSION_ID, [$app.'/app', $app.'/modules']),
-    // DESCEND scope stays `app/` (throws/inline-rules bounded); vendorPath lets the QB trace follow a
+    // Descend scope stays `app/` (throws/inline-rules bounded); vendorPath lets the QB trace follow a
     // QueryBuilder-return-type hop into the primed `modules/` Query class, never into vendor.
     $engineConfig,
 );
@@ -152,8 +151,8 @@ $result = match ($mode) {
         $narrowParam,
         $narrowType,
     ))->toArray(),
-    // Analyse two callables through ONE engine (shared per-callee memo) under the tiny budget: the
-    // determinism guard for the refiner's "never memoise a budget-truncated shape" rule.
+    // Two callables through one engine (shared per-callee memo) under the tiny budget: the determinism
+    // guard for the refiner's "never memoise a budget-truncated shape" rule.
     'refine-pair' => (static function () use ($engine, $app, $argv): array {
         $analyse = static fn (string $relPath, string $class, string $method): array => $engine->analyzeCallable(
             new CallableRef($app.'/'.$relPath, $class === '' ? null : $class, $method === '' ? null : $method),
@@ -180,9 +179,9 @@ $result = match ($mode) {
         ];
     })(),
     'trace-qb-enrich' => (static function () use ($engine, $ref): array {
-        // The REAL QueryBuilder trace visitor + the REAL cast-recovery resolver, run inside the host
-        // app's process where its models/enums are autoloadable: proves an enum-cast column recovers
-        // to its emitted enum-filter shape (backing values + case descriptions) end-to-end.
+        // The real trace visitor plus the real cast-recovery resolver, inside the host app's process
+        // where its models/enums are autoloadable: an enum-cast column recovers to its emitted
+        // enum-filter shape (backing values + case descriptions) end-to-end.
         $visitor = new QueryBuilderTraceVisitor;
         $report = $engine->trace($ref, $visitor);
         $facts = $visitor->facts;
@@ -192,10 +191,10 @@ $result = match ($mode) {
         $filters = array_map(static function (QbEntry $filter) use ($resolver, $scopes, $facts): array {
             $model = $facts->subjectModel;
             // Mirror the extension's per-kind typing: a resolved column (exact/callback) off the model
-            // cast, a scope value parameter off its scope method — proving both against the real engine.
+            // cast, a scope value parameter off its scope method — both against the real engine.
             $column = match (true) {
-                // A project-factory filter carrying a backed-enum class-string types off it DIRECTLY
-                // (no model needed) — the ListFilters-style recovery.
+                // A project-factory filter carrying a backed-enum class-string types off it directly,
+                // no model needed — the ListFilters-style recovery.
                 $filter->factoryEnum !== null => FilterColumn::enum(
                     $filter->factoryEnum,
                     ($f = EnumReflection::file($filter->factoryEnum)) !== null ? [$f] : [],
@@ -213,8 +212,8 @@ $result = match ($mode) {
                 'kind' => $filter->kind,
                 'factoryEnum' => $filter->factoryEnum,
                 'factoryClass' => $filter->factoryClass,
-                // The recovered leading comment (real-engine proof that PHPStan's parser attributes
-                // it to the array item the same way ParserFactory does → an override description).
+                // The recovered leading comment — PHPStan's parser attributes it to the array item the
+                // same way ParserFactory does, which is what makes it usable as an override description.
                 'comment' => $filter->comment,
                 'columnKind' => $column?->kind,
                 'enum' => $column?->enum,
@@ -225,8 +224,8 @@ $result = match ($mode) {
             ];
         }, $facts->filters);
 
-        // visitedBasenames proves cache soundness: a Query class reached only via the return-type
-        // follow-beyond still lands in the trace's dependency files (edit it → fragment invalidates).
+        // visitedBasenames is the cache-soundness check: a Query class reached only via the return-type
+        // follow-beyond still lands in the trace's dependency files, so editing it invalidates.
         return [
             'subjectModel' => $facts->subjectModel,
             'filters' => $filters,
@@ -235,10 +234,9 @@ $result = match ($mode) {
         ];
     })(),
     'trace-rules' => (static function () use ($engine, $ref): array {
-        // The REAL RulesMethodVisitor runs in the engine subprocess: it must recover a rules()
-        // method's returned array with AST-level constant folding so Rule::enum(...) descriptors
-        // survive (validation §1). Returns each field's recovered rule names + params, plus the
-        // fields present but unrecoverable.
+        // RulesMethodVisitor recovers a rules() method's returned array with AST-level constant folding
+        // so Rule::enum(...) descriptors survive. Returns each field's rule names + params, plus the
+        // fields that are present but unrecoverable.
         $visitor = new RulesMethodVisitor;
         $engine->trace($ref, $visitor);
 
@@ -254,9 +252,9 @@ $result = match ($mode) {
         return ['fields' => $fields, 'unrecoverable' => $visitor->unrecoverableFields()];
     })(),
     'trace-inline-rules' => (static function () use ($engine, $ref): array {
-        // The REAL InlineRulesVisitor traces the CONTROLLER action; the engine's bounded descent must
-        // reach a `Validator::make($data, [...])` call inside a Queries class one hop away and recover
-        // its rule array (the modular GET-params validation pattern).
+        // InlineRulesVisitor traces the controller action, so the engine's bounded descent has to reach
+        // a `Validator::make($data, [...])` call inside a Queries class one hop away and recover its
+        // rule array — the modular GET-params validation pattern.
         $visitor = new InlineRulesVisitor;
         $engine->trace($ref, $visitor);
 
@@ -284,8 +282,8 @@ $result = match ($mode) {
         ];
     })(),
     'trace-pagination-terminal' => (static function () use ($engine, $ref): array {
-        // The resource paginating terminals — proves the shared visitor detects paginate/
-        // simplePaginate/cursorPaginate on a real builder receiver at chain depth (Wave C item 1).
+        // The shared visitor detects paginate/simplePaginate/cursorPaginate on a real builder receiver
+        // at chain depth.
         $visitor = new PaginationTerminalVisitor([
             'paginate' => 'length',
             'simplePaginate' => 'simple',
@@ -296,9 +294,9 @@ $result = match ($mode) {
         return ['paginates' => $visitor->paginates, 'kind' => $visitor->kind];
     })(),
     'trace-rate-limiter' => (static function () use ($engine, $file, $line): array {
-        // The REAL RateLimiterLimitVisitor over a named limiter's RateLimiter::for closure located by
-        // line — proves the engine's closure trace folds an idiomatic `fn ($r) => Limit::perMinute(60)
-        // ->by(…)` arrow limiter to concrete numbers (small-integrations §1 feasibility, Wave D item 4).
+        // RateLimiterLimitVisitor over a named limiter's RateLimiter::for closure, located by line: the
+        // engine's closure trace folds an idiomatic `fn ($r) => Limit::perMinute(60)->by(…)` arrow
+        // limiter to concrete numbers.
         $visitor = new RateLimiterLimitVisitor;
         $engine->trace(new ActionRef($file, null, '{closure}', $line), $visitor);
         $limit = $visitor->limit;
@@ -312,8 +310,8 @@ $result = match ($mode) {
         ];
     })(),
     'trace-created-resource' => (static function () use ($engine, $ref): array {
-        // Proves the CreatedResourceVisitor recognises a resource wrapping a real Model::create() on
-        // the real engine — the 201 status recovery (Wave C item 4).
+        // CreatedResourceVisitor recognises a resource wrapping a real Model::create() — the 201 status
+        // recovery.
         $visitor = new CreatedResourceVisitor;
         $engine->trace($ref, $visitor);
 

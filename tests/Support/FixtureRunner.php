@@ -9,10 +9,9 @@ use Docuccino\Core\Inference\ClassMetadata;
 use RuntimeException;
 
 /**
- * Drives the {@see engine-runner.php} subprocess against `tests/fixture-app/app/`
- * and decodes its JSON result. Keeps the fixture app's Laravel/Larastan out of
- * the Pest process (avoiding a symfony/console version clash) and mirrors how
- * the engine really runs — inside the host app's own process.
+ * Drives the {@see engine-runner.php} subprocess against `tests/fixture-app/app/` and decodes its JSON
+ * result. This keeps the fixture app's Laravel/Larastan out of the Pest process (they clash over
+ * symfony/console) and mirrors how the engine really runs — inside the host app's own process.
  */
 final class FixtureRunner
 {
@@ -58,8 +57,8 @@ final class FixtureRunner
     }
 
     /**
-     * Trace a controller with the REAL QueryBuilderTraceVisitor AND enrich its exact filters with the
-     * REAL FilterColumnResolver: returns the recovered subject model plus, per filter, the resolved
+     * Trace a controller with the real QueryBuilderTraceVisitor, then enrich its exact filters with the
+     * real FilterColumnResolver: returns the recovered subject model plus, per filter, the resolved
      * column cast shape (enum FQCN + backing values + case descriptions, or a native scalar schema).
      *
      * @return array<string, mixed>
@@ -70,9 +69,9 @@ final class FixtureRunner
     }
 
     /**
-     * Trace a class's `rules()` with the REAL RulesMethodVisitor: returns each field's recovered
-     * rule names/params/note (so a `Rule::enum(...)` descriptor's backing values + FQCN are visible)
-     * plus the fields present but unrecoverable.
+     * Trace a class's `rules()` with the real RulesMethodVisitor: returns each field's rule
+     * names/params/note (so a `Rule::enum(...)` descriptor's backing values + FQCN are visible) plus
+     * the fields that are present but unrecoverable.
      *
      * @return array<string, mixed>
      */
@@ -82,7 +81,7 @@ final class FixtureRunner
     }
 
     /**
-     * Trace a controller action with the REAL InlineRulesVisitor: the engine's bounded descent must
+     * Trace a controller action with the real InlineRulesVisitor: the engine's bounded descent has to
      * reach a `Validator::make($data, [...])` inside a Queries class one hop away and recover its rule
      * array. Same shape as {@see traceRules()}.
      *
@@ -94,8 +93,8 @@ final class FixtureRunner
     }
 
     /**
-     * Trace a controller with the REAL shared PaginationTerminalVisitor over the `jsonPaginate`
-     * terminal: returns whether it reached the terminal and the folded per-call-site overrides
+     * Trace a controller with the shared PaginationTerminalVisitor over the `jsonPaginate` terminal:
+     * returns whether it reached the terminal, plus the folded per-call-site overrides
      * (`maxResults`/`defaultSize`, from the outermost call's int args).
      *
      * @return array<string, mixed>
@@ -106,8 +105,8 @@ final class FixtureRunner
     }
 
     /**
-     * Trace a controller with the REAL PaginationTerminalVisitor over the resource paginating terminals:
-     * returns whether it reached a `paginate`/`simplePaginate`/`cursorPaginate` terminal and its kind.
+     * Trace a controller with the PaginationTerminalVisitor over the resource paginating terminals:
+     * returns whether it reached a `paginate`/`simplePaginate`/`cursorPaginate` terminal, and its kind.
      *
      * @return array<string, mixed>
      */
@@ -117,8 +116,8 @@ final class FixtureRunner
     }
 
     /**
-     * Trace a controller with the REAL CreatedResourceVisitor: returns whether the action returns a
-     * resource wrapped directly around a `Model::create(...)` (→ a 201 response).
+     * Trace a controller with the CreatedResourceVisitor: returns whether the action returns a resource
+     * wrapped directly around a `Model::create(...)` — i.e. a 201.
      *
      * @return array<string, mixed>
      */
@@ -128,9 +127,9 @@ final class FixtureRunner
     }
 
     /**
-     * Trace a named rate limiter's `RateLimiter::for` closure (located by line) with the REAL
-     * RateLimiterLimitVisitor: returns whether it folded to a concrete limit and the recovered
-     * maxAttempts + decay-seconds (or the bail signal for a limiter it could not fold).
+     * Trace a named rate limiter's `RateLimiter::for` closure (located by line) with the
+     * RateLimiterLimitVisitor: returns whether it folded to a concrete limit plus the recovered
+     * maxAttempts + decay seconds, or the bail signal for a limiter it couldn't fold.
      *
      * @return array<string, mixed>
      */
@@ -140,8 +139,8 @@ final class FixtureRunner
     }
 
     /**
-     * The real engine's {@see ClassMetadata} for a class (its property
-     * names + reflected types), serialized. The file argument is unused for this mode.
+     * Serialized {@see ClassMetadata} for a class (property names + reflected types). The file argument
+     * is unused in this mode.
      *
      * @return array<string, mixed>
      */
@@ -151,10 +150,9 @@ final class FixtureRunner
     }
 
     /**
-     * The real engine's {@see ActionAnalysis} for a non-action callable —
-     * an exception handler `render()` method (pass `$class`+`$method`, optionally a narrowing
-     * `$param`+`$narrowType`) or a render-callback closure located by line (pass `$line`, empty
-     * `$class`/`$method`). Serialized.
+     * Serialized {@see ActionAnalysis} for a non-action callable: either a method (pass
+     * `$class`+`$method`, optionally a narrowing `$param`+`$narrowType`) or a closure located by line
+     * (pass `$line` with an empty `$class`/`$method`).
      *
      * @return array<string, mixed>
      */
@@ -170,12 +168,12 @@ final class FixtureRunner
     }
 
     /**
-     * Analyse two callables through ONE engine under a deliberately tiny per-analysis file budget, so a
-     * shared helper truncates on a budget-spending path and has headroom on a direct one — the refiner's
-     * "never memoise a budget-truncated shape" determinism guard. Returns `{first, second}` analyses.
+     * Analyse two callables through one engine under a tiny per-analysis file budget, so a shared helper
+     * truncates on a budget-spending path and has headroom on a direct one — the refiner's "never
+     * memoise a budget-truncated shape" guard. Returns `{first, second}` analyses.
      *
-     * The runner takes app-relative paths directly (not resolved through {@see path()}), so pass paths
-     * relative to the fixture app root (e.g. `app/Support/BudgetRenderer.php`).
+     * This mode's paths go to the runner as-is rather than through {@see path()}, so pass them relative
+     * to the fixture app root (e.g. `app/Support/BudgetRenderer.php`).
      *
      * @param  array{0: string, 1: string, 2: string}  $first  [relPath, class, method]
      * @param  array{0: string, 1: string, 2: string}  $second  [relPath, class, method]
@@ -191,11 +189,10 @@ final class FixtureRunner
      */
     private static function invoke(string $mode, string $file, string $class, string $method, string ...$extra): array
     {
-        // Harden the subprocess against the historical fixture-group flake (2026-08-06): the engine cold-compiles a PHPStan container and analyses the whole
-        // Laravel+Larastan app, so it needs a generous memory ceiling; pcov is disabled because
-        // subprocess coverage is invisible anyway (docs/testing.md) and only slows/bloats the run.
-        // stderr is captured to a temp file so an OOM/fatal surfaces in the failure message instead
-        // of the opaque "produced no result: ''".
+        // The engine cold-compiles a PHPStan container and analyses the whole Laravel+Larastan app, so
+        // it needs a generous memory ceiling. pcov is off because subprocess coverage is invisible
+        // anyway (docs/testing.md) and only slows the run down. stderr goes to a temp file so an
+        // OOM/fatal surfaces in the failure message rather than an opaque "produced no result: ''".
         $stderrFile = tempnam(sys_get_temp_dir(), 'docuccino-runner-stderr-');
 
         $command = implode(' ', array_map('escapeshellarg', [

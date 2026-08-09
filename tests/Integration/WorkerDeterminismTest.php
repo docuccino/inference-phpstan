@@ -7,12 +7,10 @@ namespace Docuccino\Inference\PhpStan\Tests\Integration;
 use Docuccino\Inference\PhpStan\Tests\Support\PoolRunner;
 
 /**
- * Phase 2b determinism invariants (plan §Verification) for the orchestrated
- * engine, all out-of-process against the fixture app:
- *   (a) 1-worker vs 4-worker (with recycling) produce byte-identical results;
- *   (b) cold-cache vs warm-cache produce byte-identical results incl. diagnostics;
- *   (c) a poison action bisects to UnknownT + an error diagnostic while its
- *       siblings still succeed.
+ * Determinism invariants for the orchestrated engine, all out-of-process against the fixture app:
+ * 1 worker vs 4 workers (with recycling) are byte-identical; cold cache vs warm cache are
+ * byte-identical including diagnostics; and a poison action bisects to UnknownT plus an error
+ * diagnostic while its siblings still succeed.
  */
 beforeEach(function (): void {
     ensureFixtureAvailable(PoolRunner::available());
@@ -54,21 +52,20 @@ it('produces byte-identical results for 1 worker vs 4 workers with recycling', f
     expect($four)->toBe($one)
         ->and(PoolRunner::decode($one))->toHaveCount(12);
 
-    // The refinement / enum-fold / StatusMarkerT machinery actually ran through the pool, so the
-    // byte-identity above is a real assertion over the NEW output rather than a no-op. Both refined
-    // shapes are represented:
+    // Both refined shapes below prove the refinement / enum-fold / StatusMarkerT machinery actually ran
+    // through the pool, so the byte-identity above is an assertion over real output rather than a no-op.
     $results = PoolRunner::decode($one);
 
-    // (a) a concrete enum case bound at the call site → accessors fold to per-case literals and the
-    //     HTTP status resolves to the folded 403 (so its body `status` is a literal, not a marker).
+    // A concrete enum case bound at the call site: accessors fold to per-case literals and the HTTP
+    // status resolves to the folded 403, so its body `status` is a literal rather than a marker.
     $folded = refinedShape($results['App\\Http\\Controllers\\ProblemController::forbidden']);
     expect($folded['status'])->toBe(['kind' => 'literal', 'base' => 'int', 'value' => 403])
         ->and($folded['members']['type'])->toBe('literal')    // enum ->value → const URI
         ->and($folded['members']['title'])->toBe('literal')   // match()-method → const
         ->and($folded['members']['status'])->toBe('literal'); // folded from the same status() accessor
 
-    // (b) the status forwarded from the action's OWN parameter → permissive status (never guessed), and
-    //     the body member reading that accessor survives as a StatusMarkerT for the response seam.
+    // A status forwarded from the action's own parameter stays permissive rather than guessed, and the
+    // body member reading that accessor survives as a StatusMarkerT for the response seam.
     $marked = refinedShape($results['App\\Http\\Controllers\\ProblemController::dynamic']);
     expect($marked['status']['kind'])->toBe('unknown')
         ->and($marked['members']['type'])->toBe('literal')    // the non-status literals still fold
@@ -82,7 +79,7 @@ it('produces byte-identical results for cold cache vs warm cache', function (): 
     $warm = PoolRunner::run(workers: 2, maxActionsPerWorker: 50, cacheDir: $cacheDir);
 
     expect($warm)->toBe($cold);
-    // The warm run must have been served from the cache, not recomputed.
+    // …and the warm run was served from the cache, not recomputed.
     expect(glob($cacheDir.'/actions/*.json') ?: [])->not->toBeEmpty();
 })->group('fixture');
 

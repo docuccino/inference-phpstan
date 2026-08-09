@@ -10,25 +10,18 @@ use Docuccino\Core\Inference\ClassMetadata;
 use Docuccino\Core\Inference\ClassRef;
 
 /**
- * A filesystem-backed {@see EngineResultCache}.
+ * A filesystem-backed {@see EngineResultCache}, laid out as `<baseDir>/{actions,classes}/<primary>.json`
+ * where `<primary>` = sha256(fingerprint prefix ‖ entry identity ‖ source-file hash). Each entry also
+ * embeds a `dependencyFiles` manifest (path → hash) and a `contentKey` folding those hashes in, which is
+ * what makes invalidation sound: a lookup re-hashes every recorded dependency, and a missing file, a
+ * changed hash or a `contentKey` that no longer recomputes is a miss — so an edit three calls deep is
+ * caught. The stored payload is the value's canonical `toArray()`, so a hit round-trips to byte-identical
+ * output.
  *
- * Layout: `<baseDir>/actions/<primary>.json` and `<baseDir>/classes/<primary>.json`,
- * where `<primary>` = sha256(version fingerprint prefix ‖ per-entry identity ‖
- * action-file hash). Each entry embeds a `dependencyFiles` manifest (path → hash)
- * and a `contentKey` that folds in every dependency-file hash — the design's full
- * key (§8), realised as depfile-style invalidation:
+ * Writes go to a unique temp file and are `rename()`d into place, atomic on one filesystem; reads tolerate
+ * absent, partial and corrupt files. Paths are never identity — only their content hashes are.
  *
- *   - lookup loads by primary key, then re-hashes every recorded dependency file;
- *     any missing file or hash mismatch (or a recomputed `contentKey` that no
- *     longer matches) is a miss, so a change three calls deep invalidates soundly;
- *   - the stored `payload` is the canonical `toArray()` of the value, so a hit
- *     round-trips back to byte-identical output.
- *
- * Concurrency-safe: writes go to a unique temp file and are `rename()`d into place
- * (atomic on the same filesystem); reads tolerate absent/partial/corrupt files.
- * No absolute paths leak into keys as identity — only their content hashes do.
- *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final readonly class FilesystemEngineResultCache implements EngineResultCache
 {
@@ -71,8 +64,7 @@ final readonly class FilesystemEngineResultCache implements EngineResultCache
 
     public function putClass(ClassRef $class, ClassMetadata $metadata, VersionFingerprint $fingerprint): void
     {
-        // A class's only dependency is its own source file (when known); the global
-        // fingerprint covers everything else.
+        // A class's only dependency is its own source file; the fingerprint covers everything else.
         $deps = $class->file !== null ? [$class->file] : [];
 
         $this->store('classes', $this->classKey($class, $fingerprint), $metadata->toArray(), $deps);
@@ -206,8 +198,8 @@ final readonly class FilesystemEngineResultCache implements EngineResultCache
             @mkdir($dir, 0755, true);
         }
 
-        // random_int (not bin2hex(random_bytes(…))): its int return type is unambiguous in every
-        // supported analyser version, and 63 bits of entropy beats the 48 it replaces.
+        // random_int over bin2hex(random_bytes(…)): its int return type is unambiguous in every supported
+        // analyser version, and 63 bits of entropy beats the 48 it replaces.
         $tmp = $path.'.'.getmypid().'.'.dechex(random_int(0, PHP_INT_MAX)).'.tmp';
         if (@file_put_contents($tmp, $contents) === false) {
             return;

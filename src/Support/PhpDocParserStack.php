@@ -15,14 +15,12 @@ use PHPStan\PhpDocParser\ParserConfig;
 use Throwable;
 
 /**
- * The single phpstan/phpdoc-parser stack — the one type/doc grammar used everywhere (design §6).
- * Owns the lexer + parser construction and the two tolerant parse entry points (a raw docblock to a
- * {@see PhpDocNode}; a type string to a {@see TypeNode}), so the adapter's docblock reader, the
- * engine's docblock reader and the attribute type-string parser share one wiring instead of each
- * re-rolling it. Lives here (not in the framework-agnostic `docuccino/core`) because core stays
- * free of the phpdoc-parser dependency.
+ * The one phpstan/phpdoc-parser stack, so there's a single type/doc grammar everywhere: lexer and parser
+ * construction plus two tolerant entry points (raw docblock → {@see PhpDocNode}, type string →
+ * {@see TypeNode}). Lives here rather than in `docuccino/core` to keep core free of the phpdoc-parser
+ * dependency.
  *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final class PhpDocParserStack
 {

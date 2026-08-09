@@ -8,17 +8,15 @@ use Docuccino\Core\Inference\NullTypeEngine;
 use Docuccino\Core\Inference\TypeEngine;
 
 /**
- * The body of a worker process (design §3). It boots once (the engine is handed
- * in already constructed), announces readiness, then serves one {@see ActionRef}
- * per NDJSON request line, streaming back one result line each — flushed
- * immediately so the parent can track progress and enforce per-action timeouts.
+ * The body of a worker process: boots once with an already-constructed engine, announces readiness, then
+ * serves one {@see ActionRef} per NDJSON request line and flushes each result immediately so the parent can
+ * track progress and enforce per-action timeouts.
  *
- * Self-recycling: the loop exits cleanly (emitting a `bye`) after `maxActions`
- * analyses or once `memory_get_usage(true)` crosses `rssLimitBytes` — the parent
- * respawns a fresh worker. A poison action that hard-crashes mid-analysis never
- * returns a result line; the parent detects the truncated stream and contains it.
+ * Self-recycling: exits cleanly with a `bye` after `maxActions` analyses or once `memory_get_usage(true)`
+ * crosses `rssLimitBytes`, and the parent respawns. A poison action that hard-crashes never sends a result
+ * line at all; the parent sees the truncated stream and contains it.
  *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final class WorkerLoop
 {
@@ -57,8 +55,7 @@ final class WorkerLoop
 
             $id = is_string($message['id'] ?? null) ? $message['id'] : $ref->symbol();
 
-            // May never return: a fatal here (the poison case) crashes the worker,
-            // and the parent's containment takes over.
+            // May never return — a fatal here crashes the worker and the parent contains it.
             $analysis = $this->engine->analyzeAction($ref);
             $this->write(WorkerProtocol::result($id, $analysis->toArray()));
 

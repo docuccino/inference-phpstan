@@ -37,6 +37,9 @@
         "larastan/larastan": "^3.10",
         "pestphp/pest": "^4.0"
     },
+    "suggest": {
+        "larastan/larastan": "^3.10 - required at runtime for inference; without it the engine cannot boot and Docuccino falls back to docblock/attribute-only documentation"
+    },
     "autoload": {
         "psr-4": {
             "Docuccino\\Inference\\PhpStan\\": "src/"

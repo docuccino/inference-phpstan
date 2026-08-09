@@ -7,11 +7,9 @@ namespace Docuccino\Inference\PhpStan\Runtime;
 use RuntimeException;
 
 /**
- * Thrown by {@see RuntimeAdapterFactory} when the installed PHPStan version is
- * outside the tested-minor allowlist. The allowlist is widened only as the CI
- * matrix goes green — never open-ended (design §1).
+ * Thrown by {@see RuntimeAdapterFactory} when the installed PHPStan is outside the tested-minor allowlist.
  *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final class UnsupportedPhpStanVersionException extends RuntimeException
 {

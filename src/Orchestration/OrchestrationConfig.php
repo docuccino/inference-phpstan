@@ -7,14 +7,13 @@ namespace Docuccino\Inference\PhpStan\Orchestration;
 use Docuccino\Core\Inference\TypeEngine;
 
 /**
- * Tuning for the parent orchestrator and its workers (design §3).
+ * Tuning for the parent orchestrator and its workers.
  *
- * The `workerBootstrap` is a host-supplied PHP file that sets up autoloading and
- * returns a constructed {@see TypeEngine}; each worker
- * `require`s it once at startup (see `bin/worker.php`). Keeping bootstrap out of
- * the package is what lets the same worker binary run in any host app.
+ * `workerBootstrap` is a host-supplied PHP file that sets up autoloading and returns a constructed
+ * {@see TypeEngine}; each worker `require`s it once at startup (see `bin/worker.php`). Keeping bootstrap out
+ * of the package is what lets one worker binary run in any host app.
  *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final readonly class OrchestrationConfig
 {
@@ -41,9 +40,7 @@ final readonly class OrchestrationConfig
         public array $env = [],
     ) {}
 
-    /**
-     * K default = min(cores - 1, 8), floored at 1 (design §3).
-     */
+    /** Defaults to min(cores - 1, 8), floored at 1. */
     public function resolvedWorkers(): int
     {
         if ($this->workers > 0) {

@@ -10,12 +10,11 @@ use Docuccino\Core\Inference\DType\StatusMarkerT;
 use Docuccino\Inference\PhpStan\Tests\Support\FixtureRunner;
 
 /**
- * Real-engine truth for response-shape refinement through project-code helper indirection (the
- * inferred-handler flagship): the ACTUAL PHPStan/Larastan engine follows an invokable renderer's
- * `match (true)` arms into private methods and a static `ProblemResponse::make()`-style helper whose
- * declared bare `JsonResponse` return erased the shape — recovering per-arm status, payload shape and
- * `application/problem+json` content type. This is engine truth a stub cannot stand in for; each row
- * pins one refinement shape the capability must handle.
+ * Real-engine coverage for response-shape refinement through project-code helper indirection: the
+ * engine follows an invokable renderer's `match (true)` arms into private methods and a static
+ * `ProblemResponse::make()` helper whose declared bare `JsonResponse` return erased the shape,
+ * recovering per-arm status, payload shape and content type. A stub can't stand in for this; each
+ * test pins one refinement shape the capability has to handle.
  */
 beforeEach(function (): void {
     ensureFixtureAvailable(FixtureRunner::available());
@@ -152,9 +151,8 @@ it('the broad non-JSON early-out (return null) never shadows the per-type respon
 })->group('fixture');
 
 /**
- * The recovered shape of one `App\Exceptions\RefinerEdgeCases` (fixture-app) method: folded status,
- * explicit content type, body members, and the raw typeArgs (empty when nothing richer than the bare
- * type was recovered).
+ * The recovered shape of one `App\Exceptions\RefinerEdgeCases` method: folded status, explicit content
+ * type, body members, and the raw typeArgs (empty when nothing richer than the bare type came back).
  */
 function edgeShape(string $method): array
 {
@@ -193,8 +191,8 @@ function edgeShape(string $method): array
 }
 
 it('folds a NARROWED enum variable, not just a written-out Enum::Case argument', function (): void {
-    // The call site passes a VARIABLE that PHPStan narrowed to exactly one case, so the fold must read
-    // the case off the scope's enum cases (the second enumCaseOf path) rather than off a const-fetch.
+    // The call site passes a variable PHPStan narrowed to exactly one case, so the fold has to read the
+    // case off the scope's enum cases (the second enumCaseOf path) rather than a const-fetch.
     $shape = edgeShape('narrowedEnumVariable');
 
     expect($shape['status'])->toBe(409) // InvoiceProblem::Conflict->status(), folded through the variable
@@ -203,9 +201,9 @@ it('folds a NARROWED enum variable, not just a written-out Enum::Case argument',
 })->group('fixture');
 
 it('recovers the conditionally-appended body member when the caller passes a non-null $data', function (): void {
-    // fromProblem()'s `if ($data !== null) { $body['data'] = $data; }` arm is dead for every other caller
-    // (they all pass null), so the appended member's widening was unproven. It must appear alongside the
-    // folded per-case members, widened rather than pinned (its value does not fold).
+    // fromProblem()'s `if ($data !== null) { $body['data'] = $data; }` arm is dead for every other
+    // caller (they all pass null). The appended member must show up alongside the folded per-case
+    // members, widened rather than pinned — its value doesn't fold.
     $shape = edgeShape('conditionalAppend');
 
     expect($shape['status'])->toBe(403)
@@ -223,13 +221,13 @@ it('matches the Content-Type header case-insensitively, and recovers none when a
 })->with([
     // A lower-case key still yields the explicit media type…
     'lower-case content-type key' => ['lowercaseContentType', 'application/problem+json', 418],
-    // …and with NO headers argument no content type is recovered (the builder defaults it, never guesses).
+    // …and with no headers argument nothing is recovered — the builder defaults it, we never guess.
     'no headers argument at all' => ['noHeaders', null, 422],
 ])->group('fixture');
 
 it('declines a mutually recursive helper via the cycle guard (no runaway descent)', function (): void {
-    // cyclicA() → cyclicB() → cyclicA(): the second visit hits the in-progress guard and declines, so the
-    // shape stays bare instead of recursing forever, and the analysis still completes cleanly.
+    // cyclicA() → cyclicB() → cyclicA(): the second visit hits the in-progress guard and declines, so
+    // the shape stays bare instead of recursing forever and the analysis still completes.
     $shape = edgeShape('cyclicA');
 
     expect($shape['typeArgs'])->toBe([])
@@ -238,7 +236,7 @@ it('declines a mutually recursive helper via the cycle guard (no runaway descent
 
 it('follows an error-render helper into a PRIMED modular root (prime-scope containment, not descend)', function (): void {
     // ModularRenderer (app/, descend + prime scope) → ModularProblemResponse::make (Modules\Billing,
-    // primed but OUTSIDE the descend scope). The refiner's containment gate is prime scope, so it folds
+    // primed but outside the descend scope). The refiner's containment gate is prime scope, so it folds
     // the modular helper's 451 shape; a descend-scoped gate would decline the module and leave it bare.
     $analysis = ActionAnalysis::fromArray(['returns' => FixtureRunner::analyzeCallable(
         'app/Exceptions/ModularRenderer.php',
@@ -260,13 +258,13 @@ it('follows an error-render helper into a PRIMED modular root (prime-scope conta
     expect($members['type'])->toEqual(new LiteralT('https://errors.test/problems/modular'));
 })->group('fixture');
 
-// --- Value-flow: per-arm literals fold into body members through the helper's parameters ---
+// Value-flow: per-arm literals fold into body members through the helper's parameters.
 
 it('folds a ONE-HOP arm’s per-arm literals into the body members (409: type const + status literal)', function (): void {
-    // OrderConflict → make('https://…/conflict', 'Conflict', 409, $e->getMessage()): the call-site literals
-    // bind to make()'s $type/$title/$status parameters, so the recovered body carries them as literals —
-    // exactly what documents `type` as a `const` and `status` as 409. $detail ($e->getMessage()) does NOT
-    // fold and stays widened (honest: never pinned to a value that does not flow to it).
+    // OrderConflict → make('https://…/conflict', 'Conflict', 409, $e->getMessage()): the call-site
+    // literals bind to make()'s $type/$title/$status parameters, so the recovered body carries them as
+    // literals — which is what documents `type` as a const and `status` as 409. $detail doesn't fold
+    // and stays widened; we never pin a value that doesn't flow to it.
     $members = invokeShape('App\\Exceptions\\OrderConflictException')['members'];
 
     expect($members['type'])->toEqual(new LiteralT('https://errors.test/problems/conflict'))
@@ -276,8 +274,8 @@ it('folds a ONE-HOP arm’s per-arm literals into the body members (409: type co
 })->group('fixture');
 
 it('folds a TWO-HOP arm’s per-arm literals two hops out (404: type const + status literal)', function (): void {
-    // NotFound → renderNotFound() → make('https://…/not-found', 'Not Found', 404, …): the literals live at
-    // the innermost make() call inside renderNotFound and bind there, propagating fully-resolved up to __invoke.
+    // NotFound → renderNotFound() → make('https://…/not-found', 'Not Found', 404, …): the literals live
+    // at the innermost make() call and bind there, propagating fully resolved up to __invoke.
     $members = invokeShape('App\\Exceptions\\InvoiceNotFoundException')['members'];
 
     expect($members['type'])->toEqual(new LiteralT('https://errors.test/problems/not-found'))
@@ -286,8 +284,8 @@ it('folds a TWO-HOP arm’s per-arm literals two hops out (404: type const + sta
 
 it('marks the status body member as a StatusMarkerT when the status does not fold (renderHttp)', function (): void {
     // renderHttp passes $e->getStatusCode() through make()'s $status parameter: the HTTP status stays
-    // permissive AND the body `status` member — whose value IS that same parameter — becomes a
-    // StatusMarkerT for the response seam to fill with the concrete documented status (never guessed).
+    // permissive, and the body `status` member — the same parameter — becomes a StatusMarkerT for the
+    // response seam to fill with the documented status rather than a guess.
     $members = invokeShape('Symfony\\Component\\HttpKernel\\Exception\\HttpException')['members'];
 
     expect($members['status'])->toBeInstanceOf(StatusMarkerT::class)
@@ -297,8 +295,8 @@ it('marks the status body member as a StatusMarkerT when the status does not fol
 })->group('fixture');
 
 it('keeps DIRECTLY-written body literals as literals (422: type/title/status const, dynamic members widened)', function (): void {
-    // validation() writes type/title/status as literals directly in the array (no parameter hop), so they
-    // are recovered as literals; $detail and the $errors list are dynamic and stay widened.
+    // validation() writes type/title/status directly in the array (no parameter hop) so they recover as
+    // literals; $detail and the $errors list are dynamic and stay widened.
     $members = invokeShape('Illuminate\\Validation\\ValidationException')['members'];
 
     expect($members['type'])->toEqual(new LiteralT('https://errors.test/problems/validation'))
@@ -309,14 +307,14 @@ it('keeps DIRECTLY-written body literals as literals (422: type/title/status con
 })->group('fixture');
 
 it('folds the direct-constructor arm’s literal body members (429)', function (): void {
-    // RateLimited returns new JsonResponse([...all literals...], 429): every member is a literal, status included.
+    // RateLimited returns new JsonResponse([…all literals…], 429): every member folds, status included.
     $members = invokeShape('App\\Exceptions\\RateLimitedException')['members'];
 
     expect($members['type'])->toEqual(new LiteralT('https://errors.test/problems/rate-limited'))
         ->and($members['status'])->toEqual(new LiteralT(429));
 })->group('fixture');
 
-// --- Enum-case accessor folding: a bound case folds ->value / ->name / method accessors (the final hop) ---
+// Enum-case accessor folding: a bound case folds ->value / ->name / method accessors.
 
 it('folds a bound enum case’s accessors into per-case literals + status (403, one hop)', function (): void {
     // InvoiceForbidden → fromProblem(InvoiceProblem::Forbidden, …): the case binds into the helper's
@@ -339,7 +337,7 @@ it('folds a bound enum case’s accessors into per-case literals + status (403, 
 })->group('fixture');
 
 it('folds a bound enum case through a TWO-hop re-home (404: missing)', function (): void {
-    // InvoiceMissing → renderProblem(InvoiceProblem::NotFound, …) → fromProblem(…): the accessor provenance
+    // InvoiceMissing → renderProblem(InvoiceProblem::NotFound, …) → fromProblem(…): accessor provenance
     // re-homes through renderProblem's parameter, then folds when the case binds at the outer call.
     $shape = invokeShape('App\\Exceptions\\InvoiceMissingException');
     $members = $shape['members'];
@@ -377,25 +375,24 @@ function pairStatus(array $analysis): ?int
 }
 
 it('never reuses a budget-truncated helper shape where a later analysis had headroom (determinism guard)', function (): void {
-    // ONE engine, tiny file budget (2): BudgetRenderer::deep() spends the budget through BudgetPad +
-    // BudgetShared, so the BudgetLeaf hop is cut off → BudgetShared::make() recovers a TRUNCATED (bare)
-    // shape first. BudgetRenderer::direct() then reaches BudgetShared::make() with headroom. The refiner
-    // must not have memoised the truncation: the direct path must recover the full 418 shape. Without
-    // the "don't memoise a truncated computation" rule this is a latent 1-vs-8-worker nondeterminism.
+    // One engine, tiny file budget (2): deep() spends the budget through BudgetPad + BudgetShared, so
+    // the BudgetLeaf hop is cut off and BudgetShared::make() recovers a truncated (bare) shape first.
+    // direct() then reaches the same helper with headroom and must get the full 418 shape — the refiner
+    // never memoises a truncated computation. Without that rule this is a latent 1-vs-8-worker
+    // nondeterminism.
     $pair = FixtureRunner::refinePair(
         2,
         ['app/Support/BudgetRenderer.php', 'App\\Support\\BudgetRenderer', 'deep'],
         ['app/Support/BudgetRenderer.php', 'App\\Support\\BudgetRenderer', 'direct'],
     );
 
-    expect(pairStatus($pair['first']))->toBeNull()   // deep path: BudgetLeaf hop cut off → bare/truncated
-        ->and(pairStatus($pair['second']))->toBe(418); // direct path: full budget → full 418 shape, not the stale truncation
+    expect(pairStatus($pair['first']))->toBeNull()   // deep path: BudgetLeaf hop cut off → bare
+        ->and(pairStatus($pair['second']))->toBe(418); // direct path: full shape, not the stale truncation
 })->group('fixture');
 
 it('folds each case independently + deterministically (memoisation keyed per enum-case+method)', function (): void {
-    // The same helper + enum methods reached for two different cases fold to each case's OWN literals
-    // (the fold is memoised per enum-case+method, never leaking across cases), and repeating an analysis
-    // is byte-identical.
+    // The same helper + enum methods reached for two cases fold to each case's own literals — the fold
+    // is memoised per enum-case+method, so nothing leaks across cases — and repeats are identical.
     $forbidden = invokeShape('App\\Exceptions\\InvoiceForbiddenException')['members'];
     $missing = invokeShape('App\\Exceptions\\InvoiceMissingException')['members'];
     $forbiddenAgain = invokeShape('App\\Exceptions\\InvoiceForbiddenException')['members'];

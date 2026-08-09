@@ -14,11 +14,10 @@ use PhpParser\Node;
 use PHPStan\Analyser\Scope;
 
 /**
- * The engine-side {@see TypeScope}: the only type-engine surface a visitor sees.
- * Wraps a PHPStan `Scope` + {@see TypeTranslator}; `PhpParser\Node` crosses the
- * boundary while `PHPStan\*` stops here (design §4, Spike B).
+ * The engine-side {@see TypeScope} — the only type-engine surface a visitor sees. Wraps a PHPStan `Scope`
+ * plus {@see TypeTranslator}: `PhpParser\Node` crosses the boundary, `PHPStan\*` stops here.
  *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final class TypeScopeImpl implements TypeScope
 {
@@ -33,28 +32,23 @@ final class TypeScopeImpl implements TypeScope
     }
 
     /**
-     * The Scramble-Pro-beater. Three cases, in this load-bearing precedence
-     * (Spike B):
+     * Five cases, and the precedence is load-bearing — each earlier one folds at the AST level to stop
+     * PHPStan collapsing something we need:
      *
-     *   1. array literal      → recurse per item at the AST level, so factory
-     *      calls inside survive as descriptors (PHPStan would flatten them);
-     *   2. factory static-call → a call descriptor {factory, args}, folded
-     *      BEFORE asking PHPStan for the type (which would collapse it to the
-     *      factory's return class);
-     *   3. fluent method-call over a descriptor → the SAME descriptor with the
-     *      call appended to its chain, so `Rule::enum(...)->only([...])` survives
-     *      the AST-level fold (validation §4 #10);
-     *   4. enum-case constant → the case NAME as a scalar, so a case referenced
-     *      in a fluent arg (`->only([Status::Active])`) is recoverable — a bare
-     *      `::class` is left to case 5, and a non-enum class constant keeps its
-     *      PHPStan-folded scalar value;
-     *   5. genuine literal     → defer to PHPStan constant folding.
+     *   1. array literal → recurse per item, so factory calls inside survive as descriptors;
+     *   2. factory static-call → a call descriptor {factory, args}, captured before asking PHPStan for the
+     *      type (which would collapse it to the factory's return class);
+     *   3. fluent method-call over a descriptor → the same descriptor with the call appended, so
+     *      `Rule::enum(...)->only([...])` survives;
+     *   4. enum-case constant → the case name as a scalar, so `->only([Status::Active])` folds; a bare
+     *      `::class` and non-enum class constants fall through;
+     *   5. genuine literal → PHPStan's constant folding.
      *
-     * Returns null when nothing constant is recoverable.
+     * Null when nothing constant is recoverable.
      */
     public function constantValueOf(Node\Expr $expr): ?ConstValue
     {
-        // 1. Array literal — items are always ArrayItem in php-parser v5.
+        // 1. Array literal — every item is an ArrayItem in php-parser v5.
         if ($expr instanceof Node\Expr\Array_) {
             $items = [];
             foreach ($expr->items as $item) {
@@ -65,13 +59,12 @@ final class TypeScopeImpl implements TypeScope
             return ConstValue::array($items);
         }
 
-        // 2. Factory static-call — capture the call, do not fold it to its type.
+        // 2. Factory static-call — capture the call, don't fold it to its type.
         if ($expr instanceof Node\Expr\StaticCall
             && $expr->class instanceof Node\Name
             && $expr->name instanceof Node\Identifier
         ) {
-            // Record the FQCN (resolved through the scope's imports/aliases);
-            // ConstValue::render() shortens the class for display.
+            // Store the FQCN; ConstValue::render() shortens it for display.
             $factory = $this->scope->resolveName($expr->class).'::'.$expr->name->toString();
             $args = [];
             foreach ($expr->getArgs() as $arg) {
@@ -82,7 +75,7 @@ final class TypeScopeImpl implements TypeScope
             return ConstValue::descriptor($factory, $args);
         }
 
-        // 3. Fluent method-call over a descriptor receiver — append the call to the receiver's chain.
+        // 3. Fluent call over a descriptor receiver — append to the receiver's chain.
         if ($expr instanceof Node\Expr\MethodCall && $expr->name instanceof Node\Identifier) {
             $receiver = $this->constantValueOf($expr->var);
             if ($receiver !== null && $receiver->isDescriptor()) {
@@ -96,8 +89,7 @@ final class TypeScopeImpl implements TypeScope
             }
         }
 
-        // 4. Enum-case constant (`Status::Active`) → the case name, so fluent args referencing cases
-        //    fold. `::class` (a constant string) and non-enum class constants fall through to case 5.
+        // 4. Enum-case constant (`Status::Active`) → the case name.
         if ($expr instanceof Node\Expr\ClassConstFetch
             && $expr->class instanceof Node\Name
             && $expr->name instanceof Node\Identifier
@@ -107,8 +99,7 @@ final class TypeScopeImpl implements TypeScope
             return ConstValue::scalar($expr->name->toString());
         }
 
-        // 5. Genuine literal reached through any expression — let PHPStan fold it (a folded `null` is a
-        //    meaningful constant here, so it is kept verbatim rather than treated as "no fold").
+        // 5. Let PHPStan fold it. A folded `null` is a meaningful constant here, not a failure to fold.
         $folded = ScalarFold::of($this->scope->getType($expr));
 
         return $folded === null ? null : ConstValue::scalar($folded[0]);

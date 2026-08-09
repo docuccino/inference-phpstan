@@ -13,17 +13,14 @@ use ReflectionClass;
 use ReflectionProperty;
 
 /**
- * Builds {@see ClassMetadata} from native reflection + docblocks (design §4,
- * "Data/Resource/Model shapes, lazy + memoised"). Property types come from
- * native reflection (no analysis scope needed); prose + `@example` come from
- * {@see DocBlockReader}. Class-level `@property`/`@property-read` docblock tags are
- * enumerated as additional properties (the ide-helper convention that gives an
- * Eloquent model's magic attributes — which declare no PHP property — a typed,
- * high-confidence column universe), typed through the shared {@see TypeStringParser}
- * grammar. Native public properties win over a same-named docblock tag. Memoised per
- * class per run; always total (an unresolvable class yields an empty, well-formed metadata).
+ * Builds {@see ClassMetadata} from native reflection plus docblocks — no analysis scope needed. Class-level
+ * `@property`/`@property-read` tags count as extra properties, typed through the shared
+ * {@see TypeStringParser}: that ide-helper convention is what gives an Eloquent model's magic attributes
+ * (which declare no PHP property at all) a typed column universe. A native public property wins over a
+ * same-named tag. Memoised per class per run, and total — an unresolvable class yields empty but well-formed
+ * metadata.
  *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final class ClassMetadataFactory
 {
@@ -75,9 +72,8 @@ final class ClassMetadataFactory
         $classDoc = $reflection->getDocComment();
         $classDocComment = $classDoc === false ? null : $classDoc;
 
-        // `@property`/`@property-read` docblock columns (ide-helper convention): the authoritative,
-        // typed source for a model's magic attributes, which declare no PHP property. A native public
-        // property of the same name already covers it (more precise), so it is not overwritten.
+        // Docblock columns for magic attributes. A native property of the same name is more precise, so it
+        // isn't overwritten.
         foreach ($this->docBlocks->properties($classDocComment) as $name => $tag) {
             if (isset($seen[$name])) {
                 continue;

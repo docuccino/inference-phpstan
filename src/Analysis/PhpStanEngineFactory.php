@@ -21,15 +21,13 @@ use Docuccino\Inference\PhpStan\Support\ProjectFilter;
 use Docuccino\Inference\PhpStan\Translation\TypeTranslator;
 
 /**
- * Builds a booted {@see PhpStanTypeEngine}, wiring the per-minor adapter,
- * translator, file analyzer, project filter and metadata factory. If the
- * container/Larastan bootstrap fails or the PHPStan version is unsupported, it
- * degrades to {@see NullTypeEngine} so docblock/attribute-only docs still build
- * (design §3) — the caller always gets a total {@see TypeEngine}.
+ * Builds a booted {@see PhpStanTypeEngine}, wiring the per-minor adapter, translator, file analyzer, project
+ * filter and metadata factory. A failed container/Larastan bootstrap or an unsupported PHPStan version
+ * degrades to {@see NullTypeEngine}, so docblock/attribute-only docs still build and the caller always gets
+ * a total {@see TypeEngine}.
  *
- * Three composition modes: {@see create()} (single-process, Phase 2a),
- * {@see createCaching()} (single-process behind the result cache), and
- * {@see createOrchestrated()} (the worker pool — Phase 2b).
+ * Three modes: {@see create()} single-process, {@see createCaching()} behind the result cache, and
+ * {@see createOrchestrated()} across the worker pool.
  */
 final class PhpStanEngineFactory
 {
@@ -49,12 +47,11 @@ final class PhpStanEngineFactory
         $translator = new TypeTranslator;
         $fileAnalyzer = new FileAnalyzer($adapter);
         $normalize = static fn (string $path): string => $adapter->normalize($path);
-        // DESCEND scope (throws / QB-trace / inline-rules): the bounded interprocedural set.
+        // Descend scope (throws / QB-trace / inline-rules): the bounded interprocedural set.
         $projectFilter = new ProjectFilter($engineConfig->projectPaths, $normalize);
-        // PRIME scope (response-shape refiner + enum folder): every primed app source root, so an
-        // error-render helper in a modular `Modules\…` root folds too. Vendor is not a primed root, so
-        // the vendor containment is unchanged. Falls back to the descend scope when no prime scope was
-        // configured (they coincide for a non-modular app).
+        // Prime scope (refiner + enum folder): every primed app source root, so a render helper in a
+        // modular `Modules\…` root folds too. Vendor isn't a primed root, so containment is unchanged.
+        // Falls back to the descend scope, which is the same thing for a non-modular app.
         $refinerFilter = new ProjectFilter(
             $runtimeConfig->projectPaths !== [] ? $runtimeConfig->projectPaths : $engineConfig->projectPaths,
             $normalize,
@@ -71,10 +68,7 @@ final class PhpStanEngineFactory
         );
     }
 
-    /**
-     * Single-process engine behind the result cache (design §8). Falls back to a
-     * cache-less {@see NullTypeEngine} on boot failure, exactly like {@see create()}.
-     */
+    /** Single-process engine behind the result cache; falls back like {@see create()} on boot failure. */
     public function createCaching(
         RuntimeConfig $runtimeConfig,
         EngineConfig $engineConfig,
@@ -93,10 +87,9 @@ final class PhpStanEngineFactory
     }
 
     /**
-     * The orchestrated engine (design §3): `analyzeAction` fans out across a
-     * {@see WorkerPool}; `classMetadata`/`trace` stay in-process, lazily booted and
-     * cache-wrapped. The parent never boots a container up front — workers boot
-     * their own, and the in-process engine boots only if trace/metadata is used.
+     * `analyzeAction` fans out across a {@see WorkerPool}; `classMetadata`/`trace` stay in-process, lazily
+     * booted and cache-wrapped. The parent boots no container up front — workers boot their own, and the
+     * in-process engine boots only if trace/metadata is actually used.
      */
     public function createOrchestrated(
         RuntimeConfig $runtimeConfig,

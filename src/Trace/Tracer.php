@@ -14,20 +14,17 @@ use PhpParser\Node;
 use PHPStan\Analyser\Scope;
 
 /**
- * Drives the interprocedural, bounded, memoised, cycle-guarded walk behind
- * {@see TypeEngine::trace()} (design §4, Spike B). The
- * visitor supplies pure semantics + harvesting; the Tracer owns everything the
- * visitor cannot: depth, per-`class::method` memoisation, the cycle guard,
- * callee resolution, per-file parser priming (via the adapter), and — crucially
- * for determinism — descent ordering.
+ * Drives the interprocedural, bounded, memoised, cycle-guarded walk behind {@see TypeEngine::trace()}. The
+ * visitor is pure semantics and harvesting; the Tracer owns what the visitor can't see — depth,
+ * per-`class::method` memoisation, the cycle guard, callee resolution, per-file parser priming, and descent
+ * ordering (which is what makes the walk deterministic).
  *
- * `enterNode` returning `true` is a *request* the Tracer may decline: it only
- * descends into project-code callees within depth and file budget. A visitor
- * implementing {@see FollowsReturnType} widens this to non-vendor app callees
- * OUTSIDE the project paths whose RETURN TYPE it follows (the modular
- * `$query->query()` Query-Builder hop) — never into vendor.
+ * `enterNode` returning `true` is a request the Tracer may decline: it descends only into project callees
+ * within depth and file budget. A visitor implementing {@see FollowsReturnType} widens that to non-vendor
+ * app callees outside the project paths whose return type it follows (the modular `$query->query()` hop) —
+ * never into vendor.
  *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final class Tracer
 {
@@ -37,7 +34,7 @@ final class Tracer
     /** @var array<string, true> every file the walk located/analysed */
     private array $visitedFiles = [];
 
-    /** The normalised app vendor directory (follow-beyond never descends into it), or null when unset. */
+    /** The normalised app vendor directory, never descended into; null when unset. */
     private readonly ?string $vendorPrefix;
 
     public function __construct(
@@ -69,9 +66,8 @@ final class Tracer
         $descend = [];
 
         $this->adapter->processFile($file, function (Node $node, Scope $scope) use ($class, $method, &$descend): void {
-            // Confine the walk to the target class method. Matching on both the
-            // class and function name also excludes closures for free (their
-            // function name won't match) — no manual method stack needed.
+            // Confine the walk to the target method. Matching class + function name also excludes
+            // closures for free (their function name won't match) — no method stack needed.
             if ($scope->getClassReflection()?->getName() !== $class
                 || $scope->getFunction()?->getName() !== $method
             ) {
@@ -102,9 +98,8 @@ final class Tracer
             $descend[] = ['callee' => $callee, 'pos' => $pos < 0 ? PHP_INT_MAX : $pos];
         });
 
-        // Deterministic descent order: by source position (PHPStan's callback
-        // order for a chained expression is NOT left-to-right); first-seen wins
-        // (Spike B trap #5). Collect-then-recurse — never nest processNodes.
+        // Order by source position — PHPStan's callback order for a chained expression is not
+        // left-to-right — and let first-seen win. Collect then recurse; never nest processNodes.
         usort($descend, static fn (array $a, array $b): int => $a['pos'] <=> $b['pos']);
         $seen = [];
         foreach ($descend as $target) {
@@ -118,10 +113,9 @@ final class Tracer
     }
 
     /**
-     * Whether to descend into a callee that lies OUTSIDE the configured project paths: only when the
-     * visitor follows the callee's resolved return type (a Query-Builder visitor following a Spatie
-     * `QueryBuilder` subclass into a modular Queries class) AND the callee is not vendor code. Bounded
-     * like every descent by depth/file budget; vendor is never followed.
+     * Descend into a callee outside the configured project paths only when the visitor follows its resolved
+     * return type (a Query-Builder visitor following a Spatie `QueryBuilder` subclass into a modular
+     * Queries class) and the callee isn't vendor. Still bounded by depth/file budget.
      */
     private function shouldFollowBeyondProject(Node\Expr $node, Callee $callee, TypeScopeImpl $typeScope): bool
     {
@@ -133,8 +127,8 @@ final class Tracer
     }
 
     /**
-     * Whether a file is under the app's vendor tree. With no vendor boundary configured, everything
-     * outside the project paths is treated as vendor (follow-beyond stays off — the safe default).
+     * With no vendor boundary configured, everything outside the project paths counts as vendor, so
+     * follow-beyond stays off — the safe default.
      */
     private function isVendorFile(string $file): bool
     {

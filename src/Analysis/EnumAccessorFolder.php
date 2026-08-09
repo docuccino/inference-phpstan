@@ -15,26 +15,22 @@ use ReflectionEnum;
 use Throwable;
 
 /**
- * ROLE: folds an accessor on a KNOWN enum case to a literal — the final hop of the folding arc
- * (`inference-embedding.md` §4a step 3, the canonical account; {@see ResponseShapeRefiner} drives it).
+ * Folds an accessor on a known enum case to a literal — the last hop of the folding arc, driven by
+ * {@see ResponseShapeRefiner}. Two containment rules live here: `->value`/`->name` come off the case by
+ * reflection, so vendor enums work too (`->value` needs a backed enum, `->name` is universal); `->method()`
+ * only folds for a project enum, by analysing one body with `$this` narrowed to the case — a
+ * `match ($this)` arm or a plain constant return. Anything computed, or any vendor enum method, folds to
+ * null rather than a guess.
  *
- * The two containment rules this class OWNS, since they are enforced here:
- *   - `->value` / `->name` fold from the case by reflection, so they work for VENDOR enums too (no body
- *     is analysed). `->value` needs a backed enum; `->name` is universal.
- *   - `->method()` folds only for a PROJECT enum, by analysing ONE method body with `$this` narrowed to
- *     the bound case: a `match ($this)` arm naming the case, or a plain constant return. Anything else —
- *     a computed expression, a translation call, a vendor enum — folds to null, never a guess.
+ * Memoised per (enum-case, method); the enum's file goes through {@see $recordFile} on every path, hit
+ * included, so it reaches `dependencyFiles`.
  *
- * Memoised per (enum-case, method); the enum's file is reported through the {@see $recordFile} sink on
- * every path (miss AND hit) so it lands in `dependencyFiles`.
- *
- * @internal Engine implementation detail — not part of the public inference surface (see inference-embedding.md §Public surface).
+ * @internal
  */
 final class EnumAccessorFolder
 {
     /**
-     * Per (enum-case, method) memo of a folded method accessor — call-independent, so a case+method
-     * folded once is reused across every route that reaches it.
+     * A folded method accessor is call-independent, so a case+method folded once is reused everywhere.
      *
      * @var array<string, LiteralT|null>
      */
@@ -50,9 +46,8 @@ final class EnumAccessorFolder
     ) {}
 
     /**
-     * The literal an accessor on `$enumFqcn::$caseName` folds to, or null when it does not fold (a
-     * computed method body, a vendor enum method, a `->value` on a non-backed enum, or an identity read
-     * of the case object itself — an enum object is not a documentable scalar).
+     * Null when it doesn't fold: a computed body, a vendor enum method, `->value` on a non-backed enum, or an
+     * identity read (the case object itself is not a documentable scalar).
      */
     public function fold(string $enumFqcn, string $caseName, ParamAccessor $accessor): ?LiteralT
     {
@@ -64,7 +59,7 @@ final class EnumAccessorFolder
         };
     }
 
-    /** The backed value of a case as a literal (reflection; vendor-safe), or null when not a backed enum. */
+    /** By reflection, so vendor-safe; null when the enum isn't backed. */
     private function backingValue(string $enumFqcn, string $caseName): ?LiteralT
     {
         if (! enum_exists($enumFqcn)) {
@@ -76,10 +71,8 @@ final class EnumAccessorFolder
             if (! $reflection->isBacked() || ! $reflection->hasCase($caseName)) {
                 return null;
             }
-            // Read the backing value off the case INSTANCE rather than through
-            // ReflectionEnumBackedCase: `isBacked()` is the invariant that matters, and narrowing
-            // UnitEnum to BackedEnum does not depend on how a given PHPStan release stubs the
-            // return type of ReflectionEnum::getCase().
+            // Read the value off the case instance, not ReflectionEnumBackedCase: narrowing UnitEnum to
+            // BackedEnum here doesn't depend on how a given PHPStan release stubs getCase()'s return type.
             $case = $reflection->getCase($caseName)->getValue();
 
             return $case instanceof BackedEnum ? new LiteralT($case->value) : null;
@@ -89,9 +82,8 @@ final class EnumAccessorFolder
     }
 
     /**
-     * Fold a no-arg accessor method on the bound case: analyse the (project-only) method body, select the
-     * `match ($this)` arm for this case (or a plain constant return), and fold its constant body. Memoised
-     * per (enum-case, method); the enum file lands in the dependency set on every path (miss and hit).
+     * Analyses the (project-only) body, picks the `match ($this)` arm for this case — or a plain constant
+     * return — and folds it. The enum file is recorded on every path, hit included.
      */
     private function foldMethod(string $enumFqcn, string $caseName, string $method): ?LiteralT
     {
@@ -143,7 +135,7 @@ final class EnumAccessorFolder
         return null;
     }
 
-    /** A single constant scalar expression as a literal, or null when it does not constant-fold. */
+    /** Null when the expression doesn't constant-fold. */
     private function constLiteral(Node\Expr $expr, Scope $scope): ?LiteralT
     {
         $folded = ScalarFold::of($scope->getType($expr));
@@ -159,7 +151,7 @@ final class EnumAccessorFolder
         }
     }
 
-    /** The file the enum method is declared in (native reflection), or null when unresolvable. */
+    /** By native reflection; null when unresolvable. */
     private function declaringFile(string $enumFqcn, string $method): ?string
     {
         if (! enum_exists($enumFqcn)) {
