@@ -32,7 +32,7 @@ final class TypeScopeImpl implements TypeScope
     }
 
     /**
-     * Five cases, and the precedence is load-bearing — each earlier one folds at the AST level to stop
+     * Six cases, and the precedence is load-bearing — each earlier one folds at the AST level to stop
      * PHPStan collapsing something we need:
      *
      *   1. array literal → recurse per item, so factory calls inside survive as descriptors;
@@ -42,7 +42,9 @@ final class TypeScopeImpl implements TypeScope
      *      `Rule::enum(...)->only([...])` survives;
      *   4. enum-case constant → the case name as a scalar, so `->only([Status::Active])` folds; a bare
      *      `::class` and non-enum class constants fall through;
-     *   5. genuine literal → PHPStan's constant folding.
+     *   5. `new X(...)` → an instance value {class, args}: PHPStan would give us the class too, but the
+     *      args come from the call site, and a rule object is documentable only by its class;
+     *   6. genuine literal → PHPStan's constant folding.
      *
      * Null when nothing constant is recoverable.
      */
@@ -99,7 +101,18 @@ final class TypeScopeImpl implements TypeScope
             return ConstValue::scalar($expr->name->toString());
         }
 
-        // 5. Let PHPStan fold it. A folded `null` is a meaningful constant here, not a failure to fold.
+        // 5. `new X(...)` — the class plus its folded constructor args.
+        if ($expr instanceof Node\Expr\New_ && $expr->class instanceof Node\Name) {
+            $args = [];
+            foreach ($expr->getArgs() as $arg) {
+                $args[] = $this->constantValueOf($arg->value)
+                    ?? ConstValue::unknown('non-constant constructor arg');
+            }
+
+            return ConstValue::instance($this->scope->resolveName($expr->class), $args);
+        }
+
+        // 6. Let PHPStan fold it. A folded `null` is a meaningful constant here, not a failure to fold.
         $folded = ScalarFold::of($this->scope->getType($expr));
 
         return $folded === null ? null : ConstValue::scalar($folded[0]);
