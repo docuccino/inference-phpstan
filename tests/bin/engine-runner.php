@@ -40,6 +40,7 @@ use Docuccino\Core\Inference\CallableRef;
 use Docuccino\Core\Inference\ClassRef;
 use Docuccino\Inference\PhpStan\Analysis\EngineConfig;
 use Docuccino\Inference\PhpStan\Analysis\PhpStanEngineFactory;
+use Docuccino\Inference\PhpStan\Analysis\PhpStanTypeEngineBuilder;
 use Docuccino\Inference\PhpStan\Runtime\RuntimeConfig;
 use Docuccino\Inference\PhpStan\Tests\Support\QueryBuilderProbe;
 use Docuccino\Laravel\Integrations\ApiResources\CreatedResourceVisitor;
@@ -130,14 +131,27 @@ if ($mode === 'refine-pair') {
     );
 }
 
-$engine = (new PhpStanEngineFactory)->create(
-    // Prime scope (bodies preserved) covers `modules/` too, so a Query class outside the descend
-    // scope isn't body-stripped when the QB trace follows a `$query->query()` hop into it.
-    new RuntimeConfig($app, $tmp, PHP_VERSION_ID, [$app.'/app', $app.'/modules']),
-    // Descend scope stays `app/` (throws/inline-rules bounded); vendorPath lets the QB trace follow a
-    // QueryBuilder-return-type hop into the primed `modules/` Query class, never into vendor.
-    $engineConfig,
-);
+// Every mode but refine-pair boots through the package's public entry point — the same
+// TypeEngineBuilder seam an adapter probes for — so the real path proves the seam too. refine-pair
+// needs a hand-built EngineConfig (the file budget above), which the builder deliberately doesn't
+// expose, so it goes through the factory directly.
+//
+// Prime scope (bodies preserved) covers `modules/` too, so a Query class outside the descend scope
+// isn't body-stripped when the QB trace follows a `$query->query()` hop into it. Descend scope stays
+// `app/` (throws/inline-rules bounded); vendorPath lets the QB trace follow a QueryBuilder-return-type
+// hop into the primed `modules/` Query class, never into vendor.
+$engine = $mode === 'refine-pair'
+    ? (new PhpStanEngineFactory)->create(
+        new RuntimeConfig($app, $tmp, PHP_VERSION_ID, [$app.'/app', $app.'/modules']),
+        $engineConfig,
+    )
+    : (new PhpStanTypeEngineBuilder)->build(
+        projectRoot: $app,
+        tmpDir: $tmp,
+        vendorPath: $app.'/vendor',
+        primePaths: [$app.'/app', $app.'/modules'],
+        descendPaths: [$app.'/app'],
+    );
 
 $ref = new ActionRef($file, $class === '' ? null : $class, $method);
 

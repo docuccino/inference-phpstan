@@ -8,7 +8,8 @@ use Docuccino\Core\Inference\ClassMetadata;
 use Docuccino\Core\Inference\ClassRef;
 use Docuccino\Core\Inference\PropertyMetadata;
 use Docuccino\Core\Inference\SourceLocation;
-use Docuccino\Inference\PhpStan\Types\TypeStringParser;
+use Docuccino\Core\TypeGrammar\DocBlockReader;
+use Docuccino\Core\TypeGrammar\TypeStringParser;
 use ReflectionClass;
 use ReflectionProperty;
 

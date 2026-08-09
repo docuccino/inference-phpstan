@@ -25,20 +25,16 @@
     "require": {
         "php": "^8.3",
         "docuccino/core": "self.version",
+        "larastan/larastan": "^3.10",
         "nikic/php-parser": "^5",
         "phpstan/phpstan": "~2.2.0 || ~2.3.0",
-        "phpstan/phpdoc-parser": "^2",
         "symfony/process": "^6.4 || ^7.0 || ^8.0"
     },
     "bin": [
         "bin/worker.php"
     ],
     "require-dev": {
-        "larastan/larastan": "^3.10",
         "pestphp/pest": "^4.0"
-    },
-    "suggest": {
-        "larastan/larastan": "^3.10 - required at runtime for inference; without it the engine cannot boot and Docuccino falls back to docblock/attribute-only documentation"
     },
     "autoload": {
         "psr-4": {

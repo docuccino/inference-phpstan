@@ -13,9 +13,14 @@ but it can be consumed standalone by any adapter that depends on
 
 ## Install
 
+Analysis is a build-time job, so install it as a **dev** dependency:
+
 ```bash
-composer require docuccino/inference-phpstan
+composer require --dev docuccino/inference-phpstan
 ```
+
+It brings PHPStan and Larastan with it. `docuccino/laravel` finds it at runtime and falls
+back to docblock- and attribute-only documentation (with a warning) when it is absent.
 
 ## Usage
 
