@@ -7,10 +7,10 @@ namespace Docuccino\Inference\PhpStan\Tests\Integration;
 use Docuccino\Inference\PhpStan\Tests\Support\FixtureRunner;
 
 /**
- * Ports Spike B's pass criteria — the Scramble-Pro-beater. Recovers
- * allowedFilters/Sorts literals (scalar + factory descriptors) two calls deep,
- * and detects pagination through a custom terminal with the per-page value from
- * the outermost call site — all with zero doc annotations.
+ * The Query-Builder trace against the real engine: recovers allowedFilters/Sorts
+ * literals (scalar + factory descriptors) two calls deep, and detects pagination
+ * through a custom terminal with the per-page value from the outermost call site —
+ * all with zero doc annotations.
  */
 beforeEach(function (): void {
     ensureFixtureAvailable(FixtureRunner::available());

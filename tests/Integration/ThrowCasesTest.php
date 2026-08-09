@@ -7,7 +7,7 @@ namespace Docuccino\Inference\PhpStan\Tests\Integration;
 use Docuccino\Inference\PhpStan\Tests\Support\FixtureRunner;
 
 /**
- * Ports Spike C's 8-case noise/miss scorecard: abort status folding, registry
+ * The throw-analysis scorecard against the real engine: abort status folding, registry
  * enrichment + rescue, bounded descent, `@throws` trust, catch subtraction, and
  * exception identity by (fqcn, status).
  */

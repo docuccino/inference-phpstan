@@ -16,7 +16,7 @@ use PhpParser\Node;
  * integration. Pure semantics + harvesting through {@see TypeScope}; imports
  * zero PHPStan. Proves the {@see TypeEngine::trace()}
  * boundary recovers allowedFilters/Sorts literals through a 2-deep chain and
- * detects a custom pagination terminal (Spike B).
+ * detects a custom pagination terminal.
  *
  * @phpstan-type Terminal array{terminal: string, perPage: int|null}
  */

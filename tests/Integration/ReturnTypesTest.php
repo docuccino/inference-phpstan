@@ -7,7 +7,7 @@ namespace Docuccino\Inference\PhpStan\Tests\Integration;
 use Docuccino\Inference\PhpStan\Tests\Support\FixtureRunner;
 
 /**
- * Ports Spike A's return-path pass criteria: per-return flow-refined types, the
+ * The return-path criteria against the real engine: per-return flow-refined types, the
  * JsonResponse payload-shape stub, resource collections, and a distinct type per
  * return in a union action. Assertions run over the serialized ActionAnalysis
  * the engine subprocess emits.
