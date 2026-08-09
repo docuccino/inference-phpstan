@@ -1,0 +1,21 @@
+<?php
+
+namespace Illuminate\Support\Traits;
+
+/**
+ * Docuccino stub: type `$collection->toResourceCollection(UserResource::class)` so it recovers a
+ * typed anonymous collection of the named resource instead of a bare `ResourceCollection`
+ * (audit api-resources #13, collection form). An explicit resource class-string yields
+ * `AnonymousResourceCollection<TResource>`; the argument-less guessing form stays a bare
+ * `ResourceCollection`. Shipped in the generated neon's `stubFiles`.
+ */
+trait TransformsToResourceCollection
+{
+    /**
+     * @template TResource of \Illuminate\Http\Resources\Json\JsonResource
+     *
+     * @param  class-string<TResource>|null  $resourceClass
+     * @return ($resourceClass is null ? \Illuminate\Http\Resources\Json\ResourceCollection : \Illuminate\Http\Resources\Json\AnonymousResourceCollection<TResource>)
+     */
+    public function toResourceCollection(?string $resourceClass = null) {}
+}

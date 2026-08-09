@@ -1,0 +1,209 @@
+<?php
+
+namespace Illuminate\Http\Resources;
+
+/**
+ * Docuccino stub: give the API-resource conditional helpers a typed, optionality-preserving return
+ * so a `toArray()` field built with them recovers as `T|MissingValue` instead of collapsing to
+ * `mixed` (the framework docblocks return `MissingValue|mixed`, which PHPStan unions down to
+ * `mixed` — verified — losing both the value type AND the optionality marker).
+ *
+ * Each helper templates its `$value` (a value or a `Closure(): value`) and its `$default` (which
+ * defaults to `MissingValue`), returning `TValue|TDefault`: when the branch is taken the value's type
+ * survives, and when it is skipped the `MissingValue` marker survives — exactly what
+ * `ToArrayObject::stripMissing()` reads to make the field optional + typed. Pairs with the
+ * ApiResources integration. Shipped in the generated neon's `stubFiles`.
+ */
+trait ConditionallyLoadsAttributes
+{
+    /**
+     * @template TValue
+     * @template TDefault
+     *
+     * @param  bool  $condition
+     * @param  TValue|(\Closure(): TValue)  $value
+     * @param  TDefault  $default
+     * @return TValue|TDefault
+     */
+    protected function when($condition, $value, $default = new MissingValue) {}
+
+    /**
+     * @template TValue
+     * @template TDefault
+     *
+     * @param  bool  $condition
+     * @param  TValue|(\Closure(): TValue)  $value
+     * @param  TDefault  $default
+     * @return TValue|TDefault
+     */
+    public function unless($condition, $value, $default = new MissingValue) {}
+
+    /**
+     * @template TValue
+     * @template TDefault
+     *
+     * @param  string  $attribute
+     * @param  TValue|(\Closure(): TValue)  $value
+     * @param  TDefault  $default
+     * @return TValue|TDefault
+     */
+    public function whenHas($attribute, $value = null, $default = new MissingValue) {}
+
+    /**
+     * @template TValue
+     * @template TDefault
+     *
+     * @param  TValue|(\Closure(): TValue)  $value
+     * @param  TDefault  $default
+     * @return TValue|TDefault
+     */
+    protected function whenNull($value, $default = new MissingValue) {}
+
+    /**
+     * @template TValue
+     * @template TDefault
+     *
+     * @param  TValue|(\Closure(): TValue)  $value
+     * @param  TDefault  $default
+     * @return TValue|TDefault
+     */
+    protected function whenNotNull($value, $default = new MissingValue) {}
+
+    /**
+     * @template TValue
+     * @template TDefault
+     *
+     * @param  string  $attribute
+     * @param  TValue|(\Closure(): TValue)  $value
+     * @param  TDefault  $default
+     * @return TValue|TDefault
+     */
+    protected function whenAppended($attribute, $value = null, $default = new MissingValue) {}
+
+    /**
+     * @template TValue
+     * @template TDefault
+     *
+     * @param  string  $relationship
+     * @param  TValue|(\Closure(): TValue)  $value
+     * @param  TDefault  $default
+     * @return TValue|TDefault
+     */
+    protected function whenLoaded($relationship, $value = null, $default = new MissingValue) {}
+
+    /**
+     * @template TValue
+     * @template TDefault
+     *
+     * @param  string  $relationship
+     * @param  TValue|(\Closure(): TValue)  $value
+     * @param  TDefault  $default
+     * @return TValue|TDefault
+     */
+    public function whenCounted($relationship, $value = null, $default = new MissingValue) {}
+
+    /**
+     * @template TValue
+     * @template TDefault
+     *
+     * @param  string  $relationship
+     * @param  string  $column
+     * @param  string  $aggregate
+     * @param  TValue|(\Closure(): TValue)  $value
+     * @param  TDefault  $default
+     * @return TValue|TDefault
+     */
+    public function whenAggregated($relationship, $column, $aggregate, $value = null, $default = new MissingValue) {}
+
+    /**
+     * @template TValue
+     * @template TDefault
+     *
+     * @param  string  $relationship
+     * @param  TValue|(\Closure(): TValue)  $value
+     * @param  TDefault  $default
+     * @return TValue|TDefault
+     */
+    public function whenExistsLoaded($relationship, $value = null, $default = new MissingValue) {}
+
+    /**
+     * @template TValue
+     * @template TDefault
+     *
+     * @param  string  $table
+     * @param  TValue|(\Closure(): TValue)  $value
+     * @param  TDefault  $default
+     * @return TValue|TDefault
+     */
+    protected function whenPivotLoaded($table, $value, $default = new MissingValue) {}
+
+    /**
+     * @template TValue
+     * @template TDefault
+     *
+     * @param  string  $accessor
+     * @param  string  $table
+     * @param  TValue|(\Closure(): TValue)  $value
+     * @param  TDefault  $default
+     * @return TValue|TDefault
+     */
+    protected function whenPivotLoadedAs($accessor, $table, $value, $default = new MissingValue) {}
+
+    /**
+     * The merge family splices its array VALUE's keys into the parent `toArray` shape. Templating the
+     * value as `MergeValue<TValue>` carries the merged array shape through the engine so
+     * `ToArrayObject` can splice the constant keys (rather than documenting a bogus numeric `"0"`
+     * property or losing them in `mixed`). `mergeWhen`/`mergeUnless` additionally union in the
+     * `MissingValue` default when the condition is falsy → the spliced keys become optional.
+     *
+     * @template TValue of array<string, mixed>
+     *
+     * @param  TValue  $value
+     * @return MergeValue<TValue>
+     */
+    public function merge($value) {}
+
+    /**
+     * @template TValue of array<string, mixed>
+     * @template TDefault
+     *
+     * @param  bool  $condition
+     * @param  TValue  $value
+     * @param  TDefault  $default
+     * @return MergeValue<TValue>|TDefault
+     */
+    public function mergeWhen($condition, $value, $default = new MissingValue) {}
+
+    /**
+     * @template TValue of array<string, mixed>
+     * @template TDefault
+     *
+     * @param  bool  $condition
+     * @param  TValue  $value
+     * @param  TDefault  $default
+     * @return MergeValue<TValue>|TDefault
+     */
+    public function mergeUnless($condition, $value, $default = new MissingValue) {}
+
+    /**
+     * `attributes()` merges a subset of the model's attributes; the value shape is not statically a
+     * constant array, so it recovers as an unshaped `MergeValue` — recognised (not a numeric `"0"`
+     * property) but degraded on splice.
+     *
+     * @param  array<int, string>  $attributes
+     * @return MergeValue<array<string, mixed>>
+     */
+    public function attributes($attributes) {}
+}
+
+/**
+ * Docuccino stub: make `MergeValue` generic over its merged array shape so `merge()`/`mergeWhen()`
+ * carry the spliced keys through the engine ({@see ToArrayObject} reads `typeArgs[0]`).
+ *
+ * @template TValue of array<string, mixed>
+ */
+class MergeValue
+{
+    /** @var TValue */
+    public $data;
+}

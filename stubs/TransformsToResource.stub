@@ -1,0 +1,21 @@
+<?php
+
+namespace Illuminate\Database\Eloquent\Concerns;
+
+/**
+ * Docuccino stub: type `$model->toResource(UserResource::class)` (heavily promoted in Laravel 12)
+ * so it recovers the named resource instead of degrading to a bare `JsonResource` → `{data: {}}`
+ * (audit api-resources #13). Conditional return: an explicit resource class-string yields THAT
+ * resource; the argument-less guessing form stays a bare `JsonResource`. Shipped in the generated
+ * neon's `stubFiles`.
+ */
+trait TransformsToResource
+{
+    /**
+     * @template TResource of \Illuminate\Http\Resources\Json\JsonResource
+     *
+     * @param  class-string<TResource>|null  $resourceClass
+     * @return ($resourceClass is null ? \Illuminate\Http\Resources\Json\JsonResource : TResource)
+     */
+    public function toResource(?string $resourceClass = null) {}
+}

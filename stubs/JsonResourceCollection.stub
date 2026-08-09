@@ -1,0 +1,31 @@
+<?php
+
+namespace Illuminate\Http\Resources\Json;
+
+/**
+ * Docuccino stub: thread the item resource type through an anonymous resource collection.
+ *
+ * The framework docblocks `JsonResource::collection()` as a bare `AnonymousResourceCollection` with
+ * no generic, so `UserResource::collection(...)` recovered as an untyped collection and the mapper
+ * emitted `items: []` (audit api-resources #2). Making `AnonymousResourceCollection` generic and
+ * returning `AnonymousResourceCollection<static>` lets the engine carry the concrete item resource
+ * (`AnonymousResourceCollection<UserResource>`) that `JsonResourceSchema` reads from `typeArgs[0]`.
+ * Shipped in the generated neon's `stubFiles`.
+ */
+class JsonResource
+{
+    /**
+     * @return AnonymousResourceCollection<static>
+     */
+    public static function collection($resource) {}
+
+    /**
+     * @return AnonymousResourceCollection<static>
+     */
+    protected static function newCollection($resource) {}
+}
+
+/**
+ * @template TResource
+ */
+class AnonymousResourceCollection extends ResourceCollection {}

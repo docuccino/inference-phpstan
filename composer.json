@@ -1,0 +1,56 @@
+{
+    "name": "docuccino/inference-phpstan",
+    "description": "PHPStan/Larastan type inference engine for Docuccino, behind the core TypeEngine contract.",
+    "type": "library",
+    "keywords": [
+        "openapi",
+        "api-documentation",
+        "uir",
+        "phpstan",
+        "larastan",
+        "type-inference",
+        "scramble-alternative"
+    ],
+    "homepage": "https://docuccino.app",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Tom Martin"
+        }
+    ],
+    "support": {
+        "issues": "https://github.com/docuccino/docuccino/issues",
+        "source": "https://github.com/docuccino/docuccino"
+    },
+    "require": {
+        "php": "^8.3",
+        "docuccino/core": "self.version",
+        "nikic/php-parser": "^5",
+        "phpstan/phpstan": "~2.2.0 || ~2.3.0",
+        "phpstan/phpdoc-parser": "^2",
+        "symfony/process": "^6.4 || ^7.0 || ^8.0"
+    },
+    "bin": [
+        "bin/worker.php"
+    ],
+    "require-dev": {
+        "larastan/larastan": "^3.10",
+        "pestphp/pest": "^4.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Docuccino\\Inference\\PhpStan\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Docuccino\\Inference\\PhpStan\\Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": {
+            "pestphp/pest-plugin": true
+        }
+    }
+}
