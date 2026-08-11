@@ -63,16 +63,16 @@ require $app.'/vendor/autoload.php';
 // here, so the only phpstan/php-parser in play is the fixture app's.
 spl_autoload_register(static function (string $class) use ($repoRoot): void {
     $map = [
-        'Docuccino\\Attributes\\' => $repoRoot.'/packages/attributes/src/',
-        'Docuccino\\Core\\' => $repoRoot.'/packages/core/src/',
-        'Docuccino\\Inference\\PhpStan\\Tests\\' => $repoRoot.'/packages/inference-phpstan/tests/',
-        'Docuccino\\Inference\\PhpStan\\' => $repoRoot.'/packages/inference-phpstan/src/',
+        'Docuccino\\Attributes\\' => $repoRoot.'/php/attributes/src/',
+        'Docuccino\\Core\\' => $repoRoot.'/php/core/src/',
+        'Docuccino\\Inference\\PhpStan\\Tests\\' => $repoRoot.'/php/inference-phpstan/tests/',
+        'Docuccino\\Inference\\PhpStan\\' => $repoRoot.'/php/inference-phpstan/src/',
         // Several adapter-side trace visitors (QB, json-api-paginate, pagination terminal, rules,
         // created-resource) run here to prove terminal/receiver matching and rule/column recovery on
         // the real engine. They import only core + php-parser (plus their own dep-free facts/config),
         // so the fixture app's phpstan/php-parser stays the only one in play — which is what makes
         // mapping all of `Docuccino\Laravel\` here sound.
-        'Docuccino\\Laravel\\' => $repoRoot.'/packages/laravel/src/',
+        'Docuccino\\Laravel\\' => $repoRoot.'/php/laravel/src/',
     ];
     foreach ($map as $prefix => $dir) {
         if (str_starts_with($class, $prefix)) {

@@ -35,9 +35,9 @@ require $app.'/vendor/autoload.php';
 
 spl_autoload_register(static function (string $class) use ($repoRoot): void {
     $map = [
-        'Docuccino\\Core\\' => $repoRoot.'/packages/core/src/',
-        'Docuccino\\Inference\\PhpStan\\Tests\\' => $repoRoot.'/packages/inference-phpstan/tests/',
-        'Docuccino\\Inference\\PhpStan\\' => $repoRoot.'/packages/inference-phpstan/src/',
+        'Docuccino\\Core\\' => $repoRoot.'/php/core/src/',
+        'Docuccino\\Inference\\PhpStan\\Tests\\' => $repoRoot.'/php/inference-phpstan/tests/',
+        'Docuccino\\Inference\\PhpStan\\' => $repoRoot.'/php/inference-phpstan/src/',
     ];
     foreach ($map as $prefix => $dir) {
         if (str_starts_with($class, $prefix)) {
