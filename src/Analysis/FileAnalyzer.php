@@ -31,6 +31,15 @@ final class FileAnalyzer
     public function __construct(private readonly RuntimeAdapter $adapter) {}
 
     /**
+     * Every node this class hands out is consumed after its walk finished, so the scopes hanging off them
+     * must be stabilised before they are queried — see {@see RuntimeAdapter::stableScope()}.
+     */
+    public function stableScope(Scope $scope): Scope
+    {
+        return $this->adapter->stableScope($scope);
+    }
+
+    /**
      * @return array<string, MethodReturnStatementsNode>
      */
     public function analyze(string $file): array

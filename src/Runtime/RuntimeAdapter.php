@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Docuccino\Inference\PhpStan\Runtime;
 
+use PHPStan\Analyser\Scope;
 use PHPStan\Reflection\ReflectionProvider;
 
 /**
@@ -45,6 +46,14 @@ interface RuntimeAdapter
 
     /** Normalise a path exactly the way PHPStan's parser router does. */
     public function normalize(string $file): string;
+
+    /**
+     * Make a scope safe to query after its walk has finished. Since 2.2 the scope handed to a `processFile`
+     * callback resolves expressions by suspending its fiber, so it only answers while that fiber is alive —
+     * retaining one (as harvesting a `MethodReturnStatementsNode` does) and calling `getType()` later throws
+     * "Cannot suspend outside of a fiber". Call this on any scope that outlives the callback that produced it.
+     */
+    public function stableScope(Scope $scope): Scope;
 
     /** The container's reflection provider (autoloader-backed, lazy). */
     public function reflectionProvider(): ReflectionProvider;

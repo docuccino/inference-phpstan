@@ -116,7 +116,7 @@ final class EnumAccessorFolder
             if ($expr === null) {
                 continue;
             }
-            $scope = $statement->getScope();
+            $scope = $this->fileAnalyzer->stableScope($statement->getScope());
 
             if ($expr instanceof Node\Expr\Match_) {
                 $body = AccessorExtractor::matchArmBodyForCase(

@@ -151,7 +151,8 @@ final class PhpStanTypeEngine implements TypeEngine
         foreach ($node->getReturnStatements() as $statement) {
             $returnNode = $statement->getReturnNode();
             $location = new SourceLocation($file, $returnNode->getStartLine());
-            $returns[] = new ReturnSite($this->siteType($returnNode->expr, $statement->getScope()), $location);
+            $scope = $this->fileAnalyzer->stableScope($statement->getScope());
+            $returns[] = new ReturnSite($this->siteType($returnNode->expr, $scope), $location);
         }
 
         return $returns;
@@ -273,7 +274,7 @@ final class PhpStanTypeEngine implements TypeEngine
         foreach ($node->getReturnStatements() as $statement) {
             $returnNode = $statement->getReturnNode();
             $expr = $returnNode->expr;
-            $scope = $statement->getScope();
+            $scope = $this->fileAnalyzer->stableScope($statement->getScope());
 
             // One site per arm, so per-arm exception mapping composes with refinement.
             if ($param !== null && $expr instanceof Node\Expr\Match_) {

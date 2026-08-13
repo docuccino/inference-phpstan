@@ -321,7 +321,7 @@ final class ResponseShapeRefiner
                 continue;
             }
 
-            $refined = $this->refineExpr($expr, $statement->getScope(), $paramNames, $depth);
+            $refined = $this->refineExpr($expr, $this->fileAnalyzer->stableScope($statement->getScope()), $paramNames, $depth);
             if ($refined === null) {
                 continue;
             }

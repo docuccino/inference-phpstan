@@ -11,6 +11,7 @@ use Docuccino\Inference\PhpStan\Runtime\RuntimeAdapter;
 use Docuccino\Inference\PhpStan\Support\ProjectFilter;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\FolderProbeEnum;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\PlainProbeEnum;
+use PHPStan\Analyser\Scope;
 use PHPStan\Reflection\ReflectionProvider;
 
 /**
@@ -33,6 +34,11 @@ function makeEnumAccessorFolder(array &$recorded, bool $projectSees = false): En
         public function normalize(string $file): string
         {
             return $file;
+        }
+
+        public function stableScope(Scope $scope): Scope
+        {
+            return $scope;
         }
 
         public function reflectionProvider(): ReflectionProvider

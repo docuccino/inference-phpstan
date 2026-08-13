@@ -9,7 +9,9 @@ use Docuccino\Inference\PhpStan\Runtime\BootFailedException;
 use Docuccino\Inference\PhpStan\Runtime\RuntimeAdapter as RuntimeAdapterContract;
 use Docuccino\Inference\PhpStan\Runtime\RuntimeConfig;
 use FilesystemIterator;
+use PHPStan\Analyser\Fiber\FiberScope;
 use PHPStan\Analyser\NodeScopeResolver;
+use PHPStan\Analyser\Scope;
 use PHPStan\Analyser\ScopeContext;
 use PHPStan\Analyser\ScopeFactory;
 use PHPStan\DependencyInjection\ContainerFactory;
@@ -160,6 +162,15 @@ final class RuntimeAdapter implements RuntimeAdapterContract
     public function normalize(string $file): string
     {
         return $this->fileHelper()->normalizePath($file);
+    }
+
+    public function stableScope(Scope $scope): Scope
+    {
+        // The container hands us FiberNodeScopeResolver, so callbacks receive a FiberScope; its getType()
+        // suspends. toMutatingScope() reads the scope as captured instead, which is what a retained scope
+        // wants. instanceof is safely false on any minor without the class, so this needs no version branch.
+        // @phpstan-ignore phpstanApi.class, phpstanApi.method
+        return $scope instanceof FiberScope ? $scope->toMutatingScope() : $scope;
     }
 
     public function reflectionProvider(): ReflectionProvider

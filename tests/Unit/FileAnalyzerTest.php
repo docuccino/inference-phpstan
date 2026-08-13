@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Docuccino\Inference\PhpStan\Analysis\FileAnalyzer;
 use Docuccino\Inference\PhpStan\Runtime\RuntimeAdapter;
+use PHPStan\Analyser\Scope;
 use PHPStan\Reflection\ReflectionProvider;
 
 /**
@@ -31,6 +32,11 @@ function fileAnalyzerWithRecordingAdapter(int &$calls): FileAnalyzer
         public function normalize(string $file): string
         {
             return $file;
+        }
+
+        public function stableScope(Scope $scope): Scope
+        {
+            return $scope;
         }
 
         public function reflectionProvider(): ReflectionProvider

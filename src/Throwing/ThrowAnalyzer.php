@@ -96,7 +96,7 @@ final class ThrowAnalyzer
         foreach ($methodNode->getStatementResult()->getThrowPoints() as $throwPoint) {
             $node = $throwPoint->getNode();
             $type = $throwPoint->getType();
-            $scope = $throwPoint->getScope();
+            $scope = $this->fileAnalyzer->stableScope($throwPoint->getScope());
             $explicit = $throwPoint->isExplicit();
             $calleeName = $this->calleeResolver->name($node);
             $callee = $this->calleeResolver->resolve($node, $scope);
