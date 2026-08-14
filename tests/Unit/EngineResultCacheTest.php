@@ -139,6 +139,19 @@ it('tolerates a corrupt cache file as a miss', function (): void {
     exec('rm -rf '.escapeshellarg($dir));
 });
 
+it('ignores the bucket directory it creates so cached analyses never reach the repository', function (): void {
+    $dir = cacheDir();
+    $actionFile = $dir.'/Action.php';
+    file_put_contents($actionFile, '<?php // action');
+
+    $cache = new FilesystemEngineResultCache($dir);
+    $cache->putAction(new ActionRef($actionFile, 'App\\Action', 'handle', 10), sampleAnalysis($actionFile, $actionFile), fingerprint());
+
+    expect(file_get_contents($dir.'/actions/.gitignore'))->toBe("*\n!.gitignore\n");
+
+    exec('rm -rf '.escapeshellarg($dir));
+});
+
 it('is a total no-op through the null cache', function (): void {
     $cache = new NullEngineResultCache;
     $ref = new ActionRef('/x.php', 'App\\X', 'handle', 1);

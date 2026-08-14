@@ -8,6 +8,7 @@ use Docuccino\Core\Inference\ActionAnalysis;
 use Docuccino\Core\Inference\ActionRef;
 use Docuccino\Core\Inference\ClassMetadata;
 use Docuccino\Core\Inference\ClassRef;
+use Docuccino\Core\Support\GeneratedDirectory;
 
 /**
  * A filesystem-backed {@see EngineResultCache}, laid out as `<baseDir>/{actions,classes}/<primary>.json`
@@ -193,10 +194,7 @@ final readonly class FilesystemEngineResultCache implements EngineResultCache
 
     private function atomicWrite(string $path, string $contents): void
     {
-        $dir = dirname($path);
-        if (! is_dir($dir)) {
-            @mkdir($dir, 0755, true);
-        }
+        GeneratedDirectory::ensure(dirname($path));
 
         // random_int over bin2hex(random_bytes(…)): its int return type is unambiguous in every supported
         // analyser version, and 63 bits of entropy beats the 48 it replaces.

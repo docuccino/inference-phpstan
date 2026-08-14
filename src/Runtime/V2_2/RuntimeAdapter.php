@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Docuccino\Inference\PhpStan\Runtime\V2_2;
 
+use Docuccino\Core\Support\GeneratedDirectory;
 use Docuccino\Inference\PhpStan\Extensions\DataToResponseReturnTypeExtension;
 use Docuccino\Inference\PhpStan\Extensions\DataTransformReturnTypeExtension;
 use Docuccino\Inference\PhpStan\Extensions\ResponseJsonReturnTypeExtension;
@@ -88,9 +89,7 @@ final class RuntimeAdapter implements RuntimeAdapterContract
             throw new BootFailedException(sprintf('Larastan extension.neon not found at %s', $larastanNeon));
         }
 
-        if (! is_dir($this->config->tmpDir)) {
-            mkdir($this->config->tmpDir, 0755, true);
-        }
+        GeneratedDirectory::ensure($this->config->tmpDir);
 
         $generatedNeon = $this->writeGeneratedNeon($larastanNeon);
 
@@ -137,8 +136,20 @@ final class RuntimeAdapter implements RuntimeAdapterContract
     public function prime(array $files): void
     {
         $helper = $this->fileHelper();
+        $grew = false;
         foreach ($files as $file) {
-            $this->analysedFiles[$helper->normalizePath($file)] = true;
+            $normalisedFile = $helper->normalizePath($file);
+            if (! isset($this->analysedFiles[$normalisedFile])) {
+                $this->analysedFiles[$normalisedFile] = true;
+                $grew = true;
+            }
+        }
+
+        // Both setters just replace their set, so re-sending an unchanged one changes nothing —
+        // skip it. processFile() primes per file after boot() primed the project, so on a large app
+        // almost every call lands here and would otherwise re-sort the whole set for nothing.
+        if (! $grew) {
+            return;
         }
 
         $normalised = array_keys($this->analysedFiles);
