@@ -46,6 +46,7 @@ function dataProblemShape(string $narrowType): array
 
     return [
         'payload' => $type->typeArgs[0] ?? null,
+        'status' => $type->typeArgs[1] ?? null,
         'contentType' => $contentType instanceof LiteralT && is_string($contentType->value) ? $contentType->value : null,
         'members' => $members,
     ];
@@ -120,10 +121,14 @@ it('reads a construction a factory hop away, binding its enum accessors and its 
 
 it('reads the arguments of a class that writes its own response', function (): void {
     // The `new` is the receiver of the response-producing call itself — the shortest form of the same fact.
-    $members = dataProblemShape('RuntimeException')['members'];
+    $shape = dataProblemShape('RuntimeException');
 
-    expect($members['type'])->toEqual(new LiteralT('about:blank'))
-        ->and($members['status'])->toEqual(new LiteralT(503));
+    expect($shape['members']['type'])->toEqual(new LiteralT('about:blank'))
+        ->and($shape['members']['status'])->toEqual(new LiteralT(503))
+        // …and the RESPONSE status is not folded on the same arm: `new JsonResponse(…, $this->status, …)`
+        // reads a property off the object, which no call-site binding reaches. The two halves disagreeing
+        // is the seam the adapter has to resolve — the folded member is the one with evidence behind it.
+        ->and($shape['status'])->not->toBeInstanceOf(LiteralT::class);
 })->group('fixture');
 
 it('recovers a media type re-labelled by a header set on the returned response', function (): void {
