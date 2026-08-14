@@ -34,7 +34,7 @@ use Throwable;
 
 /**
  * Translates a PHPStan `Type` into the closed {@see DType} set (docs/design/inference-embedding.md §5).
- * Translation is eager, so results serialize across worker and cache boundaries; class *expansion* stays
+ * Translation is eager, so results serialize and cross a process boundary; class *expansion* stays
  * lazy behind `classMetadata()`.
  *
  * Detection goes through PHPStan's BC-stable accessors (`getConstantStrings()`, `isArray()`, …) rather than

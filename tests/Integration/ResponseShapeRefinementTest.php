@@ -378,7 +378,7 @@ it('never reuses a budget-truncated helper shape where a later analysis had head
     // One engine, tiny file budget (2): deep() spends the budget through BudgetPad + BudgetShared, so
     // the BudgetLeaf hop is cut off and BudgetShared::make() recovers a truncated (bare) shape first.
     // direct() then reaches the same helper with headroom and must get the full 418 shape — the refiner
-    // never memoises a truncated computation. Without that rule this is a latent 1-vs-8-worker
+    // never memoises a truncated computation. Without that rule this is a latent route-order
     // nondeterminism.
     $pair = FixtureRunner::refinePair(
         2,

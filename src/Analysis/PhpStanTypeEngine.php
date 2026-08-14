@@ -43,10 +43,9 @@ use PHPStan\Node\ReturnStatementsNode;
 use Throwable;
 
 /**
- * The single-process PHPStan/Larastan {@see TypeEngine}: harvests `MethodReturnStatementsNode` for
- * per-return-path types, runs the 3-layer {@see ThrowAnalyzer}, and drives the interprocedural
- * {@see Tracer}. Every method is total — a failure becomes `UnknownT` plus a warning diagnostic, never
- * an exception. Worker orchestration and result caching wrap this from outside.
+ * The PHPStan/Larastan {@see TypeEngine}: harvests `MethodReturnStatementsNode` for per-return-path
+ * types, runs the 3-layer {@see ThrowAnalyzer}, and drives the interprocedural {@see Tracer}. Every
+ * method is total — a failure becomes `UnknownT` plus a warning diagnostic, never an exception.
  *
  * @internal
  */
@@ -54,8 +53,7 @@ final class PhpStanTypeEngine implements TypeEngine
 {
     /**
      * Per-build memo of callable analyses, so one handler body queried by many routes is analysed once.
-     * Each worker has its own memo, so a callable reached on two workers is analysed twice — sharing it
-     * would need the same serialize/transport plumbing as the engine result cache.
+     * It lives and dies with the engine instance — one container, one build, one memo.
      *
      * @var array<string, ActionAnalysis>
      */

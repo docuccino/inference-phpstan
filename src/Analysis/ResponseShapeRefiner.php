@@ -294,7 +294,7 @@ final class ResponseShapeRefiner
 
         // Memoise only a descent that stayed within budget/depth. A truncated one (here or deeper down) is
         // less refined depending on how much budget was already spent before this callee was reached —
-        // caching it would make output route-/worker-order dependent. Used now, recomputed next time.
+        // caching it would make output route-order dependent. Used now, recomputed next time.
         if ($this->budgetCutoffs === $cutoffsBefore) {
             $delta = array_keys(array_diff_key($this->currentFiles, $filesBefore));
             sort($delta);
