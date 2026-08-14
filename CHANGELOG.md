@@ -5,6 +5,6 @@
 
 User-facing changes to `docuccino/inference-phpstan` — features, fixes, performance work and anything breaking —
 taken from the commit messages scoped `inference-phpstan`. Entries begin after v0.1.2; older history is in
-the [monorepo](https://github.com/docuccino/docuccino) git log.
+the [repository](https://github.com/docuccino/docuccino) git log.
 
 _No user-facing changes yet._
