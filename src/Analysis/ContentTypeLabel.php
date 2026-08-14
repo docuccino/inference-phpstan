@@ -64,10 +64,16 @@ final class ContentTypeLabel
         return $from;
     }
 
-    /** `$<name>->headers->set('Content-Type', '<literal>')` → the literal, else null. */
+    /**
+     * `$<name>->headers->set('Content-Type', '<literal>')` → the literal, else null. A first-class callable
+     * (`…->set(...)`) writes no header, and has no arguments to read.
+     */
     private static function headerValue(Node\Expr\MethodCall $call, string $name): ?string
     {
-        if (! $call->name instanceof Node\Identifier || $call->name->toString() !== 'set') {
+        if (! $call->name instanceof Node\Identifier
+            || $call->name->toString() !== 'set'
+            || $call->isFirstClassCallable()
+        ) {
             return null;
         }
 

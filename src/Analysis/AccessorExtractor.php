@@ -27,6 +27,9 @@ final class AccessorExtractor
      * shows up when the argument was absent, which is exactly the case where binding finds no argument and
      * drops the value rather than pinning it.
      *
+     * A first-class callable (`$param->method(...)`) is a closure, not a read of the parameter, so it
+     * declines — and asking it for its arguments would assert, since it has none.
+     *
      * @param  list<string>  $paramNames
      */
     public static function fromExpr(Node\Expr $expr, array $paramNames): ?ParamAccessor
@@ -59,6 +62,7 @@ final class AccessorExtractor
             && is_string($expr->var->name)
             && in_array($expr->var->name, $paramNames, true)
             && $expr->name instanceof Node\Identifier
+            && ! $expr->isFirstClassCallable()
             && $expr->getArgs() === []
         ) {
             return new ParamAccessor($expr->var->name, AccessorKind::Method, $expr->name->toString());

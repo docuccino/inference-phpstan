@@ -65,6 +65,17 @@ it('reads through a null-coalesce to its left side', function (Node\Expr $expr, 
     ];
 });
 
+it('declines a first-class callable instead of reading arguments it cannot have', function (): void {
+    // `$problem->status(...)` is a closure, not a read of the parameter. php-parser's getArgs() asserts
+    // against a first-class callable, and the engine swallows the AssertionError — so classifying one
+    // would silently truncate the whole response shape rather than skip one member.
+    $fcc = new Node\Expr\MethodCall(aeVar('problem'), new Node\Identifier('status'), [new Node\VariadicPlaceholder]);
+    $array = new Node\Expr\Array_([new Node\ArrayItem($fcc, new Node\Scalar\String_('status'))]);
+
+    expect(AccessorExtractor::fromExpr($fcc, ['problem']))->toBeNull()
+        ->and(AccessorExtractor::provenanceFromArray($array, ['problem']))->toBe([]);
+});
+
 it('captures member→accessor provenance from a body array literal (string keys only)', function (): void {
     $item = static fn (?Node\Expr $key, Node\Expr $value): Node\ArrayItem => new Node\ArrayItem($value, $key);
 

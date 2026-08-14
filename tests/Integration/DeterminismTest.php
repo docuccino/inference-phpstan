@@ -36,3 +36,12 @@ it('harvests identical trace results across two cold runs', function (): void {
 
     expect(json_encode($first))->toBe(json_encode($second));
 })->group('fixture');
+
+it('folds the same call returns across two cold runs, entries in their written order', function (): void {
+    // The deferred return folds run after each walk and answer out of a memo keyed on the callee plus its
+    // bound arguments, so the same code has to give the same entries in the same order every time.
+    $first = FixtureRunner::traceQbEnrich('modules/Billing/PositionController.php', 'Modules\\Billing\\PositionController', 'index');
+    $second = FixtureRunner::traceQbEnrich('modules/Billing/PositionController.php', 'Modules\\Billing\\PositionController', 'index');
+
+    expect(json_encode($first))->toBe(json_encode($second));
+})->group('fixture');

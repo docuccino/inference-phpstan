@@ -48,6 +48,7 @@ use Docuccino\Laravel\Integrations\FormRequest\InlineRulesVisitor;
 use Docuccino\Laravel\Integrations\FormRequest\RulesMethodVisitor;
 use Docuccino\Laravel\Integrations\QueryBuilder\FilterColumn;
 use Docuccino\Laravel\Integrations\QueryBuilder\FilterColumnResolver;
+use Docuccino\Laravel\Integrations\QueryBuilder\QbBuilderRoots;
 use Docuccino\Laravel\Integrations\QueryBuilder\QbEntry;
 use Docuccino\Laravel\Integrations\QueryBuilder\QueryBuilderTraceVisitor;
 use Docuccino\Laravel\Integrations\QueryBuilder\ScopeParameterResolver;
@@ -198,6 +199,15 @@ $result = match ($mode) {
         // enum-filter shape (backing values + case descriptions) end-to-end.
         $visitor = new QueryBuilderTraceVisitor;
         $report = $engine->trace($ref, $visitor);
+        $dependencyFiles = $report->dependencyFiles;
+
+        // What the extension does for an action that is handed its builder: one more root per injected
+        // QueryBuilder subclass (its constructor holds the allow-lists), same visitor, action first, and
+        // every walk's files kept — those are what the extension records for the fragment cache.
+        foreach (QbBuilderRoots::forAction($ref) as $root) {
+            $dependencyFiles = [...$dependencyFiles, ...$engine->trace($root, $visitor)->dependencyFiles];
+        }
+
         $facts = $visitor->facts;
 
         $resolver = new FilterColumnResolver;
@@ -226,6 +236,13 @@ $result = match ($mode) {
                 'kind' => $filter->kind,
                 'factoryEnum' => $filter->factoryEnum,
                 'factoryClass' => $filter->factoryClass,
+                // A custom filter's class, which for the instance form (`new F`) only the typed `new`
+                // expression at the call site can name.
+                'filterClass' => $filter->filterClass,
+                // The column the value types off — recovered from a factory argument, or from the AST of a
+                // callback closure the engine folded out of a helper's body.
+                'typeColumn' => $filter->typeColumn,
+                'nullable' => $filter->nullable,
                 // The recovered leading comment — PHPStan's parser attributes it to the array item the
                 // same way ParserFactory does, which is what makes it usable as an override description.
                 'comment' => $filter->comment,
@@ -244,7 +261,13 @@ $result = match ($mode) {
             'subjectModel' => $facts->subjectModel,
             'filters' => $filters,
             'sorts' => array_map(static fn (QbEntry $s): string => $s->name, $facts->sorts),
-            'visitedBasenames' => array_map('basename', $report->dependencyFiles),
+            'sortKinds' => array_map(static fn (QbEntry $s): string => $s->kind, $facts->sorts),
+            'includes' => array_map(static fn (QbEntry $i): string => $i->name, $facts->includes),
+            'defaultSorts' => $facts->defaultSorts,
+            // The degradation half: an entry the engine could not fold is a named diagnostic, so a test can
+            // pin recovery AND the absence of it.
+            'unresolved' => $facts->unresolved,
+            'visitedBasenames' => array_map('basename', $dependencyFiles),
         ];
     })(),
     'trace-rules' => (static function () use ($engine, $ref): array {

@@ -115,6 +115,9 @@ it('declines anything it cannot read as a literal label', function (string $body
     'not the headers bag' => ["\$response = make();\n\$response->attributes->set('Content-Type', 'text/csv');\nreturn \$response;"],
     'a computed bag name' => ["\$response = make();\n\$response->{\$bag}->set('Content-Type', 'text/csv');\nreturn \$response;"],
     'not set()' => ["\$response = make();\n\$response->headers->replace('Content-Type', 'text/csv');\nreturn \$response;"],
+    // A first-class callable sets no header — and php-parser asserts on getArgs() for one, which the
+    // engine swallows into a truncated shape, so this must decline before reading arguments.
+    'a first-class callable set()' => ["\$response = make();\n\$set = \$response->headers->set(...);\nreturn \$response;"],
     'a bag on a non-variable' => ["\$response = make();\nmake()->headers->set('Content-Type', 'text/csv');\nreturn \$response;"],
     'a variable-variable return' => ['return $$name;'],
 ]);

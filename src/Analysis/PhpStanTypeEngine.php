@@ -29,6 +29,7 @@ use Docuccino\Inference\PhpStan\Runtime\RuntimeAdapter;
 use Docuccino\Inference\PhpStan\Support\ProjectFilter;
 use Docuccino\Inference\PhpStan\Throwing\ThrowAnalyzer;
 use Docuccino\Inference\PhpStan\Trace\CalleeResolver;
+use Docuccino\Inference\PhpStan\Trace\ReturnValueFolder;
 use Docuccino\Inference\PhpStan\Trace\Tracer;
 use Docuccino\Inference\PhpStan\Trace\TypeScopeImpl;
 use Docuccino\Inference\PhpStan\Translation\TypeTranslator;
@@ -516,6 +517,8 @@ final class PhpStanTypeEngine implements TypeEngine
             $this->translator,
             $this->projectFilter,
             new CalleeResolver($this->adapter->reflectionProvider()),
+            // Stateless; the expensive half it reads is the per-file analysis, which IS shared.
+            new ReturnValueFolder($this->fileAnalyzer, $this->adapter->reflectionProvider()),
             $visitor,
             $this->config->traceDepth,
             $this->config->fileBudget,
