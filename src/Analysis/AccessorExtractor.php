@@ -23,10 +23,18 @@ final class AccessorExtractor
      * Classify a value expression as an accessor on one of the current parameters: the parameter itself,
      * `$param->value`/`$param->name`, or a no-arg `$param->method()`. Null when it isn't rooted in one.
      *
+     * A null-coalesce reads through its LEFT side (`$errors ?? $fallback` reads `$errors`): the fallback only
+     * shows up when the argument was absent, which is exactly the case where binding finds no argument and
+     * drops the value rather than pinning it.
+     *
      * @param  list<string>  $paramNames
      */
     public static function fromExpr(Node\Expr $expr, array $paramNames): ?ParamAccessor
     {
+        while ($expr instanceof Node\Expr\BinaryOp\Coalesce) {
+            $expr = $expr->left;
+        }
+
         if ($expr instanceof Node\Expr\Variable && is_string($expr->name) && in_array($expr->name, $paramNames, true)) {
             return ParamAccessor::identity($expr->name);
         }

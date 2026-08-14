@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Docuccino\Inference\PhpStan\Analysis;
 
+use Docuccino\Core\Inference\DType\ArrayShapeField;
 use Docuccino\Core\Inference\DType\ArrayShapeT;
 use Docuccino\Core\Inference\DType\ClassT;
 use Docuccino\Core\Inference\DType\DType;
@@ -27,7 +28,7 @@ use PHPStan\Type\Type;
 /**
  * Recovers the real response shape when a handler builds its response through a project helper whose
  * declared return type erases it (`renderNotFound(): JsonResponse`): follows the call into the callee's
- * own return sites and substitutes the richer `JsonResponse<payload, status, contentType>`. Design
+ * own return sites and substitutes the richer `JsonResponse<payload, status, contentType, members>`. Design
  * detail: see docs/design/inference-embedding.md §4a.
  *
  * Invariants: bounded by the engine's descent depth and per-analysis file budget; memoised per callee
@@ -254,6 +255,8 @@ final class ResponseShapeRefiner
         $ctArg = $type->typeArgs[2] ?? null;
         $contentType = $ctArg instanceof LiteralT && is_string($ctArg->value) ? $ctArg->value : null;
 
+        // No member map to read back: this reads a PHPStan type, and the map is written past the last
+        // `@template` the stub declares, so only our own descent ever carries one.
         return new RefinedResponse($payload, $status, null, $contentType);
     }
 
@@ -331,10 +334,26 @@ final class ResponseShapeRefiner
                 continue;
             }
 
-            return $refined; // first documentable return wins (a helper's single response)
+            // first documentable return wins (a helper's single response)
+            return $refined->contentType === null
+                ? self::labelledContentType($refined, $expr, $node->getStatements())
+                : $refined;
         }
 
         return $delegation;
+    }
+
+    /**
+     * The media type read off a `Content-Type` header write on the returned variable — see
+     * {@see ContentTypeLabel} for the window that keeps one branch's label off another branch's body.
+     *
+     * @param  array<Node\Stmt>  $statements
+     */
+    private static function labelledContentType(RefinedResponse $refined, Node\Expr $returned, array $statements): RefinedResponse
+    {
+        $label = ContentTypeLabel::of($statements, $returned);
+
+        return $label === null ? $refined : $refined->withContentType($label);
     }
 
     /**
@@ -345,13 +364,162 @@ final class ResponseShapeRefiner
      */
     private function bindCall(RefinedResponse $child, Callee $callee, Node\Expr $call, Scope $scope, array $paramNames): RefinedResponse
     {
-        return $this->bindStatus(
+        $bound = $this->bindStatus(
             $this->bindPayload($child, $callee, $call, $scope, $paramNames),
             $callee,
             $call,
             $scope,
             $paramNames,
         );
+
+        // Discovery runs after binding, so a member map that arrived from deeper down is bound against THIS
+        // call's arguments before a fresh one could be read off the same expression.
+        return $this->discoverPayloadMembers($bound, $call, $scope, $paramNames);
+    }
+
+    /**
+     * The constructor arguments an object payload was built with, when the object is built on the way into
+     * the response-producing call — `(new Problem(status: 503, …))->toResponse($request)`, or one project hop
+     * away through a factory that returns it (`Problem::make($type, $detail)->toResponse($request)`).
+     *
+     * Only the arguments actually written are recorded; each is folded here if it can be, and otherwise left
+     * with the accessor {@see bindPayload()} binds one hop out. One hop is deliberate: a factory chain deeper
+     * than that is a guess about which `new` produced the object.
+     *
+     * @param  list<string>  $paramNames  the caller's parameter names
+     */
+    private function discoverPayloadMembers(RefinedResponse $child, Node\Expr $call, Scope $scope, array $paramNames): RefinedResponse
+    {
+        $payload = $child->payload;
+        if ($child->payloadMembers !== null || ! $payload instanceof ClassT || ! $call instanceof Node\Expr\MethodCall) {
+            return $child;
+        }
+
+        $receiver = $call->var;
+
+        if ($receiver instanceof Node\Expr\New_) {
+            [$members, $provenance] = $this->constructedMembers($receiver, $payload->fqcn, $scope, $paramNames);
+
+            return $members === null ? $child : $child->withPayloadMembers($members, $provenance);
+        }
+
+        return $this->membersThroughFactory($child, $receiver, $payload->fqcn, $scope, $paramNames);
+    }
+
+    /**
+     * A project factory returning the payload object: read the `new` in its body, then bind the members it
+     * described in the factory's own parameter space onto the arguments this call passed it.
+     *
+     * @param  list<string>  $paramNames  the caller's parameter names
+     */
+    private function membersThroughFactory(RefinedResponse $child, Node\Expr $receiver, string $fqcn, Scope $scope, array $paramNames): RefinedResponse
+    {
+        if (! $receiver instanceof Node\Expr\MethodCall && ! $receiver instanceof Node\Expr\StaticCall) {
+            return $child;
+        }
+
+        $factory = $this->calleeResolver->resolve($receiver, $scope);
+        if ($factory === null || ! $this->projectFilter->isProjectFile($factory->file)) {
+            return $child; // vendor / unresolvable — a deterministic decline
+        }
+        if (! $this->withinBudget($factory->file)) {
+            $this->budgetCutoffs++; // file-budget cutoff — the enclosing shape is truncated
+
+            return $child;
+        }
+
+        $this->currentFiles[$this->adapter->normalize($factory->file)] = true;
+        $node = $this->fileAnalyzer->analyze($factory->file)[$factory->method] ?? null;
+        if ($node === null) {
+            return $child;
+        }
+
+        $factoryParams = $this->parameterNames($factory);
+
+        foreach ($node->getReturnStatements() as $statement) {
+            $expr = $statement->getReturnNode()->expr;
+            if (! $expr instanceof Node\Expr\New_) {
+                continue;
+            }
+
+            [$members, $provenance] = $this->constructedMembers(
+                $expr,
+                $fqcn,
+                $this->fileAnalyzer->stableScope($statement->getScope()),
+                $factoryParams,
+            );
+            if ($members === null) {
+                continue;
+            }
+
+            return $this->bindPayload(
+                $child->withPayloadMembers($members, $provenance),
+                $factory,
+                $receiver,
+                $scope,
+                $paramNames,
+            );
+        }
+
+        return $child;
+    }
+
+    /**
+     * One field per supplied constructor argument — the folded literal when it folds, an {@see UnknownT}
+     * otherwise — plus the provenance of the unfolded ones. Both null when the `new` isn't the payload class.
+     *
+     * @param  list<string>  $paramNames  the parameter names visible where the `new` is written
+     * @return array{?ArrayShapeT, array<string, ParamAccessor>}
+     */
+    private function constructedMembers(Node\Expr\New_ $new, string $fqcn, Scope $scope, array $paramNames): array
+    {
+        if (! $new->class instanceof Node\Name || $scope->resolveName($new->class) !== $fqcn) {
+            return [null, []];
+        }
+
+        $args = ConstructorArgs::named($new, $this->constructorParameterNames($fqcn));
+        if ($args === []) {
+            return [null, []];
+        }
+
+        $fields = [];
+        $provenance = [];
+        foreach ($args as $name => $value) {
+            $sensitive = SensitiveConstant::label($value);
+            $literal = $sensitive === null ? $this->constLiteralOf($value, $scope) : null;
+            if ($literal === null && $sensitive === null) {
+                $accessor = AccessorExtractor::fromExpr($value, $paramNames);
+                if ($accessor !== null) {
+                    $provenance[$name] = $accessor;
+                }
+            }
+            $fields[] = new ArrayShapeField($name, $literal ?? new UnknownT($sensitive === null ? 'constructor argument not folded' : 'sensitive constant'));
+        }
+
+        return [new ArrayShapeT($fields), $provenance];
+    }
+
+    /**
+     * In declaration order, for positional binding; empty when the class has no readable constructor.
+     *
+     * @return list<string>
+     */
+    private function constructorParameterNames(string $fqcn): array
+    {
+        if (! $this->reflectionProvider->hasClass($fqcn)) {
+            return [];
+        }
+        $class = $this->reflectionProvider->getClass($fqcn);
+        if (! $class->hasConstructor()) {
+            return [];
+        }
+
+        $names = [];
+        foreach ($class->getConstructor()->getVariants()[0]->getParameters() as $parameter) {
+            $names[] = $parameter->getName();
+        }
+
+        return $names;
     }
 
     /**
@@ -388,11 +556,17 @@ final class ResponseShapeRefiner
      * provenance one hop out; anything else drops it and leaves the member widened (a {@see StatusMarkerT}
      * member is left for the response seam). A member is only ever pinned to a value that flows to it.
      *
+     * An argument the call site didn't pass at all is the one case the two payload kinds part company: an
+     * object member came from a constructor argument, so an unsupplied one means the member isn't in this
+     * response's body ({@see RefinedResponse::withoutMember()}), whereas an array-shape member is PHPStan's
+     * own account of the body and only loses its provenance.
+     *
      * @param  list<string>  $paramNames  the caller's parameter names
      */
     private function bindPayload(RefinedResponse $child, Callee $callee, Node\Expr $call, Scope $scope, array $paramNames): RefinedResponse
     {
-        if ($child->payloadParamProvenance === [] || ! $child->payload instanceof ArrayShapeT) {
+        $objectMembers = $child->payloadMembers !== null;
+        if ($child->payloadParamProvenance === [] || (! $objectMembers && ! $child->payload instanceof ArrayShapeT)) {
             return $child;
         }
 
@@ -400,7 +574,7 @@ final class ResponseShapeRefiner
         foreach ($child->payloadParamProvenance as $key => $accessor) {
             $argExpr = $this->argumentFor($callee, $accessor->param, $call);
             if ($argExpr === null) {
-                $child = $child->bindMember($key, null, null);
+                $child = $objectMembers ? $child->withoutMember($key) : $child->bindMember($key, null, null);
 
                 continue;
             }
@@ -416,12 +590,13 @@ final class ResponseShapeRefiner
 
     /**
      * An identity accessor folds a constant-scalar argument directly; an enum accessor folds only when the
-     * argument is a concrete enum case, via {@see EnumAccessorFolder}. Null when nothing folds.
+     * argument is a concrete enum case, via {@see EnumAccessorFolder}. Null when nothing folds — which
+     * includes a constant named like a credential ({@see SensitiveConstant}).
      */
     private function foldAccessorArgument(Node\Expr $argExpr, ParamAccessor $accessor, Scope $scope): ?LiteralT
     {
         if ($accessor->kind === AccessorKind::Identity) {
-            return $this->constLiteralOf($argExpr, $scope);
+            return SensitiveConstant::label($argExpr) === null ? $this->constLiteralOf($argExpr, $scope) : null;
         }
 
         $case = $this->enumCaseOf($argExpr, $scope);

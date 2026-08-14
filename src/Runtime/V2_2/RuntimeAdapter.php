@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Docuccino\Inference\PhpStan\Runtime\V2_2;
 
+use Docuccino\Inference\PhpStan\Extensions\DataToResponseReturnTypeExtension;
+use Docuccino\Inference\PhpStan\Extensions\DataTransformReturnTypeExtension;
 use Docuccino\Inference\PhpStan\Extensions\ResponseJsonReturnTypeExtension;
 use Docuccino\Inference\PhpStan\Runtime\BootFailedException;
 use Docuccino\Inference\PhpStan\Runtime\RuntimeAdapter as RuntimeAdapterContract;
@@ -219,7 +221,22 @@ final class RuntimeAdapter implements RuntimeAdapterContract
         foreach ($this->stubFiles() as $stubFile) {
             $stubFiles .= "        - {$stubFile}\n";
         }
-        $extensionClass = ResponseJsonReturnTypeExtension::class;
+        // Every dynamic return-type extension the engine ships. Registration is uniform, so adding one
+        // here is the whole wiring.
+        $services = '';
+        foreach ([
+            ResponseJsonReturnTypeExtension::class,
+            DataToResponseReturnTypeExtension::class,
+            DataTransformReturnTypeExtension::class,
+        ] as $extensionClass) {
+            $services .= <<<NEON
+                    -
+                        class: {$extensionClass}
+                        tags:
+                            - phpstan.broker.dynamicMethodReturnTypeExtension
+
+                NEON;
+        }
 
         $neon = <<<NEON
             includes:
@@ -232,10 +249,7 @@ final class RuntimeAdapter implements RuntimeAdapterContract
                 stubFiles:
             {$stubFiles}
             services:
-                -
-                    class: {$extensionClass}
-                    tags:
-                        - phpstan.broker.dynamicMethodReturnTypeExtension
+            {$services}
             NEON;
 
         $generatedNeon = $this->config->tmpDir.'/docuccino.neon';

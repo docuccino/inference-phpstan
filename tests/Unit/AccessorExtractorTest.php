@@ -47,6 +47,24 @@ it('classifies parameter accessors: identity, ->value, ->name, ->method()', func
     'not rooted in a parameter' => [aeCaseConst('App\\Problem', 'Forbidden'), null],
 ]);
 
+it('reads through a null-coalesce to its left side', function (Node\Expr $expr, ?ParamAccessor $expected): void {
+    // `$errors ?? new Optional` is how an app says "absent unless supplied": the value reads through the
+    // parameter, and the fallback only surfaces when the argument wasn't passed — which binding sees as no
+    // argument at all rather than as a value to pin.
+    expect(AccessorExtractor::fromExpr($expr, ['problem', 'detail']))->toEqual($expected);
+})->with(function (): array {
+    $coalesce = static fn (Node\Expr $left, Node\Expr $right): Node\Expr\BinaryOp\Coalesce => new Node\Expr\BinaryOp\Coalesce($left, $right);
+    $fallback = new Node\Expr\New_(new Node\Name('Spatie\\LaravelData\\Optional'));
+
+    return [
+        'parameter ?? fallback' => [$coalesce(aeVar('detail'), $fallback), ParamAccessor::identity('detail')],
+        'accessor ?? fallback' => [$coalesce(aeCall('problem', 'title'), $fallback), new ParamAccessor('problem', AccessorKind::Method, 'title')],
+        // Left-associative, so the first operand is still the one that wins at runtime.
+        'chained coalesce' => [$coalesce($coalesce(aeVar('detail'), aeVar('other')), $fallback), ParamAccessor::identity('detail')],
+        'non-parameter left side' => [$coalesce(aeVar('other'), aeVar('detail')), null],
+    ];
+});
+
 it('captures member→accessor provenance from a body array literal (string keys only)', function (): void {
     $item = static fn (?Node\Expr $key, Node\Expr $value): Node\ArrayItem => new Node\ArrayItem($value, $key);
 

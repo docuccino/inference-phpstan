@@ -22,8 +22,8 @@ use ReflectionType;
 use ReflectionUnionType;
 
 /**
- * Maps a native PHP `ReflectionType` to a {@see DType} for {@see ClassMetadataFactory}, which resolves
- * property types by reflection alone. Stays literal — docblock `@var` refinement is an integration concern.
+ * Maps a native PHP `ReflectionType` to a {@see DType} for {@see ClassMetadataFactory}. Stays literal: a
+ * bare `array` is `UnknownT`, and refining that from a docblock is the factory's job, not this table's.
  *
  * @internal
  */

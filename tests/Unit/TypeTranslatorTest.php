@@ -8,6 +8,7 @@ use Docuccino\Core\Inference\DType\ArrayShapeT;
 use Docuccino\Core\Inference\DType\ClassT;
 use Docuccino\Core\Inference\DType\DType;
 use Docuccino\Core\Inference\DType\EnumT;
+use Docuccino\Core\Inference\DType\ListT;
 use Docuccino\Core\Inference\DType\LiteralT;
 use Docuccino\Core\Inference\DType\MapT;
 use Docuccino\Core\Inference\DType\NullT;
@@ -17,6 +18,8 @@ use Docuccino\Core\Inference\DType\UnknownT;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Colour;
 use Docuccino\Inference\PhpStan\Translation\TranslationBudget;
 use Docuccino\Inference\PhpStan\Translation\TypeTranslator;
+use PHPStan\Type\Accessory\AccessoryArrayListType;
+use PHPStan\Type\Accessory\NonEmptyArrayType;
 use PHPStan\Type\ArrayType;
 use PHPStan\Type\BooleanType;
 use PHPStan\Type\Constant\ConstantArrayTypeBuilder;
@@ -31,6 +34,7 @@ use PHPStan\Type\NullType;
 use PHPStan\Type\ObjectType;
 use PHPStan\Type\StringType;
 use PHPStan\Type\Type;
+use PHPStan\Type\TypeCombinator;
 use PHPStan\Type\UnionType;
 
 /**
@@ -132,6 +136,44 @@ it('maps a general keyed array to MapT', function (): void {
     /** @var MapT $type */
     expect($type->key)->toEqual(ScalarT::string())
         ->and($type->value)->toEqual(ScalarT::int());
+});
+
+it('maps a list to ListT, not to a keyed map', function (): void {
+    // A `list<V>` is an int-keyed ArrayType intersected with the list accessory. Decomposing the
+    // intersection first would drop that accessory and emit an object schema for a JSON array.
+    $type = translate(TypeCombinator::intersect(
+        new ArrayType(new IntegerType, new StringType),
+        new AccessoryArrayListType,
+    ));
+
+    expect($type)->toBeInstanceOf(ListT::class);
+    /** @var ListT $type */
+    expect($type->value)->toEqual(ScalarT::string());
+});
+
+it('keeps the element shape of a list of array shapes', function (): void {
+    $builder = ConstantArrayTypeBuilder::createEmpty();
+    $builder->setOffsetValueType(new ConstantStringType('detail'), new StringType);
+    $builder->setOffsetValueType(new ConstantStringType('pointer'), new StringType);
+
+    $type = translate(TypeCombinator::intersect(
+        new ArrayType(new IntegerType, $builder->getArray()),
+        new AccessoryArrayListType,
+    ));
+
+    expect($type)->toBeInstanceOf(ListT::class);
+    /** @var ListT $type */
+    expect($type->value)->toBeInstanceOf(ArrayShapeT::class);
+});
+
+it('keeps a non-empty keyed array a MapT', function (): void {
+    // Only list-ness short-circuits the intersection; other accessories still drop away.
+    $type = translate(TypeCombinator::intersect(
+        new ArrayType(new StringType, new IntegerType),
+        new NonEmptyArrayType,
+    ));
+
+    expect($type)->toBeInstanceOf(MapT::class);
 });
 
 it('degrades to UnknownT when the depth budget is exhausted', function (): void {

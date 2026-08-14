@@ -182,6 +182,96 @@ it('is a payload no-op for a non-shape body (nothing to mark or bind)', function
         ->and($bound->payloadParamProvenance)->toBe([]);
 });
 
+/** A response whose object payload was watched being constructed with `$members`, all still unfolded. */
+function withMembers(array $members, array $provenance = []): RefinedResponse
+{
+    $fields = array_map(
+        static fn (string $name): ArrayShapeField => new ArrayShapeField($name, new UnknownT('constructor argument not folded')),
+        $members,
+    );
+
+    return (new RefinedResponse(payload: new ClassT('App\\Data\\ProblemData')))
+        ->withPayloadMembers(new ArrayShapeT($fields), $provenance);
+}
+
+/** The value type of one constructor-argument member, or null when the member is gone. */
+function suppliedType(RefinedResponse $r, string $key): mixed
+{
+    foreach ($r->payloadMembers?->fields ?? [] as $field) {
+        if ((string) $field->key === $key) {
+            return $field->type;
+        }
+    }
+
+    return null;
+}
+
+it('pins an object payload’s member into the member map, leaving the class type alone', function (): void {
+    // A ClassT has no fields to rewrite, so the folded value has to live beside it — and the payload must
+    // stay the bare class identity the adapter converts to a schema.
+    $payload = new ClassT('App\\Data\\ProblemData');
+    $refined = (new RefinedResponse(payload: $payload))
+        ->withPayloadMembers(
+            new ArrayShapeT([new ArrayShapeField('title', new UnknownT('constructor argument not folded'))]),
+            ['title' => new ParamAccessor('problem', AccessorKind::Method, 'title')],
+        )
+        ->bindMember('title', new LiteralT('Forbidden'), null);
+
+    expect($refined->payload)->toBe($payload)
+        ->and(suppliedType($refined, 'title'))->toEqual(new LiteralT('Forbidden'))
+        ->and($refined->payloadParamProvenance)->toBe([]);
+});
+
+it('drops a member the call site never supplied, and only that member', function (): void {
+    // An unsupplied constructor argument took its default, so the member isn't in this response's body —
+    // unlike an unbound array-shape member, which stays and merely widens.
+    $refined = withMembers(['type', 'errors'], ['errors' => ParamAccessor::identity('errors')])
+        ->withoutMember('errors');
+
+    expect(suppliedType($refined, 'errors'))->toBeNull()
+        ->and(suppliedType($refined, 'type'))->toBeInstanceOf(UnknownT::class)
+        ->and($refined->payloadParamProvenance)->toBe([]);
+});
+
+it('leaves an array-shape payload’s members alone when there is no member map', function (): void {
+    // withoutMember is only ever reached for an object payload; on anything else it may drop provenance but
+    // must not touch the shape PHPStan gave us.
+    $shape = new ArrayShapeT([new ArrayShapeField('errors', ScalarT::string())]);
+    $refined = (new RefinedResponse(payload: $shape, payloadParamProvenance: ['errors' => ParamAccessor::identity('errors')]))
+        ->withoutMember('errors');
+
+    expect($refined->payload)->toBe($shape)
+        ->and($refined->payloadMembers)->toBeNull()
+        ->and($refined->payloadParamProvenance)->toBe([]);
+});
+
+it('emits the member map as a fourth arg, holding the content-type slot when there is none', function (): void {
+    // The map has to stay fourth whether or not a media type was recovered, or the adapter would read it as
+    // the content type. These args are read back by the pipeline, never by PHPStan.
+    $withType = withMembers(['type'])->toClassT(ResponseShapeRefiner::CANONICAL_RESPONSE);
+    expect($withType?->typeArgs)->toHaveCount(4)
+        ->and($withType?->typeArgs[2])->toBeInstanceOf(UnknownT::class)
+        ->and($withType?->typeArgs[3])->toBeInstanceOf(ArrayShapeT::class);
+
+    $labelled = (new RefinedResponse(payload: new ClassT('App\\Data\\ProblemData'), contentType: 'application/problem+json'))
+        ->withPayloadMembers(new ArrayShapeT([new ArrayShapeField('type', new LiteralT('about:blank'))]), [])
+        ->toClassT(ResponseShapeRefiner::CANONICAL_RESPONSE);
+    expect($labelled?->typeArgs)->toHaveCount(4)
+        ->and($labelled?->typeArgs[2])->toEqual(new LiteralT('application/problem+json'))
+        ->and($labelled?->typeArgs[3])->toBeInstanceOf(ArrayShapeT::class);
+});
+
+it('carries the member map through every other rewrite', function (): void {
+    // Binding the status, re-homing it and re-labelling the media type all happen after discovery, so none
+    // of them may lose the map on the way out.
+    $base = withMembers(['type'], ['type' => ParamAccessor::identity('type')]);
+
+    expect($base->withBoundStatus(new LiteralT(403))->payloadMembers)->not->toBeNull()
+        ->and($base->withStatusSource(ParamAccessor::identity('status'))->payloadMembers)->not->toBeNull()
+        ->and($base->withContentType('application/problem+json')->payloadMembers)->not->toBeNull()
+        ->and($base->bindMember('type', null, ParamAccessor::identity('outer'))->payloadMembers)->not->toBeNull();
+});
+
 it('recognises the bare response class names it should try to enrich', function (): void {
     expect(ResponseShapeRefiner::isResponseFqcn('Illuminate\\Http\\JsonResponse'))->toBeTrue()
         ->and(ResponseShapeRefiner::isResponseFqcn('Illuminate\\Http\\Response'))->toBeTrue()

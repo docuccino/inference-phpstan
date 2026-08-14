@@ -171,6 +171,14 @@ final class TypeTranslator
 
     private function translateIntersection(IntersectionType $type, TranslationBudget $budget): DType
     {
+        // A non-constant `list<V>` arrives as `ArrayType(int, V)` intersected with the list accessory, and
+        // that accessory is the only thing saying "JSON array". Dropping it below would leave a bare
+        // int-keyed ArrayType, which reads as a MapT and emits an object schema — so settle list-ness
+        // against the whole intersection before decomposing it.
+        if ($type->isList()->yes()) {
+            return new ListT($this->translate($type->getIterableValueType(), $budget->descend()));
+        }
+
         // Accessory types (non-empty-string, has-offset, …) refine but aren't documentable shapes, so drop
         // them; a single survivor collapses to itself.
         $survivors = [];

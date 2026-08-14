@@ -21,6 +21,11 @@ namespace Illuminate\Http;
  * hoists the payload schema under the recovered media type (default
  * `application/json`).
  *
+ * The refiner's own `ClassT` carries a FOURTH argument (the constructor
+ * arguments an object payload was built with) that deliberately has no
+ * `@template` here: it is written by the refiner and read by the pipeline, never
+ * round-tripped through PHPStan, so no generic has to hold it.
+ *
  * @template TPayload
  * @template TStatus of int
  * @template TContentType of string
