@@ -24,7 +24,7 @@ declare(strict_types=1);
  *   php engine-runner.php trace-json-api-paginate   <controllerFile> <class> <method>
  *   php engine-runner.php trace-pagination-terminal <controllerFile> <class> <method>
  *   php engine-runner.php trace-created-resource    <controllerFile> <class> <method>
- *   php engine-runner.php trace-rate-limiter        <file> <ignored> <ignored> <line>
+ *   php engine-runner.php trace-closure             <file> <ignored> <ignored> <line>
  *
  * Dispatch stays a `match ($mode)` rather than a mode => factory table — each arm is a thin
  * visitor probe and a test-only harness doesn't warrant the indirection. Revisit if the mode
@@ -42,6 +42,7 @@ use Docuccino\Inference\PhpStan\Analysis\EngineConfig;
 use Docuccino\Inference\PhpStan\Analysis\PhpStanEngineFactory;
 use Docuccino\Inference\PhpStan\Analysis\PhpStanTypeEngineBuilder;
 use Docuccino\Inference\PhpStan\Runtime\RuntimeConfig;
+use Docuccino\Inference\PhpStan\Tests\Support\ClosureReturnProbe;
 use Docuccino\Inference\PhpStan\Tests\Support\QueryBuilderProbe;
 use Docuccino\Laravel\Integrations\ApiResources\CreatedResourceVisitor;
 use Docuccino\Laravel\Integrations\FormRequest\InlineRulesVisitor;
@@ -52,7 +53,6 @@ use Docuccino\Laravel\Integrations\QueryBuilder\QbBuilderRoots;
 use Docuccino\Laravel\Integrations\QueryBuilder\QbEntry;
 use Docuccino\Laravel\Integrations\QueryBuilder\QueryBuilderTraceVisitor;
 use Docuccino\Laravel\Integrations\QueryBuilder\ScopeParameterResolver;
-use Docuccino\Laravel\Integrations\RateLimit\RateLimiterLimitVisitor;
 use Docuccino\Laravel\Integrations\Support\PaginationTerminalVisitor;
 
 $repoRoot = dirname(__DIR__, 4);
@@ -330,21 +330,14 @@ $result = match ($mode) {
 
         return ['paginates' => $visitor->paginates, 'kind' => $visitor->kind];
     })(),
-    'trace-rate-limiter' => (static function () use ($engine, $file, $line): array {
-        // RateLimiterLimitVisitor over a named limiter's RateLimiter::for closure, located by line: the
-        // engine's closure trace folds an idiomatic `fn ($r) => Limit::perMinute(60)->by(…)` arrow
-        // limiter to concrete numbers.
-        $visitor = new RateLimiterLimitVisitor;
-        $engine->trace(new ActionRef($file, null, '{closure}', $line), $visitor);
-        $limit = $visitor->limit;
+    'trace-closure' => (static function () use ($engine, $file, $line): array {
+        // The closure-by-line trace — how a closure route's action is walked — hands each return
+        // expression to the visitor with a live scope, for both the arrow-function and full-closure
+        // shapes.
+        $probe = new ClosureReturnProbe;
+        $engine->trace(new ActionRef($file, null, '{closure}', $line), $probe);
 
-        return [
-            'resolved' => $limit->resolved(),
-            'bailed' => $limit->bailed,
-            'returnsSeen' => $limit->returnsSeen,
-            'maxAttempts' => $limit->maxAttempts,
-            'decaySeconds' => $limit->decaySeconds,
-        ];
+        return ['returns' => $probe->returns];
     })(),
     'trace-created-resource' => (static function () use ($engine, $ref): array {
         // CreatedResourceVisitor recognises a resource wrapping a real Model::create() — the 201 status

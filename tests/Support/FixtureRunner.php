@@ -127,15 +127,14 @@ final class FixtureRunner
     }
 
     /**
-     * Trace a named rate limiter's `RateLimiter::for` closure (located by line) with the
-     * RateLimiterLimitVisitor: returns whether it folded to a concrete limit plus the recovered
-     * maxAttempts + decay seconds, or the bail signal for a limiter it couldn't fold.
+     * Trace a closure located by start line with the {@see ClosureReturnProbe}: returns one entry per
+     * return expression the engine handed over, with its node kind and the scope's type for it.
      *
      * @return array<string, mixed>
      */
-    public static function traceRateLimiter(string $relPath, int $line): array
+    public static function traceClosure(string $relPath, int $line): array
     {
-        return self::invoke('trace-rate-limiter', self::path($relPath), '', '{closure}', (string) $line);
+        return self::invoke('trace-closure', self::path($relPath), '', '{closure}', (string) $line);
     }
 
     /**
