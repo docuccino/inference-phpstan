@@ -374,20 +374,79 @@ function pairStatus(array $analysis): ?int
     return $statusArg instanceof LiteralT && is_int($statusArg->value) ? $statusArg->value : null;
 }
 
-it('never reuses a budget-truncated helper shape where a later analysis had headroom (determinism guard)', function (): void {
-    // One engine, tiny file budget (2): deep() spends the budget through BudgetPad + BudgetShared, so
-    // the BudgetLeaf hop is cut off and BudgetShared::make() recovers a truncated (bare) shape first.
-    // direct() then reaches the same helper with headroom and must get the full 418 shape — the refiner
-    // never memoises a truncated computation. Without that rule this is a latent route-order
-    // nondeterminism.
+// The [fileBudget, traceDepth] pairs below truncate the BudgetRenderer chain's deep path while leaving
+// its direct path intact — a file budget of 2 (BudgetPad + BudgetShared spend it, so the BudgetLeaf hop
+// is refused) and a descent depth of 2 (BudgetLeaf sits one level too deep behind BudgetPad). Each drives
+// a different refuse-to-descend branch, and the memo has to respect both.
+
+it('never reuses a bound-truncated helper shape where a later analysis had headroom (determinism guard)', function (int $fileBudget, int $traceDepth): void {
+    // One engine, one bound shrunk: deep() spends it through BudgetPad, so the BudgetLeaf hop is cut off
+    // and BudgetShared::make() recovers a truncated (bare) shape first. direct() then reaches the same
+    // helper with headroom and must get the full 418 shape — the refiner never memoises a truncated
+    // computation. Without that rule this is a latent route-order nondeterminism.
     $pair = FixtureRunner::refinePair(
-        2,
+        $fileBudget,
+        $traceDepth,
         ['app/Support/BudgetRenderer.php', 'App\\Support\\BudgetRenderer', 'deep'],
         ['app/Support/BudgetRenderer.php', 'App\\Support\\BudgetRenderer', 'direct'],
     );
 
     expect(pairStatus($pair['first']))->toBeNull()   // deep path: BudgetLeaf hop cut off → bare
         ->and(pairStatus($pair['second']))->toBe(418); // direct path: full shape, not the stale truncation
+})->with(['file budget' => [2, 4], 'descent depth' => [40, 2]])->group('fixture');
+
+it('never serves a complete helper shape to an analysis that had no headroom to earn it', function (int $fileBudget, int $traceDepth): void {
+    // The mirror image: direct() goes FIRST and memoises the full 418 shape for BudgetShared::make(),
+    // then deep() reaches the same helper with the bound already spent. Serving the memo there would hand
+    // deep() a body it could not have computed — the same route-order dependence from the other side, and
+    // a warm/cold divergence too, since a cold build of deep() alone can only produce the bare type.
+    $pair = FixtureRunner::refinePair(
+        $fileBudget,
+        $traceDepth,
+        ['app/Support/BudgetRenderer.php', 'App\\Support\\BudgetRenderer', 'direct'],
+        ['app/Support/BudgetRenderer.php', 'App\\Support\\BudgetRenderer', 'deep'],
+    );
+
+    expect(pairStatus($pair['first']))->toBe(418)    // direct path: full shape, memoised
+        ->and(pairStatus($pair['second']))->toBeNull(); // deep path: starved, so it must NOT get the memo
+})->with(['file budget' => [2, 4], 'descent depth' => [40, 2]])->group('fixture');
+
+it('analyses a pair to identical results whichever one runs first', function (int $fileBudget, int $traceDepth): void {
+    // The regression guard proper: whatever the bounds do to this chain, an analysis is a function of the
+    // callable alone. Returns, diagnostics and dependency files all have to match across the orders — a
+    // dependency file that only appears when a memo was warm would break the fragment cache the same way
+    // a shape would.
+    $deep = ['app/Support/BudgetRenderer.php', 'App\\Support\\BudgetRenderer', 'deep'];
+    $direct = ['app/Support/BudgetRenderer.php', 'App\\Support\\BudgetRenderer', 'direct'];
+
+    $forward = FixtureRunner::refinePair($fileBudget, $traceDepth, $deep, $direct);
+    $reverse = FixtureRunner::refinePair($fileBudget, $traceDepth, $direct, $deep);
+
+    // Both analyses recovered a return site, so "identical" can't be satisfied by two empty results.
+    expect($forward['first']['returns'])->toHaveCount(1)
+        ->and($forward['second']['returns'])->toHaveCount(1)
+        ->and($forward['first'])->toEqual($reverse['second'])
+        ->and($forward['second'])->toEqual($reverse['first']);
+})->with(['file budget' => [2, 4], 'descent depth' => [40, 2], 'real defaults' => [40, 4]])->group('fixture');
+
+it('reports a bound-truncated response shape instead of degrading quietly', function (): void {
+    // A response that lost its body to the descent bound is documented as its declared type — true, but
+    // poorer than the code says, so the analysis carries the reason. The path that recovered the full
+    // shape must stay silent, or the diagnostic says nothing.
+    $pair = FixtureRunner::refinePair(
+        2,
+        4,
+        ['app/Support/BudgetRenderer.php', 'App\\Support\\BudgetRenderer', 'deep'],
+        ['app/Support/BudgetRenderer.php', 'App\\Support\\BudgetRenderer', 'direct'],
+    );
+
+    $codes = static fn (array $analysis): array => array_map(
+        static fn (array $diagnostic): string => (string) $diagnostic['code'],
+        $analysis['diagnostics'],
+    );
+
+    expect($codes($pair['first']))->toContain('inference.response-shape-truncated')
+        ->and($codes($pair['second']))->not->toContain('inference.response-shape-truncated');
 })->group('fixture');
 
 it('folds each case independently + deterministically (memoisation keyed per enum-case+method)', function (): void {

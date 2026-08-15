@@ -15,7 +15,7 @@ declare(strict_types=1);
  * Usage (one mode per invocation — each maps 1:1 onto a FixtureRunner method):
  *   php engine-runner.php analyze                   <controllerFile> <class> <method>
  *   php engine-runner.php analyze-callable          <file> <class> <method> <line> <narrowParam> <narrowType>
- *   php engine-runner.php refine-pair               <fileBudget> <file1> <class1> <method1> <file2> <class2> <method2>
+ *   php engine-runner.php refine-pair               <fileBudget> <traceDepth> <file1> <class1> <method1> <file2> <class2> <method2>
  *   php engine-runner.php class-metadata            <ignored>        <class>
  *   php engine-runner.php trace-qb                  <controllerFile> <class> <method>
  *   php engine-runner.php trace-qb-enrich           <controllerFile> <class> <method>
@@ -117,15 +117,16 @@ register_shutdown_function(static function () use ($tmp): void {
     @rmdir($tmp);
 });
 
-// refine-pair drives the engine with a tiny per-analysis file budget (argv[2]) so a shared helper
-// truncates on a budget-spending path and has headroom on a direct one — the ResponseShapeRefiner
-// truncation-memo guard. Every other mode keeps the real default (40).
+// refine-pair drives the engine with a tiny per-analysis file budget (argv[2]) and descent depth
+// (argv[3]) so a shared helper truncates on a budget-spending path and has headroom on a direct one —
+// the ResponseShapeRefiner's memo-headroom guard, on either bound. Every other mode keeps the real
+// defaults (40 / 4).
 $engineConfig = EngineConfig::forProjectWithVendor($app.'/vendor', $app.'/app');
 if ($mode === 'refine-pair') {
     $engineConfig = new EngineConfig(
         $engineConfig->projectPaths,
         $engineConfig->knownThrowers,
-        $engineConfig->traceDepth,
+        max(1, (int) ($argv[3] ?? 4)),
         $engineConfig->throwDepth,
         max(1, (int) ($argv[2] ?? 2)),
         $engineConfig->vendorPath,
@@ -166,16 +167,16 @@ $result = match ($mode) {
         $narrowParam,
         $narrowType,
     ))->toArray(),
-    // Two callables through one engine (shared per-callee memo) under the tiny budget: the determinism
-    // guard for the refiner's "never memoise a budget-truncated shape" rule.
+    // Two callables through one engine (shared per-callee memo) under the tiny bounds: the determinism
+    // guard for the refiner's "only serve a memo entry a caller could have earned" rule.
     'refine-pair' => (static function () use ($engine, $app, $argv): array {
         $analyse = static fn (string $relPath, string $class, string $method): array => $engine->analyzeCallable(
             new CallableRef($app.'/'.$relPath, $class === '' ? null : $class, $method === '' ? null : $method),
         )->toArray();
 
         return [
-            'first' => $analyse($argv[3] ?? '', $argv[4] ?? '', $argv[5] ?? ''),
-            'second' => $analyse($argv[6] ?? '', $argv[7] ?? '', $argv[8] ?? ''),
+            'first' => $analyse($argv[4] ?? '', $argv[5] ?? '', $argv[6] ?? ''),
+            'second' => $analyse($argv[7] ?? '', $argv[8] ?? '', $argv[9] ?? ''),
         ];
     })(),
     'class-metadata' => $engine->classMetadata(new ClassRef($class))->toArray(),

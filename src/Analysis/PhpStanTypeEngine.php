@@ -27,6 +27,7 @@ use Docuccino\Core\Support\Fqcn;
 use Docuccino\Inference\PhpStan\Metadata\ClassMetadataFactory;
 use Docuccino\Inference\PhpStan\Runtime\RuntimeAdapter;
 use Docuccino\Inference\PhpStan\Support\ProjectFilter;
+use Docuccino\Inference\PhpStan\Support\SourceOrder;
 use Docuccino\Inference\PhpStan\Throwing\ThrowAnalyzer;
 use Docuccino\Inference\PhpStan\Trace\CalleeResolver;
 use Docuccino\Inference\PhpStan\Trace\ReturnValueFolder;
@@ -94,9 +95,10 @@ final class PhpStanTypeEngine implements TypeEngine
                 dependencyFiles: [$action->file],
             );
         } finally {
-            // Drain so a mid-analysis throw can't leak the refiner's touched files into the next
-            // analysis's dependency set. No-op on the success path, which already drained.
+            // Drain so a mid-analysis throw can't leak the refiner's touched files or its truncation
+            // count into the next analysis. No-op on the success path, which already drained.
             $this->drainRefinerFiles();
+            $this->refiner?->takeTruncations();
         }
     }
 
@@ -131,6 +133,10 @@ final class PhpStanTypeEngine implements TypeEngine
                 'inference.throw-noise-dropped',
                 sprintf('Dropped %d implicit "any-throwable" point(s) in %s.', $dropped, $action->symbol()),
             );
+        }
+        $truncation = $this->refinerTruncation($action->symbol());
+        if ($truncation !== null) {
+            $diagnostics[] = $truncation;
         }
 
         return new ActionAnalysis(
@@ -197,6 +203,29 @@ final class PhpStanTypeEngine implements TypeEngine
         return $this->refiner === null ? [] : $this->refiner->takeFiles();
     }
 
+    /**
+     * A response whose shape recovery ran out of descent depth or file budget is documented as its bare
+     * declared type — true, but poorer than the code says, so it is reported rather than degrading
+     * quietly. Always drained, so a truncation can't be attributed to the next analysis.
+     */
+    private function refinerTruncation(string $symbol): ?Diagnostic
+    {
+        $truncations = $this->refiner === null ? 0 : $this->refiner->takeTruncations();
+        if ($truncations === 0) {
+            return null;
+        }
+
+        return new Diagnostic(
+            Severity::Info,
+            'inference.response-shape-truncated',
+            sprintf(
+                'Response-shape recovery in %s stopped at its descent bound %d time(s); the response is documented as its declared type. Shorten the helper chain, or state the response explicitly.',
+                $symbol,
+                $truncations,
+            ),
+        );
+    }
+
     public function analyzeCallable(CallableRef $callable): ActionAnalysis
     {
         return $this->callableMemo[$callable->symbol()] ??= $this->analyzeCallableUncached($callable);
@@ -216,8 +245,9 @@ final class PhpStanTypeEngine implements TypeEngine
                 dependencyFiles: [$callable->file],
             );
         } finally {
-            // An analysis must not inherit a failed sibling's dependencies.
+            // An analysis must not inherit a failed sibling's dependencies or its truncation count.
             $this->drainRefinerFiles();
+            $this->refiner?->takeTruncations();
         }
     }
 
@@ -240,10 +270,11 @@ final class PhpStanTypeEngine implements TypeEngine
         }
 
         $narrowed = $this->harvestNarrowed($node, $callable);
+        $truncation = $this->refinerTruncation($callable->symbol());
 
         return new ActionAnalysis(
             returns: $narrowed['returns'],
-            diagnostics: $narrowed['diagnostics'],
+            diagnostics: $truncation === null ? $narrowed['diagnostics'] : [...$narrowed['diagnostics'], $truncation],
             dependencyFiles: [$callable->file, ...$this->drainRefinerFiles()],
         );
     }
@@ -287,7 +318,7 @@ final class PhpStanTypeEngine implements TypeEngine
             $type = $this->siteType($expr, $scope);
             $guard = $param === null ? [] : $this->classFqcns($this->translator->translate($scope->getType(new Variable($param))));
             $sites[] = [
-                'pos' => $this->sourcePos($returnNode),
+                'pos' => SourceOrder::of($returnNode),
                 'line' => $returnNode->getStartLine(),
                 'type' => $type,
                 'guard' => $guard,
@@ -353,7 +384,7 @@ final class PhpStanTypeEngine implements TypeEngine
         foreach ($match->arms as $arm) {
             $type = $this->siteType($arm->body, $scope);
             $sites[] = [
-                'pos' => $this->sourcePos($arm->body),
+                'pos' => SourceOrder::of($arm->body),
                 'line' => $arm->body->getStartLine(),
                 'type' => $type,
                 'guard' => $arm->conds === null ? [] : $this->armInstanceofGuards($arm->conds, $param, $scope),
@@ -405,13 +436,6 @@ final class PhpStanTypeEngine implements TypeEngine
     private function isDelegation(DType $type): bool
     {
         return $type instanceof VoidT || $type instanceof NullT;
-    }
-
-    private function sourcePos(Node $node): int
-    {
-        $pos = $node->getStartFilePos();
-
-        return $pos >= 0 ? $pos : $node->getStartLine();
     }
 
     /**

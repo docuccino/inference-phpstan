@@ -32,10 +32,12 @@ use PHPStan\Type\Type;
  * detail: see docs/design/inference-embedding.md §4a.
  *
  * Invariants: bounded by the engine's descent depth and per-analysis file budget; memoised per callee
- * `class::method` but only when the descent completed (a budget-truncated result is used once and not
- * cached, so route order can't change the final output); a callee's shape is call-independent, so
- * statuses and body members that read a parameter are recorded as accessors and bound at the call site;
- * nothing is ever guessed — an unfoldable status stays permissive; vendor code is never followed —
+ * `class::method`, with the memo bound-aware in BOTH directions — a truncated result is used once and
+ * never cached, and a complete entry is only served to a caller with the depth and file budget to have
+ * computed it itself, so a route's shape never depends on which unrelated route ran first; a callee's
+ * shape is call-independent, so statuses and body members that read a parameter are recorded as accessors
+ * and bound at the call site; nothing is ever guessed — an unfoldable status stays permissive, and a
+ * descent that ran out of bound says so via {@see takeTruncations()}; vendor code is never followed —
  * containment is the PRIME scope (every app PSR-4 root, including a modular `Modules\…` one), not the
  * narrower descend scope throws/QB-trace use; every file touched is reported via {@see takeFiles()} so
  * the fragment cache stays sound.
@@ -55,25 +57,8 @@ final class ResponseShapeRefiner
     /** The canonical FQCN the recovered shape is emitted under (the shape the pipeline unwraps). */
     public const CANONICAL_RESPONSE = 'Illuminate\\Http\\JsonResponse';
 
-    /**
-     * Per-callee shape + the files its descent touched. The files are re-contributed on a memo hit, so a
-     * second route reaching the same helper still records the dependency.
-     *
-     * @var array<string, array{result: RefinedResponse|null, files: list<string>}>
-     */
-    private array $memo = [];
-
-    /** @var array<string, true> cycle guard over the descent (callee `class::method`). */
-    private array $inProgress = [];
-
-    /**
-     * Depth/file-budget cutoffs so far. A callee whose computation bumped this was truncated and must not
-     * be memoised ({@see refineCallee()}); a cycle decline is deterministic, so it doesn't bump it.
-     */
-    private int $budgetCutoffs = 0;
-
-    /** @var array<string, true> files touched by the current analysis, drained by {@see takeFiles()}. */
-    private array $currentFiles = [];
+    /** Memo + bound accounting: what a descent cost, and whether a caller can afford to be served it. */
+    private readonly DescentBudget $budget;
 
     /** Folds accessors on a bound enum case (`->value`, `->name`, `->status()`) — the last hop. */
     private readonly EnumAccessorFolder $enumFolder;
@@ -85,14 +70,15 @@ final class ResponseShapeRefiner
         private readonly CalleeResolver $calleeResolver,
         private readonly ProjectFilter $projectFilter,
         private readonly ReflectionProvider $reflectionProvider,
-        private readonly int $maxDepth = 4,
-        private readonly int $fileBudget = 40,
+        int $maxDepth = 4,
+        int $fileBudget = 40,
     ) {
+        $this->budget = new DescentBudget($maxDepth, $fileBudget);
         $this->enumFolder = new EnumAccessorFolder(
             $this->fileAnalyzer,
             $this->projectFilter,
             function (string $file): void {
-                $this->currentFiles[$this->adapter->normalize($file)] = true;
+                $this->touch($file);
             },
         );
     }
@@ -117,11 +103,17 @@ final class ResponseShapeRefiner
      */
     public function takeFiles(): array
     {
-        $files = array_keys($this->currentFiles);
-        sort($files);
-        $this->currentFiles = [];
+        return $this->budget->takeFiles();
+    }
 
-        return $files;
+    /**
+     * How many times descent stopped at a depth/file bound since the last drain. A response body that
+     * quietly lost its shape is a silent degradation, so the analysis says so; the count is a function of
+     * the analysis alone, since the memo only ever answers what the caller could have computed.
+     */
+    public function takeTruncations(): int
+    {
+        return $this->budget->takeTruncations();
     }
 
     /**
@@ -147,15 +139,15 @@ final class ResponseShapeRefiner
         // 3. A call into project code whose declared return erased the shape — descend and substitute.
         if ($expr instanceof Node\Expr\MethodCall || $expr instanceof Node\Expr\StaticCall) {
             if ($type instanceof ClassT && self::isResponseFqcn($type->fqcn)) {
-                if ($depth >= $this->maxDepth) {
-                    $this->budgetCutoffs++; // depth cutoff — the enclosing shape is truncated
+                if (! $this->budget->withinDepth($depth + 1)) {
+                    $this->budget->truncate(); // depth cutoff — the enclosing shape is truncated
 
                     return null;
                 }
                 $callee = $this->calleeResolver->resolve($expr, $scope);
                 if ($callee !== null && $this->projectFilter->isProjectFile($callee->file)) {
-                    if (! $this->withinBudget($callee->file)) {
-                        $this->budgetCutoffs++; // file-budget cutoff — likewise a truncation
+                    if (! $this->budget->withinBudget($this->adapter->normalize($callee->file))) {
+                        $this->budget->truncate(); // file-budget cutoff — likewise a truncation
 
                         return null;
                     }
@@ -269,44 +261,38 @@ final class ResponseShapeRefiner
     {
         $key = $callee->class.'::'.$callee->method;
 
-        if (array_key_exists($key, $this->memo)) {
-            foreach ($this->memo[$key]['files'] as $file) {
-                $this->currentFiles[$file] = true;
-            }
-
-            return $this->memo[$key]['result'];
+        // A memoised shape the caller has the headroom to have computed itself — anything else is
+        // recomputed, and truncates honestly if the bound is genuinely spent.
+        $replayed = $this->budget->replay($key, $depth);
+        if ($replayed !== null) {
+            return $replayed[0];
         }
 
-        if (isset($this->inProgress[$key])) {
+        if ($this->budget->isDescending($key)) {
             return null; // cycle — deterministic, so not memoised and not a truncation
         }
-        if ($depth > $this->maxDepth || ! $this->withinBudget($callee->file)) {
-            $this->budgetCutoffs++; // a truncation
+        if (! $this->budget->withinDepth($depth) || ! $this->budget->withinBudget($this->adapter->normalize($callee->file))) {
+            $this->budget->truncate();
 
             return null; // over-budget — declined, and not memoised
         }
 
-        $this->inProgress[$key] = true;
-        $filesBefore = $this->currentFiles;
-        $cutoffsBefore = $this->budgetCutoffs;
+        $frame = $this->budget->open($key, $depth);
         $result = $this->computeCalleeShape($callee, $depth);
-        unset($this->inProgress[$key]);
-
-        // Memoise only a descent that stayed within budget/depth. A truncated one (here or deeper down) is
-        // less refined depending on how much budget was already spent before this callee was reached —
-        // caching it would make output route-order dependent. Used now, recomputed next time.
-        if ($this->budgetCutoffs === $cutoffsBefore) {
-            $delta = array_keys(array_diff_key($this->currentFiles, $filesBefore));
-            sort($delta);
-            $this->memo[$key] = ['result' => $result, 'files' => $delta];
-        }
+        $this->budget->close($key, $frame, $result);
 
         return $result;
     }
 
+    /** Normalise before it reaches the budget, which counts files by their canonical path. */
+    private function touch(string $file): void
+    {
+        $this->budget->touch($this->adapter->normalize($file));
+    }
+
     private function computeCalleeShape(Callee $callee, int $depth): ?RefinedResponse
     {
-        $this->currentFiles[$this->adapter->normalize($callee->file)] = true;
+        $this->touch($callee->file);
 
         $node = $this->fileAnalyzer->analyze($callee->file)[$callee->method] ?? null;
         if ($node === null) {
@@ -422,13 +408,13 @@ final class ResponseShapeRefiner
         if ($factory === null || ! $this->projectFilter->isProjectFile($factory->file)) {
             return $child; // vendor / unresolvable — a deterministic decline
         }
-        if (! $this->withinBudget($factory->file)) {
-            $this->budgetCutoffs++; // file-budget cutoff — the enclosing shape is truncated
+        if (! $this->budget->withinBudget($this->adapter->normalize($factory->file))) {
+            $this->budget->truncate(); // file-budget cutoff — the enclosing shape is truncated
 
             return $child;
         }
 
-        $this->currentFiles[$this->adapter->normalize($factory->file)] = true;
+        $this->touch($factory->file);
         $node = $this->fileAnalyzer->analyze($factory->file)[$factory->method] ?? null;
         if ($node === null) {
             return $child;
@@ -750,11 +736,5 @@ final class ResponseShapeRefiner
         }
 
         return $names;
-    }
-
-    private function withinBudget(string $file): bool
-    {
-        return count($this->currentFiles) < $this->fileBudget
-            || isset($this->currentFiles[$this->adapter->normalize($file)]);
     }
 }

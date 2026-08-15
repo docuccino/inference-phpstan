@@ -4,10 +4,13 @@ declare(strict_types=1);
 
 namespace Docuccino\Inference\PhpStan\Metadata;
 
+use Docuccino\Core\Extensions\Schema\DeclarationFiles;
+use Docuccino\Core\Extensions\Schema\EnumReflection;
 use Docuccino\Core\Inference\ClassMetadata;
 use Docuccino\Core\Inference\ClassRef;
 use Docuccino\Core\Inference\DType\ClassT;
 use Docuccino\Core\Inference\DType\DType;
+use Docuccino\Core\Inference\DType\EnumT;
 use Docuccino\Core\Inference\DType\IntersectionT;
 use Docuccino\Core\Inference\DType\UnionT;
 use Docuccino\Core\Inference\DType\UnknownT;
@@ -77,7 +80,9 @@ final class ClassMetadataFactory
                 type: $this->propertyType($property, $docComment),
                 summary: $this->docBlocks->summary($docComment),
                 example: $this->docBlocks->example($docComment),
-                location: $location,
+                // An inherited property is declared elsewhere, and pointing at the subject's file would
+                // send a reader to a line that says something else entirely.
+                location: self::locate($property->getDeclaringClass()),
             );
             $seen[$property->getName()] = true;
         }
@@ -104,8 +109,73 @@ final class ClassMetadataFactory
             fqcn: $fqcn,
             properties: $properties,
             summary: $this->docBlocks->summary($classDocComment),
-            dependencyFiles: $file !== false ? [$file] : [],
+            dependencyFiles: self::dependencies($reflection, $properties),
         );
+    }
+
+    /**
+     * Every file this metadata was assembled from, so a fragment built on it invalidates when any of
+     * them is edited.
+     *
+     * The subject's own file is only where the metadata was ASKED for. Public properties are inherited,
+     * their docblocks live wherever they were written, a promoted property's `@param` tag lives on
+     * whichever class declares the constructor, and each of those is read through the DECLARING file's
+     * `use` table — so the whole {@see DeclarationFiles} hierarchy counts. An enum named in a property
+     * type counts too: its case names are copied into the metadata, so adding a case changes this answer
+     * without moving any file the class itself occupies.
+     *
+     * @param  ReflectionClass<object>  $class
+     * @param  list<PropertyMetadata>  $properties
+     * @return list<string>
+     */
+    private static function dependencies(ReflectionClass $class, array $properties): array
+    {
+        $files = [];
+        foreach (DeclarationFiles::forClass($class) as $file) {
+            $files[$file] = true;
+        }
+
+        foreach ($properties as $property) {
+            foreach (self::enumsIn($property->type->toArray()) as $enum) {
+                $file = EnumReflection::file($enum);
+                if ($file !== null) {
+                    $files[$file] = true;
+                }
+            }
+        }
+
+        return array_keys($files);
+    }
+
+    /**
+     * The enums a serialized type names, at any depth. Read off `toArray()` rather than the object
+     * graph so a composite kind nobody thought of here cannot quietly hide one.
+     *
+     * @param  array<array-key, mixed>  $type
+     * @return list<string>
+     */
+    private static function enumsIn(array $type): array
+    {
+        $found = [];
+        if (($type['kind'] ?? null) === EnumT::KIND && is_string($type['fqcn'] ?? null)) {
+            $found[] = $type['fqcn'];
+        }
+
+        foreach ($type as $value) {
+            if (is_array($value)) {
+                $found = [...$found, ...self::enumsIn($value)];
+            }
+        }
+
+        return $found;
+    }
+
+    /** @param  ReflectionClass<object>  $class */
+    private static function locate(ReflectionClass $class): ?SourceLocation
+    {
+        $file = $class->getFileName();
+
+        return $file === false ? null : new SourceLocation($file);
     }
 
     /**

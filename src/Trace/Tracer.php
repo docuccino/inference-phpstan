@@ -11,6 +11,7 @@ use Docuccino\Core\Inference\TraceVisitor;
 use Docuccino\Core\Inference\TypeEngine;
 use Docuccino\Inference\PhpStan\Runtime\RuntimeAdapter;
 use Docuccino\Inference\PhpStan\Support\ProjectFilter;
+use Docuccino\Inference\PhpStan\Support\SourceOrder;
 use Docuccino\Inference\PhpStan\Translation\TypeTranslator;
 use PhpParser\Node;
 use PHPStan\Analyser\Scope;
@@ -110,8 +111,7 @@ final class Tracer
                     return; // vendor, or outside project paths with no return-type follow — declined
                 }
 
-                $pos = $node->getStartFilePos();
-                $descend[] = ['callee' => $callee, 'pos' => $pos < 0 ? PHP_INT_MAX : $pos];
+                $descend[] = ['callee' => $callee, 'pos' => SourceOrder::of($node)];
             });
         } finally {
             // Every queued fold is answered, even when the walk blew up — a visitor that reserved a slot
