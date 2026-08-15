@@ -117,12 +117,9 @@ final class ClassMetadataFactory
      * Every file this metadata was assembled from, so a fragment built on it invalidates when any of
      * them is edited.
      *
-     * The subject's own file is only where the metadata was ASKED for. Public properties are inherited,
-     * their docblocks live wherever they were written, a promoted property's `@param` tag lives on
-     * whichever class declares the constructor, and each of those is read through the DECLARING file's
-     * `use` table — so the whole {@see DeclarationFiles} hierarchy counts. An enum named in a property
-     * type counts too: its case names are copied into the metadata, so adding a case changes this answer
-     * without moving any file the class itself occupies.
+     * The whole {@see DeclarationFiles} hierarchy counts, for the reasons stated there. An enum named in
+     * a property type counts on top of it: its case names are COPIED into the metadata, so adding a case
+     * changes this answer without moving any file the class itself occupies.
      *
      * @param  ReflectionClass<object>  $class
      * @param  list<PropertyMetadata>  $properties

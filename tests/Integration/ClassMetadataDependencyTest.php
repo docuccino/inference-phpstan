@@ -10,9 +10,9 @@ use Docuccino\Inference\PhpStan\Tests\Support\FixtureRunner;
 
 /**
  * A class's recovered shape is written across as many files as its declaration spans, and the fragment
- * cache is only sound if it knows about all of them. `dependencyFiles` used to name the subject's own
- * file and nothing else, so editing the parent that declares half its properties — or the trait, or the
- * enum whose cases are copied into it — left every fragment built on it warm and wrong.
+ * cache is only sound if it knows about all of them. Named the subject's own file and nothing else,
+ * `dependencyFiles` leaves every fragment built on it warm and wrong when the parent that declares half
+ * its properties is edited — or the trait, or the enum whose cases are copied into it.
  *
  * Real reflection, in the provisioned app: a stub cannot answer which file a property was declared in.
  */

@@ -412,8 +412,8 @@ it('never serves a complete helper shape to an analysis that had no headroom to 
 })->with(['file budget' => [2, 4], 'descent depth' => [40, 2]])->group('fixture');
 
 it('analyses a pair to identical results whichever one runs first', function (int $fileBudget, int $traceDepth): void {
-    // The regression guard proper: whatever the bounds do to this chain, an analysis is a function of the
-    // callable alone. Returns, diagnostics and dependency files all have to match across the orders — a
+    // The whole claim: whatever the bounds do to this chain, an analysis is a function of the callable
+    // alone. Returns, diagnostics and dependency files all have to match across the orders — a
     // dependency file that only appears when a memo was warm would break the fragment cache the same way
     // a shape would.
     $deep = ['app/Support/BudgetRenderer.php', 'App\\Support\\BudgetRenderer', 'deep'];
