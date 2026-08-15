@@ -6,7 +6,9 @@ namespace Docuccino\Inference\PhpStan\Metadata;
 
 use Docuccino\Core\Inference\ClassMetadata;
 use Docuccino\Core\Inference\ClassRef;
+use Docuccino\Core\Inference\DType\ClassT;
 use Docuccino\Core\Inference\DType\DType;
+use Docuccino\Core\Inference\DType\IntersectionT;
 use Docuccino\Core\Inference\DType\UnionT;
 use Docuccino\Core\Inference\DType\UnknownT;
 use Docuccino\Core\Inference\PropertyMetadata;
@@ -91,7 +93,7 @@ final class ClassMetadataFactory
             }
             $properties[] = new PropertyMetadata(
                 name: $name,
-                type: $this->typeStrings->parse($tag['type']),
+                type: $this->typeStrings->parse($tag['type'], $this->importsOf($reflection)),
                 summary: $tag['description'],
                 location: $location,
             );
@@ -107,30 +109,127 @@ final class ClassMetadataFactory
     }
 
     /**
-     * The declared type, refined by a docblock only where reflection is vague — a bare `array`, `mixed`, no
-     * declared type at all. A promoted constructor property writes its precise type in the constructor's
-     * `@param`, a plain one in its own `@var`; either only wins if it is itself precise, so `@var array` never
-     * displaces a native `list`-carrying declaration and a native `string` is never second-guessed.
+     * The declared type, refined by a docblock in the two places reflection cannot speak for itself: where
+     * the reflected type is vague (bare `array`, `mixed`, undeclared) a docblock type REPLACES it, and only
+     * if itself precise, so a native `string` is never second-guessed; where it is precise but generic-blind
+     * (a bare `ClassT`) a docblock may only PARAMETERISE it, via {@see self::parameterise()}.
      */
     private function propertyType(ReflectionProperty $property, ?string $docComment): DType
     {
         $native = $this->typeMapper->map($property->getType());
-        if (self::precise($native)) {
+        $precise = self::precise($native);
+        if ($precise && ! self::parameterisable($native)) {
             return $native;
         }
 
         $declaring = $property->getDeclaringClass();
-        $written = $property->isPromoted()
-            ? ($this->constructorParams($declaring)[$property->getName()]['type'] ?? null)
-            : $this->docBlocks->varType($docComment);
+        foreach ($this->writtenTypes($property, $docComment) as $written) {
+            $parsed = $this->typeStrings->parse($written, $this->importsOf($declaring));
+            $refined = $precise
+                ? self::parameterise($native, $parsed)
+                : (self::precise($parsed) ? $parsed : null);
 
-        if ($written === null) {
-            return $native;
+            if ($refined !== null) {
+                return $refined;
+            }
         }
 
-        $parsed = $this->typeStrings->parse($written, $this->importsOf($declaring));
+        return $native;
+    }
 
-        return self::precise($parsed) ? $parsed : $native;
+    /**
+     * The docblock types that may speak for a property, most authoritative first. A promoted constructor
+     * property may be documented in the constructor's `@param` or in its own `@var`, so both count and the
+     * `@param` wins; a plain property has only its `@var`.
+     *
+     * @return list<string>
+     */
+    private function writtenTypes(ReflectionProperty $property, ?string $docComment): array
+    {
+        $written = [];
+
+        if ($property->isPromoted()) {
+            $param = $this->constructorParams($property->getDeclaringClass())[$property->getName()]['type'] ?? null;
+            if ($param !== null) {
+                $written[] = $param;
+            }
+        }
+
+        $var = $this->docBlocks->varType($docComment);
+        if ($var !== null) {
+            $written[] = $var;
+        }
+
+        return $written;
+    }
+
+    /**
+     * A docblock parameterising a precise native type: for every bare `ClassT` the reflected type carries, the
+     * type arguments the docblock states FOR THAT SAME CLASS are grafted on; null when it adds nothing.
+     * One-directional on purpose — a docblock can supply the generics reflection has no syntax for and nothing
+     * else, so it can neither swap the class nor add a nullability the declaration doesn't have.
+     */
+    private static function parameterise(DType $native, DType $written): ?DType
+    {
+        if ($native instanceof UnionT) {
+            $members = [];
+            $refined = false;
+            foreach ($native->members as $member) {
+                $parameterised = self::parameterise($member, $written);
+                $refined = $refined || $parameterised !== null;
+                $members[] = $parameterised ?? $member;
+            }
+
+            return $refined ? UnionT::of($members) : null;
+        }
+
+        if (! $native instanceof ClassT || $native->typeArgs !== []) {
+            return null;
+        }
+
+        $args = self::typeArgsFor($written, $native->fqcn);
+
+        return $args === null ? null : new ClassT($native->fqcn, $args);
+    }
+
+    /**
+     * The type arguments a written type states for `$fqcn`, looking through a union or intersection it may
+     * be wrapped in (`DataCollection<int, Factor>|null`), or null if it states none.
+     *
+     * @return ?list<DType>
+     */
+    private static function typeArgsFor(DType $written, string $fqcn): ?array
+    {
+        if ($written instanceof UnionT || $written instanceof IntersectionT) {
+            foreach ($written->members as $member) {
+                $args = self::typeArgsFor($member, $fqcn);
+                if ($args !== null) {
+                    return $args;
+                }
+            }
+
+            return null;
+        }
+
+        return $written instanceof ClassT && $written->fqcn === $fqcn && $written->typeArgs !== []
+            ? $written->typeArgs
+            : null;
+    }
+
+    /** Whether a type has a bare, generic-less class anywhere in it for a docblock to parameterise. */
+    private static function parameterisable(DType $type): bool
+    {
+        if ($type instanceof UnionT) {
+            foreach ($type->members as $member) {
+                if (self::parameterisable($member)) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        return $type instanceof ClassT && $type->typeArgs === [];
     }
 
     /**

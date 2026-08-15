@@ -7,20 +7,23 @@ use Docuccino\Core\Inference\DType\ClassT;
 use Docuccino\Core\Inference\DType\DType;
 use Docuccino\Core\Inference\DType\ListT;
 use Docuccino\Core\Inference\DType\MapT;
+use Docuccino\Core\Inference\DType\NullT;
 use Docuccino\Core\Inference\DType\ScalarT;
 use Docuccino\Core\Inference\DType\UnionT;
 use Docuccino\Core\Inference\DType\UnknownT;
 use Docuccino\Core\Inference\PropertyMetadata;
 use Docuccino\Inference\PhpStan\Metadata\ClassMetadataFactory;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\DocBlockTypeProbe;
+use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Payload\ProbeCollection;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Payload\ProbeError;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Payload\ProbeOptional;
 
 /**
- * Where reflection and docblocks meet in `classMetadata()`. A native type wins outright; a docblock is read
- * only where reflection says nothing usable — a bare `array`, `mixed`, no declared type — which is what lets
- * a promoted `array $errors` still document `list<ErrorDetailData>`. Real reflection over an autoloaded probe
- * shaped like a spatie/laravel-data DTO, never hand-built doubles.
+ * Where reflection and docblocks meet in `classMetadata()`. A docblock REPLACES a reflected type only where
+ * reflection says nothing usable — a bare `array`, `mixed`, no declared type — which is what lets a promoted
+ * `array $errors` still document `list<ErrorDetailData>`; over a precise type it may only PARAMETERISE a
+ * generic-less class. Real reflection over an autoloaded probe shaped like a spatie/laravel-data DTO, never
+ * hand-built doubles.
  */
 function probeMetadataType(string $property): DType
 {
@@ -48,6 +51,39 @@ it('takes the precise type a docblock states where reflection is vague', functio
     'a promoted property inherited from a parent' => ['inherited', new ListT(new ClassT(ProbeError::class))],
     // A plain property states its type in its own @var — the same gap for the same reason.
     'a plain property with a @var' => ['ownVar', new ListT(new ClassT(ProbeError::class))],
+    // A promoted property's own @var is read too: it is where a Data class usually writes the generic,
+    // beside the prose describing the member.
+    'a promoted property with only a @var' => ['ownVarPromoted', new MapT(ScalarT::string(), ScalarT::int())],
+    // Both tags speak, and the constructor @param is the more authoritative — its `list<ProbeError>` over
+    // the property's `list<int>`.
+    'a promoted property documented twice' => ['paramAndVar', new ListT(new ClassT(ProbeError::class))],
+]);
+
+it('parameterises a generic-less class type from the docblock that names its arguments', function (string $property, DType $expected): void {
+    // Reflection has no syntax for generics, so a bare `ProbeCollection` is precise and still says nothing
+    // about its elements. The docblock supplies only those arguments — never the class, never nullability.
+    expect(probeMetadataType($property))->toEqual($expected);
+})->with([
+    'from the constructor @param' => ['collection', new ClassT(ProbeCollection::class, [ScalarT::int(), new ClassT(ProbeError::class)])],
+    'from the property\'s own @var' => ['widenedCollection', new ClassT(ProbeCollection::class, [ScalarT::int(), new ClassT(ProbeError::class)])],
+    // The declaration's nullability survives: the arguments are grafted onto the class arm and the null
+    // arm is left alone.
+    'through a nullable declaration' => ['nullableCollection', UnionT::of([
+        new ClassT(ProbeCollection::class, [ScalarT::int(), new ClassT(ProbeError::class)]),
+        new NullT,
+    ])],
+]);
+
+it('leaves a precise class type alone when the docblock would do more than parameterise it', function (string $property): void {
+    // The one-directional half of the rule. A docblock that names a different class — a subclass included,
+    // which is the same mismatch — a different shape, or nothing parseable, adds no arguments, so the
+    // reflected type stands. `widenedCollection` covers the fourth case above: its `@var` also writes
+    // `|null` over a non-nullable declaration, and only its arguments are taken.
+    expect(probeMetadataType($property))->toEqual(new ClassT(ProbeCollection::class));
+})->with([
+    'a different class' => ['otherCollection'],
+    'a different shape entirely' => ['mismatchedCollection'],
+    'a tag that does not parse' => ['garbledCollection'],
 ]);
 
 it('keeps the reflected type when a docblock would not improve it', function (string $property, string $reason): void {
@@ -76,7 +112,11 @@ it('enumerates the instance properties and nothing else', function (): void {
     );
 
     // Declared order, inherited included, the static left out — a static is never part of a payload.
-    expect($names)->toBe(['ownVar', 'vagueVar', 'noTag', 'errors', 'counts', 'late', 'title', 'vague', 'inherited', 'magic'])
+    expect($names)->toBe([
+        'ownVar', 'vagueVar', 'noTag', 'errors', 'counts', 'late', 'title', 'vague', 'paramAndVar',
+        'ownVarPromoted', 'collection', 'nullableCollection', 'widenedCollection', 'otherCollection',
+        'mismatchedCollection', 'garbledCollection', 'inherited', 'magic',
+    ])
         ->and($names)->not->toContain('registry');
 });
 

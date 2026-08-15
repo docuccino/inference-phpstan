@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Docuccino\Inference\PhpStan\Translation;
 
+use Docuccino\Core\Extensions\Schema\EnumReflection;
+use Docuccino\Core\Inference\DType\ArrayKey;
 use Docuccino\Core\Inference\DType\ArrayShapeField;
 use Docuccino\Core\Inference\DType\ArrayShapeT;
 use Docuccino\Core\Inference\DType\CallableT;
@@ -13,14 +15,12 @@ use Docuccino\Core\Inference\DType\EnumT;
 use Docuccino\Core\Inference\DType\IntersectionT;
 use Docuccino\Core\Inference\DType\ListT;
 use Docuccino\Core\Inference\DType\LiteralT;
-use Docuccino\Core\Inference\DType\MapT;
 use Docuccino\Core\Inference\DType\NeverT;
 use Docuccino\Core\Inference\DType\NullT;
 use Docuccino\Core\Inference\DType\ScalarT;
 use Docuccino\Core\Inference\DType\UnionT;
 use Docuccino\Core\Inference\DType\UnknownT;
 use Docuccino\Core\Inference\DType\VoidT;
-use Docuccino\Inference\PhpStan\Support\EnumCases;
 use PHPStan\Type\Accessory\AccessoryType;
 use PHPStan\Type\Constant\ConstantArrayType;
 use PHPStan\Type\Generic\GenericObjectType;
@@ -107,7 +107,9 @@ final class TypeTranslator
                 return new ListT($value);
             }
 
-            return new MapT($this->translate($type->getIterableKeyType(), $budget->descend()), $value);
+            // `isList()` is only MAYBE for `array<int, V>`, so the key decides. Same rule, same answer as
+            // the docblock path — core's ArrayKey is the one implementation both call.
+            return ArrayKey::arrayOf($this->translate($type->getIterableKeyType(), $budget->descend()), $value);
         }
 
         if ($type->isCallable()->yes()) {
@@ -203,7 +205,7 @@ final class TypeTranslator
     private function translateObject(string $className, array $typeArgs, TranslationBudget $budget): DType
     {
         if (enum_exists($className)) {
-            return new EnumT($className, EnumCases::names($className));
+            return new EnumT($className, EnumReflection::names($className));
         }
 
         return new ClassT(

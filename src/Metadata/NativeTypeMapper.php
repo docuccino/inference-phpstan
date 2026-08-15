@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Docuccino\Inference\PhpStan\Metadata;
 
+use Docuccino\Core\Extensions\Schema\EnumReflection;
 use Docuccino\Core\Inference\DType\CallableT;
 use Docuccino\Core\Inference\DType\ClassT;
 use Docuccino\Core\Inference\DType\DType;
@@ -15,7 +16,6 @@ use Docuccino\Core\Inference\DType\ScalarT;
 use Docuccino\Core\Inference\DType\UnionT;
 use Docuccino\Core\Inference\DType\UnknownT;
 use Docuccino\Core\Inference\DType\VoidT;
-use Docuccino\Inference\PhpStan\Support\EnumCases;
 use ReflectionIntersectionType;
 use ReflectionNamedType;
 use ReflectionType;
@@ -72,7 +72,7 @@ final class NativeTypeMapper
             'object' => new UnknownT('object'),
             'mixed' => new UnknownT('mixed'),
             'self', 'static', 'parent' => new UnknownT($name),
-            default => enum_exists($name) ? new EnumT($name, EnumCases::names($name)) : new ClassT($name),
+            default => enum_exists($name) ? new EnumT($name, EnumReflection::names($name)) : new ClassT($name),
         };
     }
 }

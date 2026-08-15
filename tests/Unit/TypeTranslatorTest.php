@@ -138,6 +138,22 @@ it('maps a general keyed array to MapT', function (): void {
         ->and($type->value)->toEqual(ScalarT::int());
 });
 
+it('settles a keyed array on its key type, the same rule the docblock grammar uses', function (Type $key, string $expected): void {
+    // `isList()` is only MAYBE for an int-keyed ArrayType, so it cannot be the whole answer: only a
+    // string-capable-only key makes a PHP array serialize to a JSON object. Core's ArrayKey owns the
+    // rule and BOTH paths call it, so `array<int, V>` cannot read two ways depending on which one found
+    // it; this dataset pins the answers this path actually reaches it with.
+    expect(translate(new ArrayType($key, new StringType)))->toBeInstanceOf($expected);
+})->with([
+    'an int key' => [new IntegerType, ListT::class],
+    'an array-key key' => [new UnionType([new IntegerType, new StringType]), ListT::class],
+    'a constant int key' => [new ConstantIntegerType(3), ListT::class],
+    // PHPStan casts every array key to `array-key`, so a `mixed` key arrives as `int|string` and there is
+    // no unreasonable key to degrade on — only a string-keyed array is left to be an object.
+    'a string key' => [new StringType, MapT::class],
+    'a mixed key, which PHPStan has already cast' => [new MixedType, ListT::class],
+]);
+
 it('maps a list to ListT, not to a keyed map', function (): void {
     // A `list<V>` is an int-keyed ArrayType intersected with the list accessory. Decomposing the
     // intersection first would drop that accessory and emit an object schema for a JSON array.
