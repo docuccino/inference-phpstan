@@ -40,8 +40,10 @@ function dataProblemShape(string $narrowType): array
     $contentType = $type->typeArgs[2] ?? null;
 
     $members = [];
+    $fields = [];
     foreach (($type->typeArgs[3] ?? null)?->fields ?? [] as $field) {
         $members[(string) $field->key] = $field->type;
+        $fields[(string) $field->key] = $field;
     }
 
     return [
@@ -49,6 +51,7 @@ function dataProblemShape(string $narrowType): array
         'status' => $type->typeArgs[1] ?? null,
         'contentType' => $contentType instanceof LiteralT && is_string($contentType->value) ? $contentType->value : null,
         'members' => $members,
+        'fields' => $fields,
     ];
 }
 
@@ -108,7 +111,8 @@ it('reads a construction a factory hop away, binding its enum accessors and its 
     // members are only recoverable by following the receiver. Once the bound InvoiceProblem case reaches
     // them, `->value` and the two `match ($this)` accessors fold; `errors: $errors ?? new Optional` reads
     // through the parameter, so supplying it at the call site is what puts it in this body.
-    $members = dataProblemShape('Illuminate\\Validation\\ValidationException')['members'];
+    $shape = dataProblemShape('Illuminate\\Validation\\ValidationException');
+    $members = $shape['members'];
 
     expect($members['type'])->toEqual(new LiteralT('https://errors.test/problems/unprocessable'))
         ->and($members['title'])->toEqual(new LiteralT('Unprocessable Content'))
@@ -116,7 +120,10 @@ it('reads a construction a factory hop away, binding its enum accessors and its 
         ->and($members)->toHaveKeys(['instance', 'errors'])
         // Both read the request / the caller's array: supplied here, and honestly not foldable.
         ->and($members['instance'])->not->toBeInstanceOf(LiteralT::class)
-        ->and($members['errors'])->not->toBeInstanceOf(LiteralT::class);
+        ->and($members['errors'])->not->toBeInstanceOf(LiteralT::class)
+        // `array_keys(...)` can never be null, so the factory's `?? new Optional` tail is dead on this arm:
+        // the member is one every response here carries, and stays recorded as one.
+        ->and($shape['fields']['errors']->optional)->toBeFalse();
 })->group('fixture');
 
 it('reads the arguments of a class that writes its own response', function (): void {

@@ -194,16 +194,22 @@ function withMembers(array $members, array $provenance = []): RefinedResponse
         ->withPayloadMembers(new ArrayShapeT($fields), $provenance);
 }
 
-/** The value type of one constructor-argument member, or null when the member is gone. */
-function suppliedType(RefinedResponse $r, string $key): mixed
+/** One constructor-argument member, or null when the member is gone. */
+function supplied(RefinedResponse $r, string $key): ?ArrayShapeField
 {
     foreach ($r->payloadMembers?->fields ?? [] as $field) {
         if ((string) $field->key === $key) {
-            return $field->type;
+            return $field;
         }
     }
 
     return null;
+}
+
+/** The value type of one constructor-argument member, or null when the member is gone. */
+function suppliedType(RefinedResponse $r, string $key): mixed
+{
+    return supplied($r, $key)?->type;
 }
 
 it('pins an object payload’s member into the member map, leaving the class type alone', function (): void {
@@ -220,6 +226,53 @@ it('pins an object payload’s member into the member map, leaving the class typ
     expect($refined->payload)->toBe($payload)
         ->and(suppliedType($refined, 'title'))->toEqual(new LiteralT('Forbidden'))
         ->and($refined->payloadParamProvenance)->toBe([]);
+});
+
+it('settles a conditional member when the call site renders it, and only that member', function (): void {
+    // A callee writing `$errors ?? new Optional` can only say "sometimes"; a caller passing something that
+    // cannot be null says "always, here". Nothing else about the map moves — including the other member the
+    // callee left conditional, which this call site said nothing about.
+    $refined = (new RefinedResponse(payload: new ClassT('App\\Data\\ProblemData')))
+        ->withPayloadMembers(
+            new ArrayShapeT([
+                new ArrayShapeField('errors', new UnknownT('constructor argument not folded'), optional: true),
+                new ArrayShapeField('instance', new UnknownT('constructor argument not folded'), optional: true),
+            ]),
+            ['errors' => ParamAccessor::identity('errors')],
+        )
+        ->bindMember('errors', null, null, rendersValue: true);
+
+    expect(supplied($refined, 'errors')?->optional)->toBeFalse()
+        ->and(supplied($refined, 'errors')?->type)->toBeInstanceOf(UnknownT::class)
+        ->and(supplied($refined, 'instance')?->optional)->toBeTrue()
+        ->and($refined->payloadParamProvenance)->toBe([]);
+});
+
+it('leaves a conditional member conditional when the argument could still be nothing', function (): void {
+    // The caller's own value may be null, so the callee's fallback is still live: the member stays optional
+    // and its provenance travels one hop out for whoever calls THIS.
+    $refined = (new RefinedResponse(payload: new ClassT('App\\Data\\ProblemData')))
+        ->withPayloadMembers(
+            new ArrayShapeT([new ArrayShapeField('errors', new UnknownT('constructor argument not folded'), optional: true)]),
+            ['errors' => ParamAccessor::identity('errors')],
+        )
+        ->bindMember('errors', null, ParamAccessor::identity('outer'));
+
+    expect(supplied($refined, 'errors')?->optional)->toBeTrue()
+        ->and($refined->payloadParamProvenance)->toEqual(['errors' => ParamAccessor::identity('outer')]);
+});
+
+it('pins a folded literal into a settled member, in one binding', function (): void {
+    // A folded argument is a value by definition, so the member is both pinned and no longer conditional.
+    $refined = (new RefinedResponse(payload: new ClassT('App\\Data\\ProblemData')))
+        ->withPayloadMembers(
+            new ArrayShapeT([new ArrayShapeField('instance', new UnknownT('constructor argument not folded'), optional: true)]),
+            ['instance' => ParamAccessor::identity('instance')],
+        )
+        ->bindMember('instance', new LiteralT('/orders/1'), null, rendersValue: true);
+
+    expect(supplied($refined, 'instance')?->type)->toEqual(new LiteralT('/orders/1'))
+        ->and(supplied($refined, 'instance')?->optional)->toBeFalse();
 });
 
 it('drops a member the call site never supplied, and only that member', function (): void {

@@ -49,8 +49,8 @@ it('classifies parameter accessors: identity, ->value, ->name, ->method()', func
 
 it('reads through a null-coalesce to its left side', function (Node\Expr $expr, ?ParamAccessor $expected): void {
     // `$errors ?? new Optional` is how an app says "absent unless supplied": the value reads through the
-    // parameter, and the fallback only surfaces when the argument wasn't passed — which binding sees as no
-    // argument at all rather than as a value to pin.
+    // parameter, and the fallback surfaces when that side is null. Whether the member survives the fallback
+    // is a question about the value's TYPE, asked elsewhere; this one is only about where it reads from.
     expect(AccessorExtractor::fromExpr($expr, ['problem', 'detail']))->toEqual($expected);
 })->with(function (): array {
     $coalesce = static fn (Node\Expr $left, Node\Expr $right): Node\Expr\BinaryOp\Coalesce => new Node\Expr\BinaryOp\Coalesce($left, $right);
@@ -62,24 +62,6 @@ it('reads through a null-coalesce to its left side', function (Node\Expr $expr, 
         // Left-associative, so the first operand is still the one that wins at runtime.
         'chained coalesce' => [$coalesce($coalesce(aeVar('detail'), aeVar('other')), $fallback), ParamAccessor::identity('detail')],
         'non-parameter left side' => [$coalesce(aeVar('other'), aeVar('detail')), null],
-    ];
-});
-
-it('marks a null-coalesce as conditional, whatever its left side turns out to be', function (Node\Expr $expr, bool $conditional): void {
-    // The companion question to fromExpr(): not "which parameter does this read" but "is this supplied at
-    // all". Both halves of `X ?? Y` are real values, so a member written this way is present on some runs
-    // and absent on others; only a binding that roots X in a parameter can settle which.
-    expect(AccessorExtractor::isConditional($expr))->toBe($conditional);
-})->with(function (): array {
-    $coalesce = static fn (Node\Expr $left, Node\Expr $right): Node\Expr\BinaryOp\Coalesce => new Node\Expr\BinaryOp\Coalesce($left, $right);
-    $fallback = new Node\Expr\New_(new Node\Name('Spatie\\LaravelData\\Optional'));
-
-    return [
-        'parameter ?? fallback' => [$coalesce(aeVar('detail'), $fallback), true],
-        'static-ish read ?? fallback' => [$coalesce(aeCall('other', 'id'), $fallback), true],
-        'chained coalesce' => [$coalesce($coalesce(aeVar('detail'), aeVar('other')), $fallback), true],
-        'a plain parameter is not conditional' => [aeVar('detail'), false],
-        'a plain accessor is not conditional' => [aeProp('problem', 'value'), false],
     ];
 });
 

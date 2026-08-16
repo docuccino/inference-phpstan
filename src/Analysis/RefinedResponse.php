@@ -34,7 +34,8 @@ use Docuccino\Core\Inference\DType\UnknownT;
  * field per SUPPLIED argument ({@see UnknownT} until something folds it). Presence in that map is itself
  * the fact worth carrying — an argument passed at this call site is in this response's body whatever the
  * schema says about optionality — so an argument that isn't supplied at a hop leaves the map entirely
- * rather than widening.
+ * rather than widening. An argument that renders as an omission marker instead of a value supplies the key
+ * only sometimes: its field is marked OPTIONAL, which says exactly that and claims nothing more.
  *
  * @internal
  */
@@ -110,14 +111,23 @@ final readonly class RefinedResponse
      * `$literal` pins the member and drops the provenance, `$rehome` carries it one hop out, both null drops
      * it and leaves the member as-is (so a {@see StatusMarkerT} survives for the response seam). An object
      * payload pins into {@see $payloadMembers}, an array-shape payload into the shape itself.
+     *
+     * `$rendersValue` is the call site's answer to a member the callee could only mark conditional: the
+     * argument passed here renders the key, so the member stops being optional. Only ever settles one that
+     * way — nothing at a call site can make a member the callee always writes conditional.
      */
-    public function bindMember(string $key, ?LiteralT $literal, ?ParamAccessor $rehome): self
+    public function bindMember(string $key, ?LiteralT $literal, ?ParamAccessor $rehome, bool $rendersValue = false): self
     {
         $provenance = $this->payloadParamProvenance;
         unset($provenance[$key]);
 
-        if ($literal !== null && $this->payloadMembers !== null) {
-            return $this->withPayloadMembers(self::replaceFieldType($this->payloadMembers, $key, $literal), $provenance);
+        $members = $this->payloadMembers;
+        if ($members !== null && $rendersValue) {
+            $members = self::settleField($members, $key);
+        }
+
+        if ($literal !== null && $members !== null) {
+            return $this->withPayloadMembers(self::replaceFieldType($members, $key, $literal), $provenance);
         }
 
         if ($literal !== null && $this->payload instanceof ArrayShapeT) {
@@ -128,7 +138,9 @@ final readonly class RefinedResponse
             $provenance[$key] = $rehome;
         }
 
-        return $this->withPayload($this->payload, $provenance);
+        return $members === null
+            ? $this->withPayload($this->payload, $provenance)
+            : $this->withPayloadMembers($members, $provenance);
     }
 
     /**
@@ -181,6 +193,20 @@ final readonly class RefinedResponse
     {
         return $shape->mapFieldTypes(
             static fn (DType $current, string|int $fieldKey): DType => (string) $fieldKey === $key ? $type : $current,
+        );
+    }
+
+    /** One key's field marked as one the body always carries; type, order and every other field untouched. */
+    private static function settleField(ArrayShapeT $shape, string $key): ArrayShapeT
+    {
+        return new ArrayShapeT(
+            array_map(
+                static fn (ArrayShapeField $field): ArrayShapeField => (string) $field->key === $key
+                    ? new ArrayShapeField($field->key, $field->type)
+                    : $field,
+                $shape->fields,
+            ),
+            $shape->isList,
         );
     }
 

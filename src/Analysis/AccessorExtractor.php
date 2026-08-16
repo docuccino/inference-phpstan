@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Docuccino\Inference\PhpStan\Analysis;
 
 use Closure;
+use Docuccino\Inference\PhpStan\Support\OmissionSentinel;
 use PhpParser\Node;
 use PHPStan\Analyser\Scope;
 
@@ -23,9 +24,9 @@ final class AccessorExtractor
      * Classify a value expression as an accessor on one of the current parameters: the parameter itself,
      * `$param->value`/`$param->name`, or a no-arg `$param->method()`. Null when it isn't rooted in one.
      *
-     * A null-coalesce reads through its LEFT side (`$errors ?? $fallback` reads `$errors`): the fallback only
-     * shows up when the argument was absent, which is exactly the case where binding finds no argument and
-     * drops the value rather than pinning it.
+     * A null-coalesce reads through its LEFT side (`$errors ?? $fallback` reads `$errors`): the fallback is
+     * what renders when that side is null, and whether the member survives that is a question about the
+     * VALUE's type ({@see OmissionSentinel}), not about which parameter it came from.
      *
      * A first-class callable (`$param->method(...)`) is a closure, not a read of the parameter, so it
      * declines — and asking it for its arguments would assert, since it has none.
@@ -69,16 +70,6 @@ final class AccessorExtractor
         }
 
         return null;
-    }
-
-    /**
-     * Whether a value expression is supplied only conditionally — a null-coalesce, whose right side is
-     * what renders when the left is null. The companion to {@see fromExpr()}: one asks which parameter a
-     * value reads through, this one asks whether it is there at all.
-     */
-    public static function isConditional(Node\Expr $expr): bool
-    {
-        return $expr instanceof Node\Expr\BinaryOp\Coalesce;
     }
 
     /**

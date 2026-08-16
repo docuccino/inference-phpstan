@@ -15,6 +15,7 @@ use Docuccino\Core\Inference\DType\StatusMarkerT;
 use Docuccino\Core\Inference\DType\UnknownT;
 use Docuccino\Core\Inference\DType\VoidT;
 use Docuccino\Inference\PhpStan\Runtime\RuntimeAdapter;
+use Docuccino\Inference\PhpStan\Support\OmissionSentinel;
 use Docuccino\Inference\PhpStan\Support\ProjectFilter;
 use Docuccino\Inference\PhpStan\Support\ScalarFold;
 use Docuccino\Inference\PhpStan\Trace\Callee;
@@ -454,12 +455,10 @@ final class ResponseShapeRefiner
      * One field per supplied constructor argument — the folded literal when it folds, an {@see UnknownT}
      * otherwise — plus the provenance of the unfolded ones. Both null when the `new` isn't the payload class.
      *
-     * "Supplied" is what the map means to everything downstream, so an argument written as `X ?? Y`
-     * ({@see AccessorExtractor::isConditional()}) only earns a field once something can settle which side
-     * renders: a left side rooted in a parameter leaves an accessor here and {@see bindPayload()} settles it
-     * one hop out. A left side rooted in anything else — a static trace-id read, a property — is settled
-     * nowhere, and a member that is there on some runs and absent on others must not be recorded as one this
-     * response carries.
+     * "Supplied" is what the map means to everything downstream, and an argument that may render as an
+     * omission sentinel ({@see OmissionSentinel}) does not supply the key at all on the runs where it does:
+     * such a field is marked OPTIONAL rather than asserted, so nothing downstream tells a client the body
+     * always carries it. {@see bindPayload()} settles it one hop out when the call site passes a value.
      *
      * @param  list<string>  $paramNames  the parameter names visible where the `new` is written
      * @return array{?ArrayShapeT, array<string, ParamAccessor>}
@@ -480,16 +479,19 @@ final class ResponseShapeRefiner
         foreach ($args as $name => $value) {
             $sensitive = SensitiveConstant::label($value);
             $literal = $sensitive === null ? $this->constLiteralOf($value, $scope) : null;
+            $optional = false;
             if ($literal === null && $sensitive === null) {
                 $accessor = AccessorExtractor::fromExpr($value, $paramNames);
-                if ($accessor === null && AccessorExtractor::isConditional($value)) {
-                    continue;
-                }
                 if ($accessor !== null) {
                     $provenance[$name] = $accessor;
                 }
+                $optional = OmissionSentinel::inType($scope->getType($value));
             }
-            $fields[] = new ArrayShapeField($name, $literal ?? new UnknownT($sensitive === null ? 'constructor argument not folded' : 'sensitive constant'));
+            $fields[] = new ArrayShapeField(
+                $name,
+                $literal ?? new UnknownT($sensitive === null ? 'constructor argument not folded' : 'sensitive constant'),
+                $optional,
+            );
         }
 
         return [new ArrayShapeT($fields), $provenance];
@@ -557,6 +559,10 @@ final class ResponseShapeRefiner
      * response's body ({@see RefinedResponse::withoutMember()}), whereas an array-shape member is PHPStan's
      * own account of the body and only loses its provenance.
      *
+     * An argument that does pass a value settles a member the callee left conditional: the callee's
+     * `$param ?? new Optional` only omits the key when the caller had nothing, so a caller that provably
+     * had something is a caller whose response carries it ({@see rendersValue()}).
+     *
      * @param  list<string>  $paramNames  the caller's parameter names
      */
     private function bindPayload(RefinedResponse $child, Callee $callee, Node\Expr $call, Scope $scope, array $paramNames): RefinedResponse
@@ -578,10 +584,32 @@ final class ResponseShapeRefiner
             $literal = $this->foldAccessorArgument($argExpr, $accessor, $scope);
             $rehome = $literal === null ? $this->rehomeAccessor($argExpr, $accessor, $paramNames) : null;
 
-            $child = $child->bindMember($key, $literal, $rehome);
+            $child = $child->bindMember($key, $literal, $rehome, $this->rendersValue($argExpr, $accessor, $scope));
         }
 
         return $child;
+    }
+
+    /**
+     * Whether the argument passed here renders the key: a value that is neither null (which is what a
+     * `?? new Optional` tail waits for) nor a sentinel of its own. Anything less leaves the member
+     * conditional.
+     *
+     * Only an IDENTITY accessor can be answered from out here, because only there is the argument the very
+     * value the tail tests. Every other kind reads THROUGH the argument — `$problem->detail() ?? new
+     * Optional` waits on the READ, and a caller proving the receiver exists has proved nothing about what
+     * the read answers. Nor is a `->value`/`->name` accessor safe on that ground: it is matched by property
+     * name alone, so a plain object's nullable `$dto->value` takes the same path as an enum case's.
+     */
+    private function rendersValue(Node\Expr $argExpr, ParamAccessor $accessor, Scope $scope): bool
+    {
+        if ($accessor->kind !== AccessorKind::Identity) {
+            return false;
+        }
+
+        $type = $scope->getType($argExpr);
+
+        return $type->isNull()->no() && ! OmissionSentinel::inType($type);
     }
 
     /**
