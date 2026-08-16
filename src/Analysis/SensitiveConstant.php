@@ -21,13 +21,38 @@ final class SensitiveConstant
     /** The label of the heuristic the constant's name matches, or null when it isn't a risky constant. */
     public static function label(Node\Expr $expr): ?string
     {
-        if ($expr instanceof Node\Expr\BinaryOp\Concat) {
-            return self::label($expr->left) ?? self::label($expr->right);
+        foreach (self::operands($expr) as $operand) {
+            $label = self::label($operand);
+
+            if ($label !== null) {
+                return $label;
+            }
         }
 
         $name = self::constantName($expr);
 
         return $name === null ? null : (new SensitiveFieldLintOptions)->match($name);
+    }
+
+    /**
+     * The sub-expressions whose value can reach the folded literal, so the guard is asked of each: a
+     * concatenation publishes both operands, and `A ?? B` / `$c ? A : B` publish one or the other — which
+     * one is exactly what the fold can't know, so either naming a credential is enough to refuse.
+     *
+     * @return list<Node\Expr>
+     */
+    private static function operands(Node\Expr $expr): array
+    {
+        if ($expr instanceof Node\Expr\BinaryOp\Concat || $expr instanceof Node\Expr\BinaryOp\Coalesce) {
+            return [$expr->left, $expr->right];
+        }
+
+        if ($expr instanceof Node\Expr\Ternary) {
+            // `$c ?: B` has no middle arm — the condition itself is what renders.
+            return [$expr->if ?? $expr->cond, $expr->else];
+        }
+
+        return [];
     }
 
     /** The trailing identifier of a class constant or a global constant fetch; null for anything else. */

@@ -462,3 +462,21 @@ it('folds each case independently + deterministically (memoisation keyed per enu
         ->and($missing['title'])->toEqual(new LiteralT('Not Found'))
         ->and($forbiddenAgain)->toEqual($forbidden);
 })->group('fixture');
+
+it('does not record a conditionally-supplied member no call site can settle', function (): void {
+    // `instance: TraceContext::id() ?? new Optional` is written at the `new`, but writing it is not the
+    // same as supplying it: the fallback is what renders when the static read answers null, and the left
+    // side roots in no parameter, so binding has nothing to resolve it against. Recording it would tell the
+    // adapter this response carries a member half its runs omit — and the adapter publishes that as an
+    // example. The four arguments that DO settle are unaffected.
+    $members = [];
+    foreach ((edgeShape('unbindableOptionalMember')['typeArgs'][3] ?? null)?->fields ?? [] as $field) {
+        $members[(string) $field->key] = $field->type;
+    }
+
+    expect($members)->toHaveKeys(['type', 'title', 'status', 'detail'])
+        ->and($members['status'])->toEqual(new LiteralT(424))
+        ->and($members['type'])->toEqual(new LiteralT('https://errors.test/problems/traced'))
+        ->and($members)->not->toHaveKey('instance')
+        ->and($members)->not->toHaveKey('errors');
+})->group('fixture');

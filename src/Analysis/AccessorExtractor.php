@@ -72,6 +72,16 @@ final class AccessorExtractor
     }
 
     /**
+     * Whether a value expression is supplied only conditionally — a null-coalesce, whose right side is
+     * what renders when the left is null. The companion to {@see fromExpr()}: one asks which parameter a
+     * value reads through, this one asks whether it is there at all.
+     */
+    public static function isConditional(Node\Expr $expr): bool
+    {
+        return $expr instanceof Node\Expr\BinaryOp\Coalesce;
+    }
+
+    /**
      * Provenance for each string-literal-keyed member of a response-body array whose value reads off a
      * parameter. A computed key is skipped — it isn't a stable member to document — which keeps this
      * Scope-free.

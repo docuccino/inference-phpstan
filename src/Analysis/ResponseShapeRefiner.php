@@ -454,6 +454,13 @@ final class ResponseShapeRefiner
      * One field per supplied constructor argument — the folded literal when it folds, an {@see UnknownT}
      * otherwise — plus the provenance of the unfolded ones. Both null when the `new` isn't the payload class.
      *
+     * "Supplied" is what the map means to everything downstream, so an argument written as `X ?? Y`
+     * ({@see AccessorExtractor::isConditional()}) only earns a field once something can settle which side
+     * renders: a left side rooted in a parameter leaves an accessor here and {@see bindPayload()} settles it
+     * one hop out. A left side rooted in anything else — a static trace-id read, a property — is settled
+     * nowhere, and a member that is there on some runs and absent on others must not be recorded as one this
+     * response carries.
+     *
      * @param  list<string>  $paramNames  the parameter names visible where the `new` is written
      * @return array{?ArrayShapeT, array<string, ParamAccessor>}
      */
@@ -475,6 +482,9 @@ final class ResponseShapeRefiner
             $literal = $sensitive === null ? $this->constLiteralOf($value, $scope) : null;
             if ($literal === null && $sensitive === null) {
                 $accessor = AccessorExtractor::fromExpr($value, $paramNames);
+                if ($accessor === null && AccessorExtractor::isConditional($value)) {
+                    continue;
+                }
                 if ($accessor !== null) {
                     $provenance[$name] = $accessor;
                 }

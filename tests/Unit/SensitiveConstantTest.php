@@ -30,6 +30,20 @@ it('reads the sensitive name through the shapes a constant can take', function (
     'namespaced global constant' => [new Node\Expr\ConstFetch(new Node\Name(['Vendor', 'CLIENT_SECRET'])), 'a client secret'],
     'concatenation, left' => [new Node\Expr\BinaryOp\Concat(scClassConst('API_KEY'), new Node\Scalar\String_('-suffix')), 'an API key'],
     'concatenation, right' => [new Node\Expr\BinaryOp\Concat(new Node\Scalar\String_('prefix-'), scClassConst('API_KEY')), 'an API key'],
+    // A default beside a credential is the shape that reaches production — and PHPStan folds
+    // `self::API_KEY ?? 'unset'` to the constant's own string, so a guard that stopped at concatenation
+    // would publish the secret as a `const`, which survives OAS emission into the committed artifact.
+    'coalesce, left' => [new Node\Expr\BinaryOp\Coalesce(scClassConst('API_KEY'), new Node\Scalar\String_('unset')), 'an API key'],
+    'coalesce, right' => [new Node\Expr\BinaryOp\Coalesce(new Node\Scalar\String_('unset'), scClassConst('API_KEY')), 'an API key'],
+    'ternary, then' => [new Node\Expr\Ternary(new Node\Expr\Variable('debug'), scClassConst('CLIENT_SECRET'), new Node\Scalar\String_('hidden')), 'a client secret'],
+    'ternary, else' => [new Node\Expr\Ternary(new Node\Expr\Variable('debug'), new Node\Scalar\String_('hidden'), scClassConst('CLIENT_SECRET')), 'a client secret'],
+    'short ternary' => [new Node\Expr\Ternary(scClassConst('SIGNING_SECRET'), null, new Node\Scalar\String_('hidden')), 'a secret'],
+    'nested coalesce inside a concatenation' => [new Node\Expr\BinaryOp\Concat(
+        new Node\Scalar\String_('Bearer '),
+        new Node\Expr\BinaryOp\Coalesce(scClassConst('API_TOKEN'), new Node\Scalar\String_('none')),
+    ), 'a token'],
+    'innocuous coalesce' => [new Node\Expr\BinaryOp\Coalesce(scClassConst('DEFAULT_TITLE'), new Node\Scalar\String_('untitled')), null],
+    'innocuous ternary' => [new Node\Expr\Ternary(new Node\Expr\Variable('flag'), new Node\Scalar\String_('a'), new Node\Scalar\String_('b')), null],
     'innocuous class constant' => [scClassConst('DEFAULT_TITLE'), null],
     'true' => [new Node\Expr\ConstFetch(new Node\Name('true')), null],
     'dynamic class constant' => [new Node\Expr\ClassConstFetch(new Node\Name('Klass'), new Node\Expr\Variable('name')), null],

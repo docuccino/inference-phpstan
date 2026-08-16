@@ -65,6 +65,24 @@ it('reads through a null-coalesce to its left side', function (Node\Expr $expr, 
     ];
 });
 
+it('marks a null-coalesce as conditional, whatever its left side turns out to be', function (Node\Expr $expr, bool $conditional): void {
+    // The companion question to fromExpr(): not "which parameter does this read" but "is this supplied at
+    // all". Both halves of `X ?? Y` are real values, so a member written this way is present on some runs
+    // and absent on others; only a binding that roots X in a parameter can settle which.
+    expect(AccessorExtractor::isConditional($expr))->toBe($conditional);
+})->with(function (): array {
+    $coalesce = static fn (Node\Expr $left, Node\Expr $right): Node\Expr\BinaryOp\Coalesce => new Node\Expr\BinaryOp\Coalesce($left, $right);
+    $fallback = new Node\Expr\New_(new Node\Name('Spatie\\LaravelData\\Optional'));
+
+    return [
+        'parameter ?? fallback' => [$coalesce(aeVar('detail'), $fallback), true],
+        'static-ish read ?? fallback' => [$coalesce(aeCall('other', 'id'), $fallback), true],
+        'chained coalesce' => [$coalesce($coalesce(aeVar('detail'), aeVar('other')), $fallback), true],
+        'a plain parameter is not conditional' => [aeVar('detail'), false],
+        'a plain accessor is not conditional' => [aeProp('problem', 'value'), false],
+    ];
+});
+
 it('declines a first-class callable instead of reading arguments it cannot have', function (): void {
     // `$problem->status(...)` is a closure, not a read of the parameter. php-parser's getArgs() asserts
     // against a first-class callable, and the engine swallows the AssertionError — so classifying one

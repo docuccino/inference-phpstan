@@ -150,6 +150,17 @@ it('refuses to fold a constructor argument written as a credential-named constan
         ->and($members['status'])->toEqual(new LiteralT(500));
 })->group('fixture');
 
+it('refuses the same constant behind a `??` default', function (): void {
+    // `detail: self::SUPPORT_KEY_OVERRIDE ?? self::SUPPORT_API_KEY` types as the credential's own string,
+    // so a guard reading only the outermost expression would fold and publish it. The member is still
+    // SUPPLIED — the refusal widens the value, it never drops the field.
+    $members = dataProblemShape('JsonException')['members'];
+
+    expect($members)->toHaveKey('detail')
+        ->and($members['detail'])->not->toBeInstanceOf(LiteralT::class)
+        ->and($members['title'])->toEqual(new LiteralT('Error'));
+})->group('fixture');
+
 it('does not label a branch with the media type another branch of the same helper set', function (): void {
     // toNegotiatedResponse() builds both branches into `$response`; the plain branch (the one documented,
     // being first) writes no Content-Type, so the body must not inherit the other branch's label.
