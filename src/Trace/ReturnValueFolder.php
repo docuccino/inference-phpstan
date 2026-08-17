@@ -38,7 +38,7 @@ final class ReturnValueFolder
      */
     public function fold(Callee $callee, array $positional, array $named): ?FoldedReturn
     {
-        $node = $this->fileAnalyzer->analyze($callee->file)[$callee->method] ?? null;
+        $node = $this->fileAnalyzer->method($callee->file, $callee->class, $callee->method);
         if ($node === null) {
             return null;
         }

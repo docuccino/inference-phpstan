@@ -94,3 +94,16 @@ it('lets a custom withMethod() thrower enrich BOTH layers from one registration'
         ->and($thrower->exceptionFqcn)->toBe($custom)
         ->and($thrower->fixedStatus)->toBe(418);
 });
+
+it('takes an application\'s own thrower on top of the built-in table', function (): void {
+    // The config surface: an app naming its own `abort`-alike or `findOrFail`-alike keeps every built-in
+    // entry, since a registry that replaced the table would silently stop documenting Laravel's own.
+    $registry = KnownThrowers::default()
+        ->withFunction('bail', KnownThrower::withStatus('App\\Exceptions\\BailException', 409))
+        ->withMethod('soleOrFail', KnownThrower::withStatus('App\\Exceptions\\MissingException', 404));
+
+    expect($registry->forFunction('bail')?->fixedStatus)->toBe(409)
+        ->and($registry->forMethod('soleOrFail')?->fixedStatus)->toBe(404)
+        ->and($registry->forFunction('abort'))->not->toBeNull()
+        ->and($registry->forMethod('findOrFail')?->fixedStatus)->toBe(404);
+});

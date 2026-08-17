@@ -56,9 +56,20 @@ final class TypeScopeImpl implements FoldsCallReturns, TypeScope
         $pos = $node->getStartFilePos();
 
         return new SourceLocation(
-            $this->scope->getFile(),
+            $this->writtenIn(),
             $node->getStartLine(),
             $pos < 0 ? null : $pos,
         );
+    }
+
+    /**
+     * The file the node was WRITTEN in, which is not always the file being analysed: a trait body is
+     * analysed once per using class, so its nodes carry the TRAIT's line numbers while the scope's file
+     * names the class. Mixing the two names a line nobody wrote, and a visitor comparing that line against
+     * a declaration's span then reads a trait's code as some unrelated method of the using class.
+     */
+    private function writtenIn(): string
+    {
+        return $this->scope->getTraitReflection()?->getFileName() ?? $this->scope->getFile();
     }
 }

@@ -5,37 +5,49 @@ declare(strict_types=1);
 namespace Docuccino\Inference\PhpStan\Tests\Unit;
 
 use Docuccino\Core\Inference\DType\ArrayShapeT;
+use Docuccino\Core\Inference\DType\CallableT;
 use Docuccino\Core\Inference\DType\ClassT;
 use Docuccino\Core\Inference\DType\DType;
 use Docuccino\Core\Inference\DType\EnumT;
 use Docuccino\Core\Inference\DType\ListT;
 use Docuccino\Core\Inference\DType\LiteralT;
 use Docuccino\Core\Inference\DType\MapT;
+use Docuccino\Core\Inference\DType\NeverT;
 use Docuccino\Core\Inference\DType\NullT;
 use Docuccino\Core\Inference\DType\ScalarT;
 use Docuccino\Core\Inference\DType\UnionT;
 use Docuccino\Core\Inference\DType\UnknownT;
+use Docuccino\Core\Inference\DType\VoidT;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Colour;
 use Docuccino\Inference\PhpStan\Translation\TranslationBudget;
 use Docuccino\Inference\PhpStan\Translation\TypeTranslator;
 use PHPStan\Type\Accessory\AccessoryArrayListType;
+use PHPStan\Type\Accessory\AccessoryLiteralStringType;
+use PHPStan\Type\Accessory\AccessoryNonEmptyStringType;
 use PHPStan\Type\Accessory\NonEmptyArrayType;
 use PHPStan\Type\ArrayType;
 use PHPStan\Type\BooleanType;
+use PHPStan\Type\CallableType;
 use PHPStan\Type\Constant\ConstantArrayTypeBuilder;
 use PHPStan\Type\Constant\ConstantBooleanType;
 use PHPStan\Type\Constant\ConstantIntegerType;
 use PHPStan\Type\Constant\ConstantStringType;
 use PHPStan\Type\FloatType;
 use PHPStan\Type\Generic\GenericObjectType;
+use PHPStan\Type\Generic\TemplateTypeFactory;
+use PHPStan\Type\Generic\TemplateTypeScope;
+use PHPStan\Type\Generic\TemplateTypeVariance;
 use PHPStan\Type\IntegerType;
+use PHPStan\Type\IntersectionType;
 use PHPStan\Type\MixedType;
+use PHPStan\Type\NeverType;
 use PHPStan\Type\NullType;
 use PHPStan\Type\ObjectType;
 use PHPStan\Type\StringType;
 use PHPStan\Type\Type;
 use PHPStan\Type\TypeCombinator;
 use PHPStan\Type\UnionType;
+use PHPStan\Type\VoidType;
 
 /**
  * The translator touches only PHPStan's BC-promised Type hierarchy and needs no
@@ -196,4 +208,36 @@ it('degrades to UnknownT when the depth budget is exhausted', function (): void 
     $result = (new TypeTranslator)->translate(new IntegerType, new TranslationBudget(0));
 
     expect($result)->toBeInstanceOf(UnknownT::class);
+});
+
+it('maps the return-only types the harvest sees on a method that answers with nothing', function (): void {
+    // `void` and `never` are not payloads: one says there is no body, the other that the path never
+    // returns, and both have to survive translation as themselves rather than collapse to unknown.
+    expect(translate(new VoidType))->toEqual(new VoidT)
+        ->and(translate(new NeverType))->toEqual(new NeverT);
+});
+
+it('translates a template parameter as the bound it is constrained to', function (): void {
+    // `@template T of string` reaching the harvest unresolved: the bound is the only honest shape, and a
+    // generic left untranslated would document a type name no consumer can see.
+    $template = TemplateTypeFactory::create(
+        TemplateTypeScope::createWithFunction('paginate'),
+        'T',
+        new StringType,
+        TemplateTypeVariance::createInvariant(),
+    );
+
+    expect(translate($template))->toEqual(ScalarT::string());
+});
+
+it('maps a callable to CallableT, which no document ever publishes a shape for', function (): void {
+    expect(translate(new CallableType))->toEqual(new CallableT);
+});
+
+it('degrades an intersection of nothing but accessory types', function (): void {
+    // Accessory types (non-empty-string, literal-string) refine a type without being one, so an
+    // intersection holding only those has no documentable member left — and says so rather than guessing.
+    $accessories = new IntersectionType([new AccessoryNonEmptyStringType, new AccessoryLiteralStringType]);
+
+    expect(translate($accessories))->toBeInstanceOf(UnknownT::class);
 });

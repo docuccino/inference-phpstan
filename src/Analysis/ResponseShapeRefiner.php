@@ -29,8 +29,10 @@ use PHPStan\Type\Type;
 /**
  * Recovers the real response shape when a handler builds its response through a project helper whose
  * declared return type erases it (`renderNotFound(): JsonResponse`): follows the call into the callee's
- * own return sites and substitutes the richer `JsonResponse<payload, status, contentType, members>`. Design
- * detail: see docs/design/inference-embedding.md §4a.
+ * own return sites and substitutes the richer `JsonResponse<payload, status, contentType, members>`. A
+ * response NAMED in a local before it goes out — the shape any renderer takes once it copies the headers
+ * an exception carries onto it — is followed back to what built it ({@see refineLocal()}). Design detail:
+ * see docs/design/inference-embedding.md §4a.
  *
  * Invariants: bounded by the engine's descent depth and per-analysis file budget; memoised per callee
  * `class::method`, with the memo bound-aware in BOTH directions — a truncated result is used once and
@@ -142,7 +144,19 @@ final class ResponseShapeRefiner
             return $this->fromTypeArgs($type);
         }
 
-        // 3. A call into project code whose declared return erased the shape — descend and substitute.
+        // 3. A response built into a local and then returned (`$r = Problem::make(…); …; return $r;`) — the
+        // idiomatic shape whenever the protocol headers the exception carries have to be copied onto the
+        // response before it goes out. The variable's own type is the bare class, so the shape lives in what
+        // was assigned to it ({@see refineLocal()}).
+        if ($expr instanceof Node\Expr\Variable
+            && is_string($expr->name)
+            && $type instanceof ClassT
+            && self::isResponseFqcn($type->fqcn)
+        ) {
+            return $this->refineLocal($expr->name, $scope, $paramNames, $depth);
+        }
+
+        // 4. A call into project code whose declared return erased the shape — descend and substitute.
         if ($expr instanceof Node\Expr\MethodCall || $expr instanceof Node\Expr\StaticCall) {
             if ($type instanceof ClassT && self::isResponseFqcn($type->fqcn)) {
                 if (! $this->budget->withinDepth($depth + 1)) {
@@ -169,12 +183,45 @@ final class ResponseShapeRefiner
             return null; // vendor / unresolvable — a deterministic decline, not a truncation
         }
 
-        // 4. A `return null` / void arm — the renderer delegates this type to the framework.
+        // 5. A `return null` / void arm — the renderer delegates this type to the framework.
         if ($type instanceof NullT || $type instanceof VoidT) {
             return RefinedResponse::delegation();
         }
 
         return null;
+    }
+
+    /**
+     * The shape of the expression a returned local was assigned, read in the scope it was assigned in.
+     *
+     * Deliberately narrow, because a wrong answer here is a body the endpoint never sends: only a local
+     * the method assigns EXACTLY ONCE ({@see FileAnalyzer::localAssignments()}) — two branches writing one
+     * variable are not described by either — and never one assigned from another local, which says nothing
+     * this call has not already asked and is how a self-assignment would never end.
+     *
+     * The depth is the caller's: naming a value is not a call hop, and the descent the assignment may
+     * itself be counts its own.
+     *
+     * @param  list<string>  $paramNames
+     */
+    private function refineLocal(string $name, Scope $scope, array $paramNames, int $depth): ?RefinedResponse
+    {
+        $key = FileAnalyzer::scopeKey($scope);
+        if ($key === null) {
+            return null;
+        }
+
+        $assignment = $this->fileAnalyzer->localAssignments($scope->getFile())[$key][$name] ?? null;
+        if ($assignment === null) {
+            return null;
+        }
+
+        [$assigned, $assignedScope] = $assignment;
+        if ($assigned instanceof Node\Expr\Variable) {
+            return null;
+        }
+
+        return $this->refineExpr($assigned, $this->fileAnalyzer->stableScope($assignedScope), $paramNames, $depth);
     }
 
     /**
@@ -230,9 +277,9 @@ final class ResponseShapeRefiner
         }
 
         if ($expr instanceof Node\Expr\Variable && is_string($expr->name)) {
-            $method = $scope->getFunctionName();
-            if ($method !== null) {
-                return $this->fileAnalyzer->arrayAssignments($scope->getFile())[$method][$expr->name] ?? null;
+            $key = FileAnalyzer::scopeKey($scope);
+            if ($key !== null) {
+                return $this->fileAnalyzer->arrayAssignments($scope->getFile())[$key][$expr->name] ?? null;
             }
         }
 
@@ -328,7 +375,7 @@ final class ResponseShapeRefiner
     {
         $this->touch($callee->file);
 
-        $node = $this->fileAnalyzer->analyze($callee->file)[$callee->method] ?? null;
+        $node = $this->fileAnalyzer->method($callee->file, $callee->class, $callee->method);
         if ($node === null) {
             return null;
         }
@@ -449,7 +496,7 @@ final class ResponseShapeRefiner
         }
 
         $this->touch($factory->file);
-        $node = $this->fileAnalyzer->analyze($factory->file)[$factory->method] ?? null;
+        $node = $this->fileAnalyzer->method($factory->file, $factory->class, $factory->method);
         if ($node === null) {
             return $child;
         }

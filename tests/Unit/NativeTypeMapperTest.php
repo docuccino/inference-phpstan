@@ -96,3 +96,25 @@ it('maps a union and an intersection through its own members', function (): void
     expect(probeType('union'))->toEqual(UnionT::of([ScalarT::int(), ScalarT::string()]))
         ->and(probeType('intersection'))->toEqual(IntersectionT::of([new ClassT('Countable'), new ClassT('Stringable')]));
 });
+
+it('degrades a reflection type it has no case for', function (): void {
+    // The unknown-entry half of the table: PHP could grow a fourth ReflectionType kind, and a mapper that
+    // fell through it would return whatever the last branch built rather than saying it does not know.
+    $unsupported = new class extends ReflectionType
+    {
+        public function allowsNull(): bool
+        {
+            return false;
+        }
+
+        public function __toString(): string
+        {
+            return 'unsupported';
+        }
+    };
+
+    $mapped = (new NativeTypeMapper)->map($unsupported);
+
+    expect($mapped)->toBeInstanceOf(UnknownT::class)
+        ->and($mapped->reason)->toBe('unsupported reflection type');
+});

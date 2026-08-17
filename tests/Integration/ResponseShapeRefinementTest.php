@@ -527,3 +527,129 @@ it('leaves a member conditional when the argument may already be the marker', fu
     expect($fields['errors']->optional)->toBeTrue()
         ->and($fields['instance']->optional)->toBeFalse();
 })->group('fixture');
+
+/**
+ * A response NAMED in a local before it is returned — what every renderer writes as soon as the protocol
+ * headers an exception carries have to survive onto the body. The variable's own type is the helper's bare
+ * `JsonResponse`, so the shape lives in the expression it was assigned and nowhere else.
+ *
+ * @return array{status: int|null, contentType: string|null, keys: list<string>, args: int}
+ */
+function headerPreservingShape(string $narrowType): array
+{
+    $analysis = ActionAnalysis::fromArray(FixtureRunner::analyzeCallable(
+        'app/Exceptions/HeaderPreservingRenderer.php',
+        'App\\Exceptions\\HeaderPreservingRenderer',
+        'render',
+        param: 'e',
+        narrowType: $narrowType,
+    ));
+
+    expect($analysis->returns)->toHaveCount(1);
+    $type = $analysis->returns[0]->type;
+    expect($type)->toBeInstanceOf(ClassT::class)->and($type->fqcn)->toBe('Illuminate\\Http\\JsonResponse');
+
+    $statusArg = $type->typeArgs[1] ?? null;
+    $ctArg = $type->typeArgs[2] ?? null;
+    $payload = $type->typeArgs[0] ?? null;
+
+    $keys = [];
+    if ($payload instanceof ArrayShapeT) {
+        foreach ($payload->fields as $field) {
+            $keys[] = (string) $field->key;
+        }
+    }
+
+    return [
+        'status' => $statusArg instanceof LiteralT && is_int($statusArg->value) ? $statusArg->value : null,
+        'contentType' => $ctArg instanceof LiteralT && is_string($ctArg->value) ? $ctArg->value : null,
+        'keys' => $keys,
+        'args' => count($type->typeArgs),
+    ];
+}
+
+it('follows a response named in a local back to the expression that built it', function (): void {
+    // The arm that copies the exception's headers on: one assignment, so the local stands for the call.
+    $shape = headerPreservingShape('Symfony\\Component\\HttpKernel\\Exception\\BadRequestHttpException');
+
+    expect($shape['status'])->toBe(400)
+        ->and($shape['contentType'])->toBe('application/problem+json')
+        ->and($shape['keys'])->toContain('type', 'title', 'status', 'detail');
+})->group('fixture');
+
+it('recovers the same shape when the helper call is returned straight out', function (): void {
+    // The control: the same body, unnamed. The local must not be recovering LESS than the expression.
+    $shape = headerPreservingShape('Illuminate\\Auth\\AuthenticationException');
+
+    expect($shape['status'])->toBe(401)
+        ->and($shape['contentType'])->toBe('application/problem+json')
+        ->and($shape['keys'])->toContain('type', 'title', 'status', 'detail');
+})->group('fixture');
+
+it('refuses the shape when two branches write the one local', function (): void {
+    // Neither expression describes what goes out, and picking one would publish a body the other branch
+    // never sends — so the engine hands back the bare type and the adapter's chain states an honest one.
+    $shape = headerPreservingShape('RuntimeException');
+
+    expect($shape['args'])->toBe(0)
+        ->and($shape['status'])->toBeNull()
+        ->and($shape['keys'])->toBe([]);
+})->group('fixture');
+
+/**
+ * The one return type of a method, with the generic arguments the refinement recovered (none where it
+ * refused). Used for the shapes where refusing is the whole point.
+ *
+ * @return array{fqcn: string, args: int, status: int|null}
+ */
+function refinedReturn(string $relPath, string $class, string $method): array
+{
+    $analysis = ActionAnalysis::fromArray(FixtureRunner::analyzeCallable($relPath, $class, $method));
+
+    expect($analysis->returns)->toHaveCount(1);
+    $type = $analysis->returns[0]->type;
+    expect($type)->toBeInstanceOf(ClassT::class);
+
+    $status = $type->typeArgs[1] ?? null;
+
+    return [
+        'fqcn' => $type->fqcn,
+        'args' => count($type->typeArgs),
+        'status' => $status instanceof LiteralT && is_int($status->value) ? $status->value : null,
+    ];
+}
+
+it('refuses the shape when the local is written again by a form that is not an assignment', function (string $method): void {
+    // Each arm names a 418 body first and then replaces the local — destructured, bound by a `foreach`, or
+    // written by a callee through a reference. Serving the first expression would publish a Teapot body for
+    // a response that carries somebody else's.
+    $return = refinedReturn(
+        'app/Exceptions/RebuiltProblemRenderer.php',
+        'App\\Exceptions\\RebuiltProblemRenderer',
+        $method,
+    );
+
+    expect($return['fqcn'])->toBe('Illuminate\\Http\\JsonResponse')
+        ->and($return['args'])->toBe(0)
+        ->and($return['status'])->toBeNull();
+})->with([
+    'list destructuring' => ['destructured'],
+    'a foreach value binding' => ['iterated'],
+    'a by-reference argument' => ['relabelled'],
+])->group('fixture');
+
+it('keeps two same-named methods in one file from answering for each other', function (): void {
+    // `DecoratedProblemRenderer::render()` returns the response it was HANDED; the inline renderer beside it
+    // builds a 418 in a local also called `$response`. Both the method-body harvest and the local's
+    // assignment are keyed per file, so both have to carry the class or the decorator publishes the inline
+    // renderer's body.
+    $return = refinedReturn(
+        'app/Exceptions/DecoratedProblemRenderer.php',
+        'App\\Exceptions\\DecoratedProblemRenderer',
+        'render',
+    );
+
+    expect($return['fqcn'])->toBe('Illuminate\\Http\\JsonResponse')
+        ->and($return['args'])->toBe(0)
+        ->and($return['status'])->toBeNull();
+})->group('fixture');

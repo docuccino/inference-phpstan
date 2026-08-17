@@ -64,3 +64,27 @@ it('harvests methods, closures and array assignments, memoising each per normali
         ->and($analyzer->arrayAssignments('/x.php'))->toBe([])
         ->and($calls)->toBe(3);
 });
+
+it('answers for no method the file does not declare', function (): void {
+    // The lookup a caller with a class in hand makes, and the by-name one a closure-based caller makes.
+    // A file declaring nothing answers neither — which is the `inference.method-not-found` degradation,
+    // not a body borrowed from somewhere else.
+    $calls = 0;
+    $analyzer = fileAnalyzerWithRecordingAdapter($calls);
+
+    expect($analyzer->method('/x.php', 'App\\Renderer', 'render'))->toBeNull()
+        ->and($analyzer->method('/x.php', null, 'render'))->toBeNull()
+        // Both went through the one memoised harvest.
+        ->and($calls)->toBe(1);
+});
+
+it('harvests every local assignment kind off one walk of the file', function (): void {
+    // The pairing of nodes with scope is real-engine behaviour (proven by the fixture group); what a
+    // no-emit adapter can pin here is that the two harvests share ONE pass and stay memoised per file.
+    $calls = 0;
+    $analyzer = fileAnalyzerWithRecordingAdapter($calls);
+
+    expect($analyzer->localAssignments('/x.php'))->toBe([])
+        ->and($analyzer->arrayAssignments('/x.php'))->toBe([])
+        ->and($calls)->toBe(1);
+});

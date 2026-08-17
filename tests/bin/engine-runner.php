@@ -268,6 +268,12 @@ $result = match ($mode) {
             // The degradation half: an entry the engine could not fold is a named diagnostic, so a test can
             // pin recovery AND the absence of it.
             'unresolved' => $facts->unresolved,
+            'paginates' => $facts->paginates,
+            'paginationTerminal' => $facts->paginationTerminal,
+            // The page-size key the trace followed the request into a callee to find, and the default that
+            // read was written with — both null for a chain whose size is fixed at the call site.
+            'pageSizeKey' => $facts->pageSize?->key,
+            'pageSizeDefault' => $facts->pageSize?->default,
             'visitedBasenames' => array_map('basename', $dependencyFiles),
         ];
     })(),
@@ -330,11 +336,15 @@ $result = match ($mode) {
         $engine->trace($ref, $visitor);
 
         // `pageName` is the third argument of all three signatures — the key the endpoint really reads.
+        // `pageSizeKey` is the other half: the key the SIZE argument was followed back to a request read
+        // for, which is a call-graph fact rather than an argument of this call.
         return [
             'paginates' => $visitor->paginates,
             'kind' => $visitor->kind,
             'terminal' => $visitor->terminal,
             'pageName' => $visitor->stringArg(2) ?? $visitor->stringArg('pageName'),
+            'pageSizeKey' => $visitor->pageSize()?->key,
+            'pageSizeDefault' => $visitor->pageSize()?->default,
         ];
     })(),
     'trace-closure' => (static function () use ($engine, $file, $line): array {

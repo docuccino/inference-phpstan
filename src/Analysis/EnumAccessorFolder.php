@@ -106,7 +106,7 @@ final class EnumAccessorFolder
 
         ($this->recordFile)($file);
 
-        $node = $this->fileAnalyzer->analyze($file)[$method] ?? null;
+        $node = $this->fileAnalyzer->method($file, $enumFqcn, $method);
         if ($node === null) {
             return null;
         }

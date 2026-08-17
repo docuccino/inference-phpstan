@@ -243,15 +243,15 @@ final class ThrowAnalyzer
         }
 
         $this->visitedFiles[$callee->file] = true;
-        $childMap = $this->fileAnalyzer->analyze($callee->file);
-        if (! isset($childMap[$callee->method])) {
+        $childNode = $this->fileAnalyzer->method($callee->file, $callee->class, $callee->method);
+        if ($childNode === null) {
             return [];
         }
 
         $childLabel = Fqcn::short($callee->class).'::'.$callee->method;
 
         return $this->analyzeMethod(
-            $childMap[$callee->method],
+            $childNode,
             $childLabel,
             $depth + 1,
             [...$visited, $key],

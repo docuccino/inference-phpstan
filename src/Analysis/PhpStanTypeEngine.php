@@ -106,8 +106,7 @@ final class PhpStanTypeEngine implements TypeEngine
 
     private function doAnalyze(ActionRef $action): ActionAnalysis
     {
-        $methods = $this->fileAnalyzer->analyze($action->file);
-        $node = $methods[$action->method] ?? null;
+        $node = $this->fileAnalyzer->method($action->file, $action->class, $action->method);
 
         if (! $node instanceof MethodReturnStatementsNode) {
             return new ActionAnalysis(
@@ -266,7 +265,7 @@ final class PhpStanTypeEngine implements TypeEngine
         $method = $callable->method;
         $node = $method === null
             ? ($this->fileAnalyzer->closures($callable->file)[$callable->line] ?? null)
-            : ($this->fileAnalyzer->analyze($callable->file)[$method] ?? null);
+            : $this->fileAnalyzer->method($callable->file, $callable->class, $method);
 
         if (! $node instanceof ReturnStatementsNode) {
             return new ActionAnalysis(
