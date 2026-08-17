@@ -7,6 +7,13 @@ User-facing changes to `docuccino/inference-phpstan` — features, fixes, perfor
 taken from the commit messages scoped `inference-phpstan`. Entries begin after v0.1.2; older history is in
 the [repository](https://github.com/docuccino/docuccino) git log.
 
+## v0.5.0
+
+### Bug fixes
+
+- read a match arm's several conditions as alternatives, not requirements ([#57](https://github.com/docuccino/docuccino/pull/57))
+- stop promising a body member the response sometimes omits ([#44](https://github.com/docuccino/docuccino/pull/44))
+
 ## v0.4.0
 
 ### Breaking changes
