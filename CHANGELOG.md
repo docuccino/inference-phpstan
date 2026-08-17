@@ -7,6 +7,14 @@ User-facing changes to `docuccino/inference-phpstan` — features, fixes, perfor
 taken from the commit messages scoped `inference-phpstan`. Entries begin after v0.1.2; older history is in
 the [repository](https://github.com/docuccino/docuccino) git log.
 
+## v0.5.1
+
+### Bug fixes
+
+- serve a local's value only to the method that wrote it, and only until something rewrites it ([#74](https://github.com/docuccino/docuccino/pull/74))
+- report the file a node was written in, which is not always the file being analysed ([#73](https://github.com/docuccino/docuccino/pull/73))
+- read a response named in a local as the response it was named from ([#64](https://github.com/docuccino/docuccino/pull/64))
+
 ## v0.5.0
 
 ### Bug fixes
