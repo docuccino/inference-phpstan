@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Docuccino\Inference\PhpStan\Analysis;
 
+use Docuccino\Core\Inference\ComponentDeclaration;
 use Docuccino\Core\Inference\DType\ArrayShapeField;
 use Docuccino\Core\Inference\DType\ArrayShapeT;
 use Docuccino\Core\Inference\DType\ClassT;
@@ -37,6 +38,9 @@ use Docuccino\Core\Inference\DType\UnknownT;
  * rather than widening. An argument that renders as an omission marker instead of a value supplies the key
  * only sometimes: its field is marked OPTIONAL, which says exactly that and claims nothing more.
  *
+ * `$component` travels beside all of that rather than inside the shape: it names the body rather than
+ * describing it ({@see withComponent()}).
+ *
  * @internal
  */
 final readonly class RefinedResponse
@@ -52,7 +56,21 @@ final readonly class RefinedResponse
         public bool $delegates = false,
         public array $payloadParamProvenance = [],
         public ?ArrayShapeT $payloadMembers = null,
+        public ?ComponentDeclaration $component = null,
     ) {}
+
+    /**
+     * The `#[ErrorComponent]` the hop this shape came back through declared. The OUTERMOST declaring hop
+     * on a render path wins, which is why this replaces rather than defers: a method's declaration names
+     * what that method answers with, and the helper it built the body through is an implementation detail
+     * of that answer. That is the half of the rule that matters — a `problem()` helper several arms share
+     * can only ever speak for arms that declared nothing themselves, so annotating it cannot collapse the
+     * arms into one name. Stamped per callee, so the memo stays a function of the symbol alone.
+     */
+    public function withComponent(ComponentDeclaration $component): self
+    {
+        return new self($this->payload, $this->status, $this->statusSource, $this->contentType, $this->delegates, $this->payloadParamProvenance, $this->payloadMembers, $component);
+    }
 
     /** A `return null`/void return: the framework handles it, so there's no response to document. */
     public static function delegation(): self
@@ -69,13 +87,13 @@ final readonly class RefinedResponse
     /** Labels the media type recovered from a header the helper set after building the response. */
     public function withContentType(string $contentType): self
     {
-        return new self($this->payload, $this->status, $this->statusSource, $contentType, $this->delegates, $this->payloadParamProvenance, $this->payloadMembers);
+        return new self($this->payload, $this->status, $this->statusSource, $contentType, $this->delegates, $this->payloadParamProvenance, $this->payloadMembers, $this->component);
     }
 
     /** Clears {@see $statusSource} so the bound shape reads as resolved. */
     public function withBoundStatus(LiteralT $status): self
     {
-        return new self($this->payload, $status, null, $this->contentType, $this->delegates, $this->payloadParamProvenance, $this->payloadMembers);
+        return new self($this->payload, $status, null, $this->contentType, $this->delegates, $this->payloadParamProvenance, $this->payloadMembers, $this->component);
     }
 
     /**
@@ -84,7 +102,7 @@ final readonly class RefinedResponse
      */
     public function withStatusSource(?ParamAccessor $statusSource): self
     {
-        return new self($this->payload, null, $statusSource, $this->contentType, $this->delegates, $this->payloadParamProvenance, $this->payloadMembers);
+        return new self($this->payload, null, $statusSource, $this->contentType, $this->delegates, $this->payloadParamProvenance, $this->payloadMembers, $this->component);
     }
 
     /**
@@ -92,7 +110,7 @@ final readonly class RefinedResponse
      */
     public function withPayload(?DType $payload, array $payloadParamProvenance): self
     {
-        return new self($payload, $this->status, $this->statusSource, $this->contentType, $this->delegates, $payloadParamProvenance, $this->payloadMembers);
+        return new self($payload, $this->status, $this->statusSource, $this->contentType, $this->delegates, $payloadParamProvenance, $this->payloadMembers, $this->component);
     }
 
     /**
@@ -103,7 +121,7 @@ final readonly class RefinedResponse
      */
     public function withPayloadMembers(ArrayShapeT $payloadMembers, array $payloadParamProvenance): self
     {
-        return new self($this->payload, $this->status, $this->statusSource, $this->contentType, $this->delegates, $payloadParamProvenance, $payloadMembers);
+        return new self($this->payload, $this->status, $this->statusSource, $this->contentType, $this->delegates, $payloadParamProvenance, $payloadMembers, $this->component);
     }
 
     /**

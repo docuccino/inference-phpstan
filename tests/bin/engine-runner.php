@@ -315,8 +315,8 @@ $result = match ($mode) {
 
         return [
             'paginates' => $visitor->paginates,
-            'maxResults' => $visitor->outermostArgs[0] ?? null,
-            'defaultSize' => $visitor->outermostArgs[1] ?? null,
+            'maxResults' => $visitor->intArg(0) ?? $visitor->intArg('maxResults'),
+            'defaultSize' => $visitor->intArg(1) ?? $visitor->intArg('defaultSize'),
         ];
     })(),
     'trace-pagination-terminal' => (static function () use ($engine, $ref): array {
@@ -329,7 +329,13 @@ $result = match ($mode) {
         ]);
         $engine->trace($ref, $visitor);
 
-        return ['paginates' => $visitor->paginates, 'kind' => $visitor->kind];
+        // `pageName` is the third argument of all three signatures — the key the endpoint really reads.
+        return [
+            'paginates' => $visitor->paginates,
+            'kind' => $visitor->kind,
+            'terminal' => $visitor->terminal,
+            'pageName' => $visitor->stringArg(2) ?? $visitor->stringArg('pageName'),
+        ];
     })(),
     'trace-closure' => (static function () use ($engine, $file, $line): array {
         // The closure-by-line trace — how a closure route's action is walked — hands each return

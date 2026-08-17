@@ -25,6 +25,7 @@
     "require": {
         "php": "^8.3",
         "docuccino/core": "self.version",
+        "docuccino/attributes": "self.version",
         "larastan/larastan": "^3.10",
         "nikic/php-parser": "^5",
         "phpstan/phpstan": "~2.2.0 || ~2.3.0"

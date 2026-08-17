@@ -37,7 +37,8 @@ use PHPStan\Type\Type;
  * never cached, and a complete entry is only served to a caller with the depth and file budget to have
  * computed it itself, so a route's shape never depends on which unrelated route ran first; a callee's
  * shape is call-independent, so statuses and body members that read a parameter are recorded as accessors
- * and bound at the call site; nothing is ever guessed — an unfoldable status stays permissive, and a
+ * and bound at the call site; each hop stamps the `#[ErrorComponent]` it declares over the one below it
+ * ({@see declared()}); nothing is ever guessed — an unfoldable status stays permissive, and a
  * descent that ran out of bound says so via {@see takeTruncations()}; vendor code is never followed —
  * containment is the PRIME scope (every app PSR-4 root, including a modular `Modules\…` one), not the
  * narrower descend scope throws/QB-trace use; every file touched is reported via {@see takeFiles()} so
@@ -64,6 +65,9 @@ final class ResponseShapeRefiner
     /** Folds accessors on a bound enum case (`->value`, `->name`, `->status()`) — the last hop. */
     private readonly EnumAccessorFolder $enumFolder;
 
+    /** Reads the `#[ErrorComponent]` each descended hop declares for the body it answers with. */
+    private readonly ComponentDeclarations $declarations;
+
     public function __construct(
         private readonly RuntimeAdapter $adapter,
         private readonly TypeTranslator $translator,
@@ -75,6 +79,7 @@ final class ResponseShapeRefiner
         int $fileBudget = 40,
     ) {
         $this->budget = new DescentBudget($maxDepth, $fileBudget);
+        $this->declarations = new ComponentDeclarations($reflectionProvider);
         $this->enumFolder = new EnumAccessorFolder(
             $this->fileAnalyzer,
             $this->projectFilter,
@@ -279,10 +284,38 @@ final class ResponseShapeRefiner
         }
 
         $frame = $this->budget->open($key, $depth);
-        $result = $this->computeCalleeShape($callee, $depth);
+        $result = $this->declared($this->computeCalleeShape($callee, $depth), $callee);
         $this->budget->close($key, $frame, $result);
 
         return $result;
+    }
+
+    /**
+     * Stamp the hop's own `#[ErrorComponent]` over whatever came back from below it — the outermost
+     * declaring hop wins ({@see RefinedResponse::withComponent()}). A delegating arm answers with no body,
+     * so there is nothing for a name to be about.
+     *
+     * The file the hop's method is WRITTEN in is touched whether or not it carries a name, and it is not
+     * the file the call resolved to: an unoverridden method is the parent's, and a trait-imported one is
+     * reported as the using class's own while living in the trait's file. What this hop does not declare
+     * is an answer of its own — key only the found case and adding the attribute to a trait method leaves
+     * every warm fragment valid, so a warm build publishes the status default where a cold one publishes
+     * the declared name.
+     */
+    private function declared(?RefinedResponse $result, Callee $callee): ?RefinedResponse
+    {
+        if ($result === null || $result->delegates) {
+            return $result;
+        }
+
+        $written = $this->declarations->fileFor($callee->class, $callee->method);
+        if ($written !== null) {
+            $this->touch($written);
+        }
+
+        $declaration = $this->declarations->on($callee->class, $callee->method);
+
+        return $declaration === null ? $result : $result->withComponent($declaration);
     }
 
     /** Normalise before it reaches the budget, which counts files by their canonical path. */

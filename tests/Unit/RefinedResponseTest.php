@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use Docuccino\Core\Inference\ComponentDeclaration;
 use Docuccino\Core\Inference\DType\ArrayShapeField;
 use Docuccino\Core\Inference\DType\ArrayShapeT;
 use Docuccino\Core\Inference\DType\ClassT;
@@ -323,6 +324,24 @@ it('carries the member map through every other rewrite', function (): void {
         ->and($base->withStatusSource(ParamAccessor::identity('status'))->payloadMembers)->not->toBeNull()
         ->and($base->withContentType('application/problem+json')->payloadMembers)->not->toBeNull()
         ->and($base->bindMember('type', null, ParamAccessor::identity('outer'))->payloadMembers)->not->toBeNull();
+});
+
+it('carries the declared component through every other rewrite', function (): void {
+    // The name is stamped on a hop's way out and then bound, re-homed and re-labelled by every caller
+    // above it. Losing it at any of those would publish the shared helper's name, or none at all.
+    $declaration = new ComponentDeclaration('PortalRejection', 'App\\Exceptions\\Renderer::renderRejection');
+    $base = withMembers(['type'], ['type' => ParamAccessor::identity('type')])->withComponent($declaration);
+
+    expect($base->component)->toBe($declaration)
+        ->and($base->withBoundStatus(new LiteralT(403))->component)->toBe($declaration)
+        ->and($base->withStatusSource(ParamAccessor::identity('status'))->component)->toBe($declaration)
+        ->and($base->withContentType('application/problem+json')->component)->toBe($declaration)
+        ->and($base->bindMember('type', new LiteralT('x'), null)->component)->toBe($declaration)
+        ->and($base->withoutMember('type')->component)->toBe($declaration)
+        // The outermost hop replaces what came back from below it, rather than deferring to it.
+        ->and($base->withComponent(new ComponentDeclaration('Outer', 'X::y'))->component?->name)->toBe('Outer')
+        // Nothing declared anywhere leaves it unnamed, which is every render path before this existed.
+        ->and((new RefinedResponse)->component)->toBeNull();
 });
 
 it('recognises the bare response class names it should try to enrich', function (): void {

@@ -11,11 +11,10 @@ use Docuccino\Core\Inference\ActionRef;
 use Docuccino\Core\Inference\CallableRef;
 use Docuccino\Core\Inference\ClassMetadata;
 use Docuccino\Core\Inference\ClassRef;
+use Docuccino\Core\Inference\ComponentDeclaration;
 use Docuccino\Core\Inference\DType\ClassT;
 use Docuccino\Core\Inference\DType\DType;
-use Docuccino\Core\Inference\DType\IntersectionT;
 use Docuccino\Core\Inference\DType\NullT;
-use Docuccino\Core\Inference\DType\UnionT;
 use Docuccino\Core\Inference\DType\UnknownT;
 use Docuccino\Core\Inference\DType\VoidT;
 use Docuccino\Core\Inference\ReturnSite;
@@ -65,6 +64,9 @@ final class PhpStanTypeEngine implements TypeEngine
      * never harvests a bare-response return never builds it.
      */
     private ?ResponseShapeRefiner $refiner = null;
+
+    /** Reads the `#[ErrorComponent]` an analysed callable declares for the body it answers with. */
+    private ?ComponentDeclarations $declarations = null;
 
     public function __construct(
         private readonly RuntimeAdapter $adapter,
@@ -157,7 +159,8 @@ final class PhpStanTypeEngine implements TypeEngine
             $returnNode = $statement->getReturnNode();
             $location = new SourceLocation($file, $returnNode->getStartLine());
             $scope = $this->fileAnalyzer->stableScope($statement->getScope());
-            $returns[] = new ReturnSite($this->siteType($returnNode->expr, $scope), $location);
+            $shape = $this->siteShape($returnNode->expr, $scope);
+            $returns[] = new ReturnSite($shape['type'], $location, $shape['component']);
         }
 
         return $returns;
@@ -165,34 +168,41 @@ final class PhpStanTypeEngine implements TypeEngine
 
     /**
      * With {@see ResponseShapeRefiner} recovery for a generic-erased response. A refinement resolving to a
-     * `return null`/void arm (framework delegation) yields {@see VoidT}; anything else is verbatim.
+     * `return null`/void arm (framework delegation) yields {@see VoidT}; anything else is verbatim. The
+     * component the recovery walked through is carried beside the type rather than inside it: it says
+     * which method answered, not what the value is.
+     *
+     * @return array{type: DType, component: ComponentDeclaration|null}
      */
-    private function siteType(?Node\Expr $expr, Scope $scope): DType
+    private function siteShape(?Node\Expr $expr, Scope $scope): array
     {
         if ($expr === null) {
-            return new VoidT;
+            return ['type' => new VoidT, 'component' => null];
         }
 
         $type = $this->translator->translate($scope->getType($expr));
         if (! $type instanceof ClassT || ! ResponseShapeRefiner::isResponseFqcn($type->fqcn)) {
-            return $type;
+            return ['type' => $type, 'component' => null];
         }
 
         // Already rich (our extension typed `response()->json()`/`noContent()`) — authoritative, keep it.
         // Only a bare erased response, or a `new JsonResponse(...)`, goes through helper indirection.
         if ($type->typeArgs !== [] && ! $expr instanceof Node\Expr\New_) {
-            return $type;
+            return ['type' => $type, 'component' => null];
         }
 
         $refined = $this->refiner()->refine($expr, $scope);
         if ($refined === null) {
-            return $type;
+            return ['type' => $type, 'component' => null];
         }
         if ($refined->delegates) {
-            return new VoidT;
+            return ['type' => new VoidT, 'component' => null];
         }
 
-        return $refined->toClassT(ResponseShapeRefiner::CANONICAL_RESPONSE) ?? $type;
+        return [
+            'type' => $refined->toClassT(ResponseShapeRefiner::CANONICAL_RESPONSE) ?? $type,
+            'component' => $refined->component,
+        ];
     }
 
     /**
@@ -272,11 +282,48 @@ final class PhpStanTypeEngine implements TypeEngine
         $narrowed = $this->harvestNarrowed($node, $callable);
         $truncation = $this->refinerTruncation($callable->symbol());
 
+        // The analysed callable is the outermost hop on every path below it, so its own declaration wins
+        // over any it descended through — and it is the only anchor a one-body renderer (an exception's
+        // own `render()`) has. The file that method is WRITTEN in joins the deps whether or not it declares
+        // anything, for the reason {@see ResponseShapeRefiner::declared()} states: an unoverridden method
+        // belongs to the parent and a trait-imported one to the trait, neither of which `$callable->file`
+        // names, and the absence of a name there is an answer too.
+        $entry = $this->entryDeclaration($callable);
+        $entryFile = $this->entryDeclarationFile($callable);
+
         return new ActionAnalysis(
-            returns: $narrowed['returns'],
+            returns: $entry === null
+                ? $narrowed['returns']
+                : array_map(static fn (ReturnSite $site): ReturnSite => $site->withComponent($entry), $narrowed['returns']),
             diagnostics: $truncation === null ? $narrowed['diagnostics'] : [...$narrowed['diagnostics'], $truncation],
-            dependencyFiles: [$callable->file, ...$this->drainRefinerFiles()],
+            dependencyFiles: [
+                $callable->file,
+                ...($entryFile === null ? [] : [$entryFile]),
+                ...$this->drainRefinerFiles(),
+            ],
         );
+    }
+
+    /** The `#[ErrorComponent]` the analysed callable itself declares; closures have nowhere to carry one. */
+    private function entryDeclaration(CallableRef $callable): ?ComponentDeclaration
+    {
+        $class = $callable->class;
+        $method = $callable->method;
+
+        return $class === null || $method === null
+            ? null
+            : $this->declarations()->on($class, $method);
+    }
+
+    /** The file the analysed callable's method is written in, which is where a name for it can appear. */
+    private function entryDeclarationFile(CallableRef $callable): ?string
+    {
+        $class = $callable->class;
+        $method = $callable->method;
+
+        return $class === null || $method === null
+            ? null
+            : $this->declarations()->fileFor($class, $method);
     }
 
     /**
@@ -299,7 +346,7 @@ final class PhpStanTypeEngine implements TypeEngine
         $param = $callable->narrowParameter;
         $narrowTo = $callable->narrowType;
 
-        /** @var list<array{pos: int, line: int, type: DType, guard: list<string>, delegates: bool}> $sites */
+        /** @var list<array{pos: int, line: int, type: DType, component: ComponentDeclaration|null, guard: list<list<string>>, delegates: bool}> $sites */
         $sites = [];
         foreach ($node->getReturnStatements() as $statement) {
             $returnNode = $statement->getReturnNode();
@@ -315,21 +362,22 @@ final class PhpStanTypeEngine implements TypeEngine
                 continue;
             }
 
-            $type = $this->siteType($expr, $scope);
-            $guard = $param === null ? [] : $this->classFqcns($this->translator->translate($scope->getType(new Variable($param))));
+            $shape = $this->siteShape($expr, $scope);
+            $guard = $param === null ? [] : NarrowingGuard::ofType($this->translator->translate($scope->getType(new Variable($param))));
             $sites[] = [
                 'pos' => SourceOrder::of($returnNode),
                 'line' => $returnNode->getStartLine(),
-                'type' => $type,
+                'type' => $shape['type'],
+                'component' => $shape['component'],
                 'guard' => $guard,
-                'delegates' => $this->isDelegation($type),
+                'delegates' => $this->isDelegation($shape['type']),
             ];
         }
 
         if ($param === null || $narrowTo === null) {
             return [
                 'returns' => array_map(
-                    fn (array $s): ReturnSite => new ReturnSite($s['type'], new SourceLocation($callable->file, $s['line'])),
+                    fn (array $s): ReturnSite => new ReturnSite($s['type'], new SourceLocation($callable->file, $s['line']), $s['component']),
                     $sites,
                 ),
                 'diagnostics' => [],
@@ -340,7 +388,7 @@ final class PhpStanTypeEngine implements TypeEngine
         usort($sites, static fn (array $a, array $b): int => $a['pos'] <=> $b['pos']);
         $satisfiable = array_values(array_filter(
             $sites,
-            fn (array $candidate): bool => $this->guardSatisfies($candidate['guard'], $narrowTo),
+            fn (array $candidate): bool => NarrowingGuard::satisfiedBy($candidate['guard'], $narrowTo),
         ));
 
         $chosen = $this->chooseNarrowedSite($satisfiable, $narrowTo);
@@ -348,7 +396,7 @@ final class PhpStanTypeEngine implements TypeEngine
         return [
             'returns' => $chosen === null
                 ? []
-                : [new ReturnSite($chosen['type'], new SourceLocation($callable->file, $chosen['line']))],
+                : [new ReturnSite($chosen['type'], new SourceLocation($callable->file, $chosen['line']), $chosen['component'])],
             'diagnostics' => $this->narrowingAmbiguity($satisfiable, $chosen, $narrowTo, $param, $callable),
         ];
     }
@@ -357,13 +405,13 @@ final class PhpStanTypeEngine implements TypeEngine
      * The first site in source order that either matches the guard exactly or produces a response; falls
      * back to the first satisfiable one for a genuinely all-delegating renderer.
      *
-     * @param  list<array{pos: int, line: int, type: DType, guard: list<string>, delegates: bool}>  $satisfiable
-     * @return array{pos: int, line: int, type: DType, guard: list<string>, delegates: bool}|null
+     * @param  list<array{pos: int, line: int, type: DType, component: ComponentDeclaration|null, guard: list<list<string>>, delegates: bool}>  $satisfiable
+     * @return array{pos: int, line: int, type: DType, component: ComponentDeclaration|null, guard: list<list<string>>, delegates: bool}|null
      */
     private function chooseNarrowedSite(array $satisfiable, string $narrowTo): ?array
     {
         foreach ($satisfiable as $site) {
-            if (in_array($narrowTo, $site['guard'], true) || ! $site['delegates']) {
+            if (NarrowingGuard::namesExactly($site['guard'], $narrowTo) || ! $site['delegates']) {
                 return $site;
             }
         }
@@ -376,19 +424,20 @@ final class PhpStanTypeEngine implements TypeEngine
      * `$param` against (a `default` arm, or a non-`instanceof` condition, is broad), type = the refined arm
      * body. Arm order is preserved via source position.
      *
-     * @return list<array{pos: int, line: int, type: DType, guard: list<string>, delegates: bool}>
+     * @return list<array{pos: int, line: int, type: DType, component: ComponentDeclaration|null, guard: list<list<string>>, delegates: bool}>
      */
     private function matchArmSites(Node\Expr\Match_ $match, string $param, Scope $scope): array
     {
         $sites = [];
         foreach ($match->arms as $arm) {
-            $type = $this->siteType($arm->body, $scope);
+            $shape = $this->siteShape($arm->body, $scope);
             $sites[] = [
                 'pos' => SourceOrder::of($arm->body),
                 'line' => $arm->body->getStartLine(),
-                'type' => $type,
+                'type' => $shape['type'],
+                'component' => $shape['component'],
                 'guard' => $arm->conds === null ? [] : $this->armInstanceofGuards($arm->conds, $param, $scope),
-                'delegates' => $this->isDelegation($type),
+                'delegates' => $this->isDelegation($shape['type']),
             ];
         }
 
@@ -396,41 +445,55 @@ final class PhpStanTypeEngine implements TypeEngine
     }
 
     /**
-     * Walks `&&`/`||`, so `$e instanceof A && $e instanceof B` contributes both. Anything that isn't an
-     * `instanceof` on `$param` contributes nothing, leaving the arm broad.
+     * The arm's guard in the shape {@see NarrowingGuard} reads: `&&` requires both, `||` alternates, and
+     * an arm's several conditions alternate too — `match (true) { $e instanceof A, $e instanceof B => … }`
+     * fires for either, so folding them as requirements would leave both types answered by a later arm.
+     * Anything that isn't an `instanceof` on `$param` says nothing about it, which makes the alternative
+     * it sits in reachable by anything.
      *
      * @param  array<Node\Expr>  $conds
-     * @return list<string>
+     * @return list<list<string>>
      */
     private function armInstanceofGuards(array $conds, string $param, Scope $scope): array
     {
-        $fqcns = [];
+        $guard = null;
         foreach ($conds as $cond) {
-            $this->collectInstanceof($cond, $param, $scope, $fqcns);
+            $condGuard = $this->condGuard($cond, $param, $scope);
+            $guard = $guard === null ? $condGuard : NarrowingGuard::anyOf($guard, $condGuard);
         }
 
-        return array_values(array_unique($fqcns));
+        return $guard ?? [];
     }
 
     /**
-     * @param  list<string>  $out
+     * @return list<list<string>>
      */
-    private function collectInstanceof(Node\Expr $node, string $param, Scope $scope, array &$out): void
+    private function condGuard(Node\Expr $node, string $param, Scope $scope): array
     {
         if ($node instanceof Node\Expr\Instanceof_
             && $node->expr instanceof Variable
             && $node->expr->name === $param
             && $node->class instanceof Node\Name
         ) {
-            $out[] = $scope->resolveName($node->class);
-
-            return;
+            return [[$scope->resolveName($node->class)]];
         }
 
-        if ($node instanceof Node\Expr\BinaryOp) {
-            $this->collectInstanceof($node->left, $param, $scope, $out);
-            $this->collectInstanceof($node->right, $param, $scope, $out);
+        if ($node instanceof Node\Expr\BinaryOp\BooleanAnd || $node instanceof Node\Expr\BinaryOp\LogicalAnd) {
+            return NarrowingGuard::allOf(
+                $this->condGuard($node->left, $param, $scope),
+                $this->condGuard($node->right, $param, $scope),
+            );
         }
+
+        if ($node instanceof Node\Expr\BinaryOp\BooleanOr || $node instanceof Node\Expr\BinaryOp\LogicalOr) {
+            return NarrowingGuard::anyOf(
+                $this->condGuard($node->left, $param, $scope),
+                $this->condGuard($node->right, $param, $scope),
+            );
+        }
+
+        // Every other expression — a comparison, a call, a negation — says nothing about `$param`.
+        return [];
     }
 
     private function isDelegation(DType $type): bool
@@ -443,8 +506,8 @@ final class PhpStanTypeEngine implements TypeEngine
      * claim the type exactly. An exact site with no rival is unambiguous, as is the ordinary
      * sequential-`instanceof`-plus-default shape.
      *
-     * @param  list<array{pos: int, line: int, type: DType, guard: list<string>, delegates: bool}>  $satisfiable
-     * @param  array{pos: int, line: int, type: DType, guard: list<string>, delegates: bool}|null  $chosen
+     * @param  list<array{pos: int, line: int, type: DType, component: ComponentDeclaration|null, guard: list<list<string>>, delegates: bool}>  $satisfiable
+     * @param  array{pos: int, line: int, type: DType, component: ComponentDeclaration|null, guard: list<list<string>>, delegates: bool}|null  $chosen
      * @return list<Diagnostic>
      */
     private function narrowingAmbiguity(array $satisfiable, ?array $chosen, string $narrowTo, string $param, CallableRef $callable): array
@@ -453,8 +516,8 @@ final class PhpStanTypeEngine implements TypeEngine
             return [];
         }
 
-        $exactMatches = array_filter($satisfiable, static fn (array $s): bool => in_array($narrowTo, $s['guard'], true));
-        $chosenIsExact = in_array($narrowTo, $chosen['guard'], true);
+        $exactMatches = array_filter($satisfiable, static fn (array $s): bool => NarrowingGuard::namesExactly($s['guard'], $narrowTo));
+        $chosenIsExact = NarrowingGuard::namesExactly($chosen['guard'], $narrowTo);
 
         $ambiguous = $chosenIsExact ? count($exactMatches) > 1 : $exactMatches !== [];
         if (! $ambiguous) {
@@ -471,49 +534,6 @@ final class PhpStanTypeEngine implements TypeEngine
                 $callable->symbol(),
             ),
         )];
-    }
-
-    /**
-     * An empty guard is the default branch, reachable for anything.
-     *
-     * @param  list<string>  $guard
-     */
-    private function guardSatisfies(array $guard, string $narrowTo): bool
-    {
-        if ($guard === []) {
-            return true;
-        }
-
-        foreach ($guard as $guardFqcn) {
-            if ($narrowTo === $guardFqcn || is_a($narrowTo, $guardFqcn, true)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * A single class, or the members of a union/intersection.
-     *
-     * @return list<string>
-     */
-    private function classFqcns(DType $type): array
-    {
-        if ($type instanceof ClassT) {
-            return [$type->fqcn];
-        }
-
-        if ($type instanceof UnionT || $type instanceof IntersectionT) {
-            $out = [];
-            foreach ($type->members as $member) {
-                $out = [...$out, ...$this->classFqcns($member)];
-            }
-
-            return $out;
-        }
-
-        return [];
     }
 
     public function classMetadata(ClassRef $class): ClassMetadata
@@ -609,6 +629,11 @@ final class PhpStanTypeEngine implements TypeEngine
             new CalleeResolver($this->adapter->reflectionProvider()),
             $this->config->throwDepth,
         );
+    }
+
+    private function declarations(): ComponentDeclarations
+    {
+        return $this->declarations ??= new ComponentDeclarations($this->adapter->reflectionProvider());
     }
 
     private function refiner(): ResponseShapeRefiner

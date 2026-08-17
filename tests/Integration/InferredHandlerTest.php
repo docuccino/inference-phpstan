@@ -152,3 +152,185 @@ it('recovers a per-exception render-callback closure by file+line', function ():
     $keys = array_map(static fn (array $f): string => $f['key'] ?? '', $type->typeArgs[0]->toArray()['fields'] ?? []);
     expect($keys)->toContain('error', 'detail');
 })->group('fixture');
+
+/**
+ * One arm of `PortalProblemRenderer`, which dispatches on `PortalException` plus a marker interface and
+ * builds every body through one inherited `problem()` helper — the shape a class-level attribute cannot
+ * separate, and where "the outermost declaring hop wins" is proved on real code rather than asserted.
+ *
+ * @return array{status: int|null, name: string|null, symbol: string|null, deps: list<string>}
+ */
+function portalArm(string $narrowType): array
+{
+    $analysis = ActionAnalysis::fromArray(FixtureRunner::analyzeCallable(
+        'app/Exceptions/PortalProblemRenderer.php',
+        'App\\Exceptions\\PortalProblemRenderer',
+        '__invoke',
+        param: 'e',
+        narrowType: 'App\\Exceptions\\'.$narrowType,
+    ));
+
+    expect($analysis->returns)->toHaveCount(1);
+    $return = $analysis->returns[0];
+    $status = $return->type instanceof ClassT ? ($return->type->typeArgs[1] ?? null) : null;
+
+    return [
+        'status' => $status instanceof LiteralT ? (int) $status->value : null,
+        'name' => $return->component?->name,
+        'symbol' => $return->component?->symbol,
+        'deps' => $analysis->dependencyFiles,
+    ];
+}
+
+it('names each arm of a one-family renderer after the render method that answered', function (
+    string $narrowType,
+    int $status,
+    string $name,
+    string $symbol,
+): void {
+    $arm = portalArm($narrowType);
+
+    expect($arm['status'])->toBe($status)
+        ->and($arm['name'])->toBe($name)
+        ->and($arm['symbol'])->toBe('App\\Exceptions\\'.$symbol);
+})->with([
+    // Two arms name the body they answer with; the third declares nothing, so the house name on the
+    // shared helper it builds through stands for it — one exception family, three names, no contest.
+    'declaring arm' => ['PortalRejectedException', 422, 'PortalRejection', 'PortalProblemRenderer::renderRejection'],
+    'the other declaring arm' => ['PortalThrottledException', 429, 'PortalThrottle', 'PortalProblemRenderer::renderThrottle'],
+    'arm that declares nothing' => ['PortalUnavailableException', 503, 'PortalProblem', 'RendersProblems::problem'],
+])->group('fixture');
+
+it('records the file a name was written in, not just the one the render path names', function (): void {
+    $arm = portalArm('PortalUnavailableException');
+
+    // The declaration is on the inherited helper, in a file nothing in PortalProblemRenderer.php mentions.
+    // A fragment keyed only on what the renderer names would serve the old name after the helper is edited.
+    expect($arm['symbol'])->toBe('App\\Exceptions\\RendersProblems::problem');
+
+    $names = array_map(static fn (string $file): string => basename($file), $arm['deps']);
+    expect($names)->toContain('RendersProblems.php')->and($names)->toContain('PortalProblemRenderer.php');
+})->group('fixture');
+
+it('reads a marker-interface arm as one only a type that is BOTH reaches', function (): void {
+    // `$e instanceof PortalException && $e instanceof HasRetryWindow` admits a type only if it is both. A
+    // throttle IS a PortalException, so a guard read as "either" would answer with the earlier rejection
+    // arm — its 422 body, under its name.
+    $arm = portalArm('PortalThrottledException');
+
+    expect($arm['status'])->toBe(429)->and($arm['name'])->toBe('PortalThrottle');
+})->group('fixture');
+
+it('takes the name off the analysed method itself for a renderable exception', function (): void {
+    $analysis = ActionAnalysis::fromArray(FixtureRunner::analyzeCallable(
+        'app/Exceptions/SubmissionLockedException.php',
+        'App\\Exceptions\\SubmissionLockedException',
+        'render',
+    ));
+
+    expect($analysis->returns)->toHaveCount(1);
+    $component = $analysis->returns[0]->component;
+
+    expect($component?->name)->toBe('SubmissionLocked')
+        ->and($component?->symbol)->toBe('App\\Exceptions\\SubmissionLockedException::render')
+        ->and(basename($component?->location->file ?? ''))->toBe('SubmissionLockedException.php');
+})->group('fixture');
+
+it('leaves a render path that declares nothing unnamed, exactly as before', function (): void {
+    $analysis = ActionAnalysis::fromArray(FixtureRunner::analyzeCallable(
+        'app/Exceptions/ProblemRenderer.php',
+        'App\\Exceptions\\ProblemRenderer',
+        'render',
+        param: 'e',
+        narrowType: 'Illuminate\\Validation\\ValidationException',
+    ));
+
+    expect($analysis->returns)->toHaveCount(1)
+        ->and($analysis->returns[0]->component)->toBeNull();
+})->group('fixture');
+
+/**
+ * One method of `GroupedProblemRenderer`, the `match (true)` renderer whose arms are read off the AST.
+ *
+ * @return array{status: int|null, title: string|null, name: string|null, symbol: string|null, deps: list<string>, codes: list<string>}
+ */
+function groupedArm(string $method, string $narrowType): array
+{
+    $analysis = ActionAnalysis::fromArray(FixtureRunner::analyzeCallable(
+        'app/Exceptions/GroupedProblemRenderer.php',
+        'App\\Exceptions\\GroupedProblemRenderer',
+        $method,
+        param: 'e',
+        narrowType: $narrowType,
+    ));
+
+    expect($analysis->returns)->toHaveCount(1);
+    $return = $analysis->returns[0];
+    $status = $return->type instanceof ClassT ? ($return->type->typeArgs[1] ?? null) : null;
+
+    $title = null;
+    $payload = $return->type instanceof ClassT ? ($return->type->typeArgs[0] ?? null) : null;
+    foreach ($payload?->toArray()['fields'] ?? [] as $field) {
+        if (($field['key'] ?? '') === 'title') {
+            $title = $field['type']['value'] ?? null;
+        }
+    }
+
+    return [
+        'status' => $status instanceof LiteralT ? (int) $status->value : null,
+        'title' => is_string($title) ? $title : null,
+        'name' => $return->component?->name,
+        'symbol' => $return->component?->symbol,
+        'deps' => $analysis->dependencyFiles,
+        'codes' => array_map(static fn ($d): string => $d->code, $analysis->diagnostics),
+    ];
+}
+
+it('reads an arm listing several types as one ANY of them reaches', function (string $narrowType, int $status): void {
+    // `match (true) { $e instanceof A, $e instanceof B => … }` fires for either. Folding the conditions as
+    // requirements makes the arm reachable by nothing, so both types fall through to a later arm and are
+    // documented with its body — silently, since the arm that really rendered them was filtered out before
+    // anything could notice two of them matched.
+    $arm = groupedArm('__invoke', $narrowType);
+
+    expect($arm['status'])->toBe($status)
+        ->and($arm['title'])->toBe($status === 422 ? 'Submission refused' : 'Server Error')
+        // The arm names the type exactly and nothing else does, so there is nothing ambiguous to report.
+        ->and($arm['codes'])->not->toContain('inference.ambiguous-narrowing');
+})->with([
+    'the type the arm lists first' => ['App\\Exceptions\\PortalRejectedException', 422],
+    'the type it lists second' => ['App\\Exceptions\\PortalThrottledException', 422],
+    'a type it lists nowhere' => ['RuntimeException', 500],
+])->group('fixture');
+
+it('widens an arm whose other side says nothing about the parameter', function (string $method, string $narrowType, int $status): void {
+    // `$e instanceof A || $e->isFatal()` is reached by a fatal B, so the whole guard has to be broad —
+    // `[]` on one side of an alternation is "anything", where on one side of a conjunction it is "no
+    // constraint". Reading the second the first way is how an arm a type really reaches is ruled out.
+    expect(groupedArm($method, $narrowType)['status'])->toBe($status);
+})->with([
+    'a type the `||` arm does not name' => ['renderFatal', 'RuntimeException', 503],
+    'a type it does name' => ['renderFatal', 'App\\Exceptions\\PortalUnavailableException', 503],
+    'the `&&` arm still requires both' => ['renderGated', 'RuntimeException', 500],
+    'and admits what satisfies both' => ['renderGated', 'App\\Exceptions\\PortalUnavailableException', 503],
+])->group('fixture');
+
+it('names a body after the trait method that declared it, and keys the trait file either way', function (
+    string $method,
+    ?string $name,
+    ?string $symbol,
+): void {
+    // A trait-imported method is reported as the USING class's own while its file stays the trait's. So the
+    // symbol has to name the trait, or the reader is sent to a class whose file has no attribute in it —
+    // and the trait's file is a dependency whether or not it declares anything today, or adding the
+    // attribute to it leaves warm fragments valid and a warm build publishes a different name from a cold.
+    $arm = groupedArm($method, 'RuntimeException');
+
+    expect($arm['name'])->toBe($name)
+        ->and($arm['symbol'])->toBe($symbol)
+        ->and(array_map(static fn (string $file): string => basename($file), $arm['deps']))
+        ->toContain('RendersGroupedProblems.php');
+})->with([
+    'a trait method that declares one' => ['renderNamed', 'GroupedProblem', 'App\\Exceptions\\RendersGroupedProblems::namedProblem'],
+    'a trait method that declares none' => ['renderPlain', null, null],
+])->group('fixture');
