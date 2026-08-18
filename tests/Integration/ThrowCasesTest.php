@@ -52,6 +52,10 @@ dataset('throw cases', [
     '@throws trusted, deeper hidden' => ['deepDeclared', ['OutOfStockException@500']],
     'vendor any-throwable = no API error' => ['anyThrowableNoise', []],
     'caught subtracted, escaping surfaced' => ['tryCatch', ['RuntimeException@500']],
+    // The registry is keyed on a bare method name, so an app's own validate() is exactly where a guess
+    // could overrule a truth: the callee is project code we read, so its own exception stands and no
+    // ValidationException/422 is invented for it.
+    "the app's own validate() keeps its own exception" => ['projectValidate', ['OutOfStockException@500']],
 ]);
 
 it('surfaces exactly the expected API errors', function (string $method, array $expected): void {

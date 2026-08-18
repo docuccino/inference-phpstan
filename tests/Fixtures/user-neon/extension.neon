@@ -1,0 +1,7 @@
+# Stands in for an application's own `phpstan.neon`: a plain PHPStan config registering a plain
+# PHPStan extension, with nothing Docuccino-specific in it. `engine.neon` points the engine here.
+services:
+    -
+        class: Docuccino\Inference\PhpStan\Tests\Support\SsoExchangeReturnTypeExtension
+        tags:
+            - phpstan.broker.dynamicMethodReturnTypeExtension

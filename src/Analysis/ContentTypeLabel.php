@@ -17,6 +17,8 @@ use PhpParser\NodeFinder;
  * and the return itself count. Branches conventionally reuse `$response`, so matching by name alone would
  * hand one branch's label to another branch's body. A non-variable return, a computed header name or a
  * computed value all leave the media type alone rather than guessing.
+ *
+ * @internal
  */
 final class ContentTypeLabel
 {

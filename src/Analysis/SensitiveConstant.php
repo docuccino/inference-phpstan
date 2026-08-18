@@ -15,6 +15,8 @@ use PhpParser\Node;
  *
  * Matches against core's default name table only, never per-document lint config: an inferred type
  * that moved with a config key the fragment cache doesn't hash would be unsound.
+ *
+ * @internal
  */
 final class SensitiveConstant
 {

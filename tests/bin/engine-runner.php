@@ -14,6 +14,7 @@ declare(strict_types=1);
  *
  * Usage (one mode per invocation — each maps 1:1 onto a FixtureRunner method):
  *   php engine-runner.php analyze                   <controllerFile> <class> <method>
+ *   php engine-runner.php analyze-with-config       <controllerFile> <class> <method> <userNeon>
  *   php engine-runner.php analyze-callable          <file> <class> <method> <line> <narrowParam> <narrowType>
  *   php engine-runner.php refine-pair               <fileBudget> <traceDepth> <file1> <class1> <method1> <file2> <class2> <method2>
  *   php engine-runner.php class-metadata            <ignored>        <class>
@@ -142,6 +143,9 @@ if ($mode === 'refine-pair') {
 // isn't body-stripped when the QB trace follows a `$query->query()` hop into it. Descend scope stays
 // `app/` (throws/inline-rules bounded); vendorPath lets the QB trace follow a QueryBuilder-return-type
 // hop into the primed `modules/` Query class, never into vendor.
+//
+// analyze-with-config hands the builder a user neon (argv[5]) — the app's own PHPStan config, which
+// the generated one includes.
 $engine = $mode === 'refine-pair'
     ? (new PhpStanEngineFactory)->create(
         new RuntimeConfig($app, $tmp, PHP_VERSION_ID, [$app.'/app', $app.'/modules']),
@@ -153,12 +157,13 @@ $engine = $mode === 'refine-pair'
         vendorPath: $app.'/vendor',
         primePaths: [$app.'/app', $app.'/modules'],
         descendPaths: [$app.'/app'],
+        configFile: $mode === 'analyze-with-config' ? ($argv[5] ?? null) : null,
     );
 
 $ref = new ActionRef($file, $class === '' ? null : $class, $method);
 
 $result = match ($mode) {
-    'analyze' => $engine->analyzeAction($ref)->toArray(),
+    'analyze', 'analyze-with-config' => $engine->analyzeAction($ref)->toArray(),
     'analyze-callable' => $engine->analyzeCallable(new CallableRef(
         $file,
         $class === '' ? null : $class,

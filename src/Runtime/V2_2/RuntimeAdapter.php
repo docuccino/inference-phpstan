@@ -32,6 +32,12 @@ use Throwable;
  * bootstrap, manual `bootstrapFiles`, dual parser priming, `FileHelper` normalisation, cwd management — so
  * a new minor needs one new adapter and nothing else. See docs/design/inference-embedding.md §2.
  *
+ * The `V2_2` namespace is the minor this adapter was written against, not the range it serves: 2.3 needed
+ * nothing new, so it lives here too. Adding 2.4 is one of two changes — if the internal surface above
+ * still holds, widen `RuntimeAdapterFactory::SUPPORTED` (and the composer constraint) and leave this class
+ * alone; if it moved, add a `V2_4\RuntimeAdapter` and point the factory's new entry at it. Renaming this
+ * namespace per minor buys nothing and costs every import.
+ *
  * @internal
  */
 final class RuntimeAdapter implements RuntimeAdapterContract
@@ -223,14 +229,14 @@ final class RuntimeAdapter implements RuntimeAdapterContract
 
     private function writeGeneratedNeon(string $larastanNeon): string
     {
-        $includes = "    - {$larastanNeon}\n";
+        $includes = '    - '.self::neonString($larastanNeon)."\n";
         if ($this->config->userNeon !== null && is_file($this->config->userNeon)) {
-            $includes .= "    - {$this->config->userNeon}\n";
+            $includes .= '    - '.self::neonString($this->config->userNeon)."\n";
         }
 
         $stubFiles = '';
         foreach ($this->stubFiles() as $stubFile) {
-            $stubFiles .= "        - {$stubFile}\n";
+            $stubFiles .= '        - '.self::neonString($stubFile)."\n";
         }
         // Every dynamic return-type extension the engine ships. Registration is uniform, so adding one
         // here is the whole wiring.
@@ -249,13 +255,15 @@ final class RuntimeAdapter implements RuntimeAdapterContract
                 NEON;
         }
 
+        $tmpDir = self::neonString($this->config->tmpDir);
+
         $neon = <<<NEON
             includes:
             {$includes}
             parameters:
                 level: 9
                 paths: []
-                tmpDir: {$this->config->tmpDir}
+                tmpDir: {$tmpDir}
                 phpVersion: {$this->config->phpVersion}
                 stubFiles:
             {$stubFiles}
@@ -264,9 +272,26 @@ final class RuntimeAdapter implements RuntimeAdapterContract
             NEON;
 
         $generatedNeon = $this->config->tmpDir.'/docuccino.neon';
-        file_put_contents($generatedNeon, $neon);
+        if (@file_put_contents($generatedNeon, $neon) === false) {
+            throw new BootFailedException(sprintf(
+                'Could not write the generated PHPStan config to %s — check that directory exists and is '
+                .'writable by the user running the generator.',
+                $generatedNeon,
+            ));
+        }
 
         return $generatedNeon;
+    }
+
+    /**
+     * A path as a NEON single-quoted string. Unquoted, a path with a space is two tokens and one with a
+     * `#` or `:` is something else entirely, and the container fails to boot on a config we wrote
+     * ourselves. Single quotes are NEON's literal form — a backslash stays a backslash, which is what a
+     * Windows path needs — and the only escape is doubling an apostrophe.
+     */
+    private static function neonString(string $value): string
+    {
+        return "'".str_replace("'", "''", $value)."'";
     }
 
     /**

@@ -37,6 +37,17 @@ it('selects the 2.2/2.3 adapter for the PHPStan the suite is running against', f
     expect((new RuntimeAdapterFactory)->create(runtimeConfig()))->toBeInstanceOf(V2_2Adapter::class);
 });
 
+it('gates on the same allowlist the composer constraint names', function (): void {
+    // The allowlist lived in three places that had to move together: the composer constraint, the
+    // hand-written version check, and the range the failure message quotes. The last two are one
+    // constant now; this pins that constant to the first, so widening one alone fails here rather
+    // than as an install that resolves a minor the gate then rejects.
+    /** @var array{require?: array<string, string>} $manifest */
+    $manifest = json_decode((string) file_get_contents(dirname(__DIR__, 2).'/composer.json'), true);
+
+    expect($manifest['require']['phpstan/phpstan'] ?? null)->toBe(RuntimeAdapterFactory::supportedRange());
+});
+
 it('names both the rejected version and the supported range when a minor is not allow-listed', function (): void {
     // The message is the only thing a developer on an unsupported minor sees, so it carries the
     // version they have, the range they need, and the rule for widening it.

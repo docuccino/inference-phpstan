@@ -5,13 +5,15 @@ declare(strict_types=1);
 namespace Docuccino\Inference\PhpStan\Throwing;
 
 /**
- * The user-extensible registry of Laravel-semantic throwers — layer 2 of the throw analysis. It both
- * enriches explicit stubbed points with a status (`authorize` → 403, `validate` → 422) and rescues
- * still-implicit forwarders by callee name (static `Model::findOrFail` surfaces only as an implicit bare
- * `Throwable`, so the registry restores ModelNotFoundException/404 at `likely`).
+ * The engine's registry of Laravel-semantic throwers — layer 2 of the throw analysis. It both enriches
+ * explicit stubbed points with a status (`authorize` → 403, `validate` → 422) and rescues still-implicit
+ * forwarders by callee name (static `Model::findOrFail` surfaces only as an implicit bare `Throwable`, so
+ * the registry restores ModelNotFoundException/404 at `likely`).
  *
- * Immutable and additive: `withFunction()`/`withMethod()` return a new registry, so users layer their own
- * throwers over the defaults.
+ * Immutable and additive — `withFunction()`/`withMethod()` return a new registry — but that is internal
+ * wiring rather than a user surface. A bare name is a guess that stands down the moment a body is
+ * readable, so publishing it would freeze a rescue heuristic as API; a project teaches the analysis
+ * about its own code through its own PHPStan config instead (`engine.neon`, design §7).
  *
  * @internal
  */

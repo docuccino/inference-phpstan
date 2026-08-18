@@ -27,7 +27,8 @@ use PHPStan\Type\Type;
  *   1. PHPStan throw points. Drop `!isExplicit()` ones — they're always bare `Throwable`. Do NOT filter on
  *      `canContainAnyThrowable`: nearly every point flags it, signal included.
  *   2. {@see KnownThrowers}, keyed on callee name — enriches explicit stubbed points with a status, and
- *      rescues still-implicit forwarders (static `findOrFail`) at `likely` confidence.
+ *      rescues still-implicit forwarders (static `findOrFail`) at `likely` confidence. Gated on the
+ *      RESOLVED callee, so a name-keyed guess never overrules a body we can read ({@see applyRegistry}).
  *   3. Bounded descent (depth 3) into project callees with no `@throws`, cycle-guarded. The vendor-file
  *      gate, not depth, does the real containment.
  *
@@ -102,8 +103,8 @@ final class ThrowAnalyzer
             $callee = $this->calleeResolver->resolve($node, $scope);
             $frame = $this->frame($selfLabel, $scope, $node);
 
-            // Layer 2: KnownThrowers registry, keyed on the callee name.
-            $registryResult = $this->applyRegistry($calleeName, $node, $scope, $type, $explicit, $priorChain, $frame);
+            // Layer 2: KnownThrowers registry, keyed on the callee name — for callees we cannot read.
+            $registryResult = $this->applyRegistry($calleeName, $callee, $node, $scope, $type, $explicit, $priorChain, $frame);
             if ($registryResult !== null) {
                 $results[] = $registryResult;
 
@@ -141,6 +142,7 @@ final class ThrowAnalyzer
      */
     private function applyRegistry(
         ?string $calleeName,
+        ?Callee $callee,
         Node $node,
         Scope $scope,
         Type $type,
@@ -167,7 +169,7 @@ final class ThrowAnalyzer
             }
         }
 
-        if ($thrower === null) {
+        if ($thrower === null || $this->readsCalleeBody($callee)) {
             return null;
         }
 
@@ -181,6 +183,28 @@ final class ThrowAnalyzer
             $corroborated ? ThrowConfidence::Certain : ThrowConfidence::Likely,
             ThrowDisposition::Signal,
         );
+    }
+
+    /**
+     * Whether this build can read the callee's own body — the invariant that keeps layer 2 honest.
+     *
+     * The registry is keyed on a BARE METHOD NAME, so it may only ever speak for code we cannot read:
+     * a framework method behind vendor, a trait's method (which resolves to the USING class's file and
+     * isn't declared there), a magic forward, a stub. Where the callee IS a project method whose body
+     * this build analyses, layers 1 and 3 read what it actually throws, and a name-keyed guess must
+     * never overrule that: an application's own `validate()` throwing its own exception is that
+     * exception, not a 422 `ValidationException`.
+     *
+     * The predicate is deliberately the same one descent uses ({@see applyDescent}) — a project file
+     * whose harvest really holds the method — so nothing that layer 3 would have dropped silently
+     * loses the registry's rescue. It is asked only after an entry matched, so a build pays for the
+     * file analysis only where a call shares a framework method's name.
+     */
+    private function readsCalleeBody(?Callee $callee): bool
+    {
+        return $callee !== null
+            && $this->projectFilter->isProjectFile($callee->file)
+            && $this->fileAnalyzer->method($callee->file, $callee->class, $callee->method) !== null;
     }
 
     /**

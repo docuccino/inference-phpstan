@@ -13,7 +13,9 @@ final readonly class RuntimeConfig
      * @param  int  $phpVersion  PHP_VERSION_ID-style integer, e.g. 80500
      * @param  list<string>  $projectPaths  directories whose `.php` files are primed up front and treated as project code
      * @param  string|null  $larastanNeon  absolute path to `larastan/extension.neon`; auto-detected under $projectRoot/vendor when null
-     * @param  string|null  $userNeon  optional user `docuccino.neon` merged into the generated config
+     * @param  string|null  $userNeon  the application's own PHPStan config file, included by the generated
+     *                                 one so the project's extensions and stubs are in play; a path that
+     *                                 names no file is skipped rather than failing the boot
      * @param  list<string>  $autoloaderProjectPaths  passed to ContainerFactory so PHPStan can reflect the app's classes
      */
     public function __construct(

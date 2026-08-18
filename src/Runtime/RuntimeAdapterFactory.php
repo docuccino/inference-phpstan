@@ -16,19 +16,34 @@ use OutOfRangeException;
  */
 final class RuntimeAdapterFactory
 {
-    /** Tested-minor allowlist, widened only as the CI matrix goes green — never open-ended. */
-    private const SUPPORTED = '~2.2.0 || ~2.3.0';
+    /**
+     * Tested-minor allowlist, widened only as the CI matrix goes green — never open-ended. This ONE
+     * constant is the gate, and {@see supportedRange()} renders it as the composer constraint the
+     * failure message names, so the check and the message cannot drift apart. The third copy is
+     * `phpstan/phpstan` in this package's composer.json, which `RuntimeAdapterFactoryTest` pins to it.
+     *
+     * @var list<array{int, int}>
+     */
+    private const SUPPORTED = [[2, 2], [2, 3]];
 
     public function create(RuntimeConfig $config): RuntimeAdapter
     {
         $version = $this->detectVersion();
-        [$major, $minor] = $this->majorMinor($version);
 
-        if ($major === 2 && ($minor === 2 || $minor === 3)) {
+        if (in_array($this->majorMinor($version), self::SUPPORTED, true)) {
             return new V2_2Adapter($config);
         }
 
-        throw UnsupportedPhpStanVersionException::forVersion($version, self::SUPPORTED);
+        throw UnsupportedPhpStanVersionException::forVersion($version, self::supportedRange());
+    }
+
+    /** The allowlist as the composer constraint it mirrors — `~2.2.0 || ~2.3.0`. */
+    public static function supportedRange(): string
+    {
+        return implode(' || ', array_map(
+            static fn (array $minor): string => sprintf('~%d.%d.0', $minor[0], $minor[1]),
+            self::SUPPORTED,
+        ));
     }
 
     private function detectVersion(): string

@@ -49,6 +49,17 @@ final class FixtureRunner
     }
 
     /**
+     * As {@see analyze()}, but with an application PHPStan config file handed to the builder — the
+     * `engine.neon` escape hatch, all the way through to the generated neon's `includes`.
+     *
+     * @return array<string, mixed>
+     */
+    public static function analyzeWithConfig(string $controllerRelPath, string $class, string $method, string $userNeon): array
+    {
+        return self::invoke('analyze-with-config', self::path($controllerRelPath), $class, $method, $userNeon);
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public static function traceQb(string $controllerRelPath, string $class, string $method): array

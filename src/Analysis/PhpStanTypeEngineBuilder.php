@@ -25,12 +25,14 @@ final readonly class PhpStanTypeEngineBuilder implements TypeEngineBuilder
         string $vendorPath,
         array $primePaths,
         array $descendPaths,
+        ?string $configFile = null,
     ): TypeEngine {
         $runtime = new RuntimeConfig(
             projectRoot: $projectRoot,
             tmpDir: $tmpDir,
             phpVersion: PHP_VERSION_ID,
             projectPaths: $primePaths,
+            userNeon: $configFile,
         );
 
         return $this->factory->create($runtime, EngineConfig::forProjectWithVendor($vendorPath, ...$descendPaths));
