@@ -156,3 +156,46 @@ it('hands a deferred fold the call and the callback, and answers with the queue'
         ->and($seen)->toBe($call)
         ->and($folded?->render())->toBe("'status'");
 });
+
+it('ends an argument list at the first argument no position can be pinned to', function (string $code, string $rendered): void {
+    // `ConstValue::$args` is read by INDEX, so an argument that fills an unknown number of positions has
+    // to stay in the list — dropped, it leaves every slot after it looking absent, and absent is what
+    // every reader here takes for the parameter's default.
+    $value = ConstantFolder::fold(foldableExpr($code), foldingScope($this->createStub(Scope::class)));
+
+    expect($value?->render())->toBe($rendered);
+})->with([
+    'a spread nothing can read' => [
+        'Rule::in(\'any\', ...$rest)', "Rule::in('any', ...<unplaceable factory arg>)",
+    ],
+    'a named argument, which holds no position of its own here' => [
+        'Rule::in(\'any\', values: $rest)', "Rule::in('any', ...<unplaceable factory arg>)",
+    ],
+    'the same in a constructor argument list' => [
+        'new SearchFilter(\'title\', ...$rest)', "new SearchFilter('title', ...<unplaceable constructor arg>)",
+    ],
+    'and in a chained call\'s' => [
+        'Rule::enum(\'Status\')->only(\'Open\', ...$rest)', "Rule::enum('Status')->only('Open', ...<unplaceable chained-call arg>)",
+    ],
+]);
+
+it('expands a spread the call site wrote out into the arguments it really passes', function (): void {
+    // Its items ARE the arguments: declining here would widen away values written in plain sight.
+    $value = ConstantFolder::fold(
+        foldableExpr("Rule::in('any', ...['open', 'closed'])"),
+        foldingScope($this->createStub(Scope::class)),
+    );
+
+    expect($value?->render())->toBe("Rule::in('any', 'open', 'closed')");
+});
+
+it('leaves a spread array item standing as one item, so the written items still line up', function (): void {
+    // Readers pair a folded array's items with the WRITTEN ones one for one — a comment above an entry,
+    // the node an entry came from. Expanding here would shift every pairing after it.
+    $value = ConstantFolder::fold(
+        foldableExpr("['open', ...\$rest, 'closed']"),
+        foldingScope($this->createStub(Scope::class)),
+    );
+
+    expect($value?->render())->toBe("['open', ...<spread array item>, 'closed']");
+});

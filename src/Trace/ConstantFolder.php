@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Docuccino\Inference\PhpStan\Trace;
 
+use Docuccino\Core\Inference\ArgumentSlots;
 use Docuccino\Core\Inference\ConstValue;
 use Docuccino\Inference\PhpStan\Support\ScalarFold;
 use PhpParser\Node;
@@ -26,7 +27,8 @@ final class ConstantFolder
      * PHPStan collapsing something we need:
      *
      *   0. a bound parameter → the caller's value, before PHPStan is asked (it only knows the declared type);
-     *   1. array literal → recurse per item, so factory calls inside survive as descriptors;
+     *   1. array literal → recurse per item, so factory calls inside survive as descriptors, with a
+     *      spread item left standing as one {@see ConstValue::spread()};
      *   2. factory static-call → a call descriptor {factory, args}, captured before asking PHPStan for the
      *      type (which would collapse it to the factory's return class);
      *   3. fluent method-call over a descriptor → the same descriptor with the call appended, so
@@ -54,8 +56,12 @@ final class ConstantFolder
         if ($expr instanceof Node\Expr\Array_) {
             $items = [];
             foreach ($expr->items as $item) {
-                $items[] = self::fold($item->value, $scope, $bindings)
-                    ?? ConstValue::unknown('non-constant array item');
+                // A spread item carries however many values its sequence holds, and readers pair these
+                // items with the WRITTEN ones one for one — so it stays one item, saying that values
+                // nobody can count sit here. Expanding it would shift every pairing after it.
+                $items[] = $item->unpack
+                    ? ConstValue::spread('spread array item')
+                    : self::fold($item->value, $scope, $bindings) ?? ConstValue::unknown('non-constant array item');
             }
 
             return ConstValue::array($items);
@@ -115,16 +121,29 @@ final class ConstantFolder
     }
 
     /**
+     * The arguments as POSITIONS, which is the only way {@see ConstValue::$args} can be read: a spread the
+     * call site wrote out is expanded into the positions it really takes, and anything else that holds no
+     * position of its own — an unreadable spread, a named argument — ends the list with one
+     * {@see ConstValue::spread()} standing for the rest ({@see ArgumentSlots} states the rule). Without
+     * that marker the slots after it would look absent, and every reader here treats absent as the
+     * parameter's default.
+     *
      * @param  array<Node\Arg>  $args
      * @param  array<string, ConstValue>  $bindings
      * @return list<ConstValue>
      */
     private static function foldArgs(array $args, Scope $scope, array $bindings, string $what): array
     {
+        $slots = ArgumentSlots::of($args);
+
         $folded = [];
-        foreach ($args as $arg) {
-            $folded[] = self::fold($arg->value, $scope, $bindings)
+        foreach ($slots->positional() as $expr) {
+            $folded[] = self::fold($expr, $scope, $bindings)
                 ?? ConstValue::unknown('non-constant '.$what);
+        }
+
+        if (! $slots->isIndexable()) {
+            $folded[] = ConstValue::spread('unplaceable '.$what);
         }
 
         return $folded;

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Docuccino\Inference\PhpStan\Throwing;
 
+use Docuccino\Core\Inference\ArgumentSlots;
 use Docuccino\Core\Inference\Frame;
 use Docuccino\Core\Inference\SourceLocation;
 use Docuccino\Core\Inference\ThrowConfidence;
@@ -315,15 +316,20 @@ final class ThrowAnalyzer
 
     private function foldStatusArg(Node $node, Scope $scope, ?int $argIndex): ?int
     {
-        if ($argIndex === null || ! method_exists($node, 'getArgs')) {
+        // A first-class callable holds a placeholder where its arguments go, and `getArgs()` only ASSERTS
+        // that — with `zend.assertions=-1` the placeholder would reach the scope below as an expression.
+        if ($argIndex === null || ! $node instanceof Node\Expr\CallLike || $node->isFirstClassCallable()) {
             return null;
         }
-        /** @var list<Node\Arg> $args */
-        $args = $node->getArgs();
-        if (! isset($args[$argIndex])) {
+
+        // Slots, not written arguments: a status inside a spread nobody can read is unknown, and reading
+        // the position it looks absent from would publish the exception's default for a status the code
+        // states itself.
+        $arg = ArgumentSlots::of($node->getArgs())->at($argIndex);
+        if ($arg === null) {
             return null;
         }
-        $argType = $scope->getType($args[$argIndex]->value);
+        $argType = $scope->getType($arg);
 
         return $argType instanceof ConstantIntegerType ? $argType->getValue() : null;
     }

@@ -81,8 +81,8 @@ final class FixtureRunner
 
     /**
      * Trace a class's `rules()` with the real RulesMethodVisitor: returns each field's rule
-     * names/params/note (so a `Rule::enum(...)` descriptor's backing values + FQCN are visible) plus
-     * the fields that are present but unrecoverable.
+     * names/params/note (so a `Rule::enum(...)` descriptor's backing values + FQCN are visible), the
+     * fields that are present but unrecoverable, and the ones that recovered minus a widened constraint.
      *
      * @return array<string, mixed>
      */
@@ -101,6 +101,19 @@ final class FixtureRunner
     public static function traceInlineRules(string $relPath, string $class, string $method): array
     {
         return self::invoke('trace-inline-rules', self::path($relPath), $class, $method);
+    }
+
+    /**
+     * Trace a controller action with the real FileResponseVisitor: returns, per recovered call, the
+     * response class it hands back plus the media type, body schema, disposition and filename it proves.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public static function traceFileResponses(string $controllerRelPath, string $class, string $method): array
+    {
+        $calls = self::invoke('trace-file-responses', self::path($controllerRelPath), $class, $method)['calls'] ?? [];
+
+        return is_array($calls) ? array_values(array_filter($calls, 'is_array')) : [];
     }
 
     /**

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Docuccino\Inference\PhpStan\Analysis;
 
+use Docuccino\Core\Inference\ArgumentSlots;
 use Docuccino\Core\Inference\DType\ArrayShapeField;
 use Docuccino\Core\Inference\DType\ArrayShapeT;
 use Docuccino\Core\Inference\DType\ClassT;
@@ -134,7 +135,7 @@ final class ResponseShapeRefiner
         if ($expr instanceof Node\Expr\New_ && $expr->class instanceof Node\Name) {
             $class = $scope->resolveName($expr->class);
             if (self::isResponseFqcn($class)) {
-                return $this->foldConstructor($expr, $scope, $paramNames);
+                return $this->foldConstructor($expr, $class, $scope, $paramNames);
             }
         }
 
@@ -226,27 +227,38 @@ final class ResponseShapeRefiner
 
     /**
      * Fold `new JsonResponse($body, $status, [headers])`: payload from arg 0, status from arg 1 (literal,
-     * pass-through parameter, or permissive), content type from a `Content-Type` header in arg 2.
-     * Symfony's constructor defaults an omitted status to 200.
+     * pass-through parameter, or permissive), content type from a `Content-Type` header in arg 2. Slots,
+     * not written arguments ({@see ArgumentSlots}), so a named argument still lands on its parameter and a
+     * spread nobody can read leaves every argument it covers UNKNOWN rather than absent.
      *
-     * @param  list<string>  $paramNames
+     * @param  list<string>  $paramNames  the current function's parameter names
      */
-    private function foldConstructor(Node\Expr\New_ $new, Scope $scope, array $paramNames): RefinedResponse
+    private function foldConstructor(Node\Expr\New_ $new, string $class, Scope $scope, array $paramNames): RefinedResponse
     {
-        $args = $new->getArgs();
+        $args = $new->isFirstClassCallable()
+            ? ArgumentSlots::of([])
+            : ArgumentSlots::of($new->getArgs(), $this->constructorParameterNames($class));
 
         $payload = null;
         $provenance = [];
-        if (isset($args[0])) {
-            $payload = $this->payloadOf($scope->getType($args[0]->value));
-            $provenance = $this->payloadProvenance($args[0]->value, $scope, $paramNames);
+        $body = $args->at(0);
+        if ($body !== null) {
+            $payload = $this->payloadOf($scope->getType($body));
+            $provenance = $this->payloadProvenance($body, $scope, $paramNames);
         }
 
-        [$status, $statusSource] = isset($args[1])
-            ? $this->resolveStatus($args[1]->value, $scope, $paramNames)
-            : [new LiteralT(200), null];
+        // Symfony's 200 is what a call that provably passed NO status gets. A status sitting in a spread
+        // this build cannot read is an unknown one, and publishing 200 there states a status the endpoint
+        // may never send.
+        $statusArg = $args->at(1);
+        [$status, $statusSource] = match (true) {
+            $statusArg !== null => $this->resolveStatus($statusArg, $scope, $paramNames),
+            $args->knows(1) => [new LiteralT(200), null],
+            default => [null, null],
+        };
 
-        $contentType = isset($args[2]) ? $this->contentTypeOf($args[2]->value, $scope) : null;
+        $headers = $args->at(2);
+        $contentType = $headers === null ? null : $this->contentTypeOf($headers, $scope);
 
         // A member reading the same accessor as the status echoes the status: the factory marks it, so a
         // call site folding the status folds the member too, and an unfolded one still fills at doc time.
@@ -614,7 +626,7 @@ final class ResponseShapeRefiner
             return $child;
         }
 
-        $argExpr = $this->argumentFor($callee, $source->param, $call);
+        [$argExpr] = $this->argumentFor($callee, $source->param, $call);
         if ($argExpr === null) {
             return $child->withStatusSource(null);
         }
@@ -654,9 +666,13 @@ final class ResponseShapeRefiner
 
         // Classify each member's forwarded argument, then let RefinedResponse apply the pure rewrite.
         foreach ($child->payloadParamProvenance as $key => $accessor) {
-            $argExpr = $this->argumentFor($callee, $accessor->param, $call);
+            [$argExpr, $known] = $this->argumentFor($callee, $accessor->param, $call);
             if ($argExpr === null) {
-                $child = $objectMembers ? $child->withoutMember($key) : $child->bindMember($key, null, null);
+                // Only a call that provably passed nothing here says the member isn't in this body. Where a
+                // spread may be carrying the value, the member stays and loses its provenance instead.
+                $child = $objectMembers && $known
+                    ? $child->withoutMember($key)
+                    : $child->bindMember($key, null, null);
 
                 continue;
             }
@@ -808,29 +824,29 @@ final class ResponseShapeRefiner
         return $payload;
     }
 
-    /** A named argument if present, otherwise the positional one at that parameter's index. */
-    private function argumentFor(Callee $callee, string $paramName, Node\Expr $call): ?Node\Expr
+    /**
+     * The expression bound to one of the callee's parameters, and whether NOTHING is a real answer for it.
+     * The second half is what stops a spread from reading as an omission: `make(...$args)` binds every
+     * parameter from a sequence this build cannot see, so a caller told "absent" there would delete a body
+     * member the response always carries ({@see ArgumentSlots::knows()}).
+     *
+     * @return array{?Node\Expr, bool}
+     */
+    private function argumentFor(Callee $callee, string $paramName, Node\Expr $call): array
     {
         if (! $call instanceof Node\Expr\MethodCall && ! $call instanceof Node\Expr\StaticCall) {
-            return null;
+            return [null, true];
+        }
+        if ($call->isFirstClassCallable()) {
+            return [null, true];
         }
 
         $params = $this->parameterNames($callee);
+        $slots = ArgumentSlots::of($call->getArgs(), $params);
         $index = array_search($paramName, $params, true);
+        $key = $index === false ? $paramName : $index;
 
-        $positional = [];
-        foreach ($call->getArgs() as $arg) {
-            if ($arg->name instanceof Node\Identifier) {
-                if ($arg->name->toString() === $paramName) {
-                    return $arg->value;
-                }
-
-                continue;
-            }
-            $positional[] = $arg->value;
-        }
-
-        return $index !== false && isset($positional[$index]) ? $positional[$index] : null;
+        return [$slots->at($key), $slots->knows($key)];
     }
 
     /**
