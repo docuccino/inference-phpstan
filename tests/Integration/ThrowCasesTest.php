@@ -45,6 +45,10 @@ function signalThrows(string $method): array
 
 dataset('throw cases', [
     'abort + abort_if, both statuses folded' => ['abortAction', ['HttpException@403', 'HttpException@404']],
+    // The same two calls with the status named rather than counted. PHPStan hands throw points the
+    // NORMALIZED call, so a named argument already sits in the position the registry indexes — pinned
+    // here because the day that stops being true, both statuses vanish without a word.
+    'abort + abort_if, statuses named' => ['namedAbortAction', ['HttpException@418', 'HttpException@451']],
     'authorize → 403' => ['authorizeAction', ['AuthorizationException@403']],
     'static findOrFail rescued → 404' => ['findOrFailAction', ['ModelNotFoundException@404']],
     'inline validate → 422' => ['validateAction', ['ValidationException@422']],
