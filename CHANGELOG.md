@@ -7,6 +7,13 @@ User-facing changes to `docuccino/inference-phpstan` — features, fixes, perfor
 taken from the commit messages scoped `inference-phpstan`. Entries begin after v0.1.2; older history is in
 the [repository](https://github.com/docuccino/docuccino) git log.
 
+## v0.6.1
+
+### Performance
+
+- replay a recorded file walk instead of re-running the resolver ([#128](https://github.com/docuccino/docuccino/pull/128))
+- harvest a file's methods, closures and assignments in one pass ([#127](https://github.com/docuccino/docuccino/pull/127))
+
 ## v0.6.0
 
 ### Bug fixes
