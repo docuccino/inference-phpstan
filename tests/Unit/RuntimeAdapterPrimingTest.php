@@ -92,6 +92,23 @@ it('leaves both services alone when every file in the batch is already primed', 
         ->and(analysedFileSet($resolver))->toBe(['sentinel']);
 });
 
+it('reports the analysed set size, counting each normalised file once', function (): void {
+    // What FileWalks stamps a recording with: the set is grow-only, so its SIZE identifies it, and a
+    // re-primed or non-canonically spelled file must not look like growth or every recording goes stale.
+    [$adapter] = primingAdapterUnderTest();
+
+    expect($adapter->analysedFileCount())->toBe(0);
+
+    $adapter->prime(['/app/app/A.php', '/app/app/B.php']);
+    expect($adapter->analysedFileCount())->toBe(2);
+
+    $adapter->prime(['/app/app/A.php', '/app/app/Sub/../B.php']);
+    expect($adapter->analysedFileCount())->toBe(2);
+
+    $adapter->prime(['/app/app/C.php']);
+    expect($adapter->analysedFileCount())->toBe(3);
+});
+
 it('recognises an already-primed file spelled non-canonically', function (): void {
     // Membership is tested on the normalised path, the same form the set is keyed by — otherwise a
     // caller's relative-segment spelling would re-prime, and re-add a duplicate of an existing entry.

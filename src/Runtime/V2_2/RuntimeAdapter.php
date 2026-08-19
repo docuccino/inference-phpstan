@@ -178,6 +178,11 @@ final class RuntimeAdapter implements RuntimeAdapterContract
         $this->nodeScopeResolver()->processNodes($nodes, $scope, $callback);
     }
 
+    public function analysedFileCount(): int
+    {
+        return count($this->analysedFiles);
+    }
+
     public function normalize(string $file): string
     {
         return $this->fileHelper()->normalizePath($file);

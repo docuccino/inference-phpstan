@@ -24,6 +24,7 @@ use Docuccino\Core\Inference\TraceVisitor;
 use Docuccino\Core\Inference\TypeEngine;
 use Docuccino\Core\Support\Fqcn;
 use Docuccino\Inference\PhpStan\Metadata\ClassMetadataFactory;
+use Docuccino\Inference\PhpStan\Runtime\FileWalks;
 use Docuccino\Inference\PhpStan\Runtime\RuntimeAdapter;
 use Docuccino\Inference\PhpStan\Support\ProjectFilter;
 use Docuccino\Inference\PhpStan\Support\SourceOrder;
@@ -76,6 +77,7 @@ final class PhpStanTypeEngine implements TypeEngine
         private readonly ProjectFilter $projectFilter,
         private readonly ClassMetadataFactory $classMetadataFactory,
         private readonly ProjectFilter $refinerFilter,
+        private readonly FileWalks $walks,
     ) {}
 
     public function analyzeAction(ActionRef $action): ActionAnalysis
@@ -555,6 +557,7 @@ final class PhpStanTypeEngine implements TypeEngine
 
         $tracer = new Tracer(
             $this->adapter,
+            $this->walks,
             $this->translator,
             $this->projectFilter,
             new CalleeResolver($this->adapter->reflectionProvider()),
@@ -582,8 +585,16 @@ final class PhpStanTypeEngine implements TypeEngine
      * fall-through body apart so a limiter that doesn't always return stays unrecovered) and an arrow
      * function (`InArrowFunctionNode`, one implicit return).
      *
-     * The visitor runs inside the pass, on the live scope: an arrow function's scope is a lazy fiber scope
-     * that can't type expressions once the pass has ended, so nothing may be deferred.
+     * The visitor runs inside the pass, on the RAW live scope — `$statement->getScope()` for a full closure,
+     * the callback scope itself for an arrow function — because a return's flow-refined scope is what folds
+     * its expression, and nothing may be deferred: a raw scope is a lazy fiber scope that cannot type
+     * expressions once its pass has ended.
+     *
+     * That raw scope is also why this is the one walk that goes straight to the adapter rather than through
+     * {@see FileWalks}, and the reason is worth stating exactly, because the obvious one is wrong: a
+     * STABILISED arrow-function scope answers after the pass perfectly well, so it is not that closures
+     * cannot be replayed. It is that a recording holds only stabilised scopes, so it has nothing to hand a
+     * visitor that must see the raw one.
      */
     private function traceClosure(ActionRef $action, TraceVisitor $visitor): void
     {

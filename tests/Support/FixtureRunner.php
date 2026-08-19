@@ -68,6 +68,20 @@ final class FixtureRunner
     }
 
     /**
+     * As {@see traceQb()}, but the action is ANALYSED first, so the controller's walk is recorded by the
+     * method harvest and both traces are served from that recording. Returns
+     * `{returns, passes, first, second}`, where each trace's harvest has the same shape {@see traceQb()}
+     * returns — which is what makes the two comparable — and `passes` is how many live walks the action's
+     * own file cost across all three asks.
+     *
+     * @return array<string, mixed>
+     */
+    public static function traceQbReplay(string $controllerRelPath, string $class, string $method): array
+    {
+        return self::invoke('trace-qb-replay', self::path($controllerRelPath), $class, $method);
+    }
+
+    /**
      * Trace a controller with the real QueryBuilderTraceVisitor, then enrich its exact filters with the
      * real FilterColumnResolver: returns the recovered subject model plus, per filter, the resolved
      * column cast shape (enum FQCN + backing values + case descriptions, or a native scalar schema).

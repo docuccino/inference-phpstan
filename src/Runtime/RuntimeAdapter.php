@@ -44,6 +44,13 @@ interface RuntimeAdapter
      */
     public function processFile(string $file, callable $callback): void;
 
+    /**
+     * How many files the analysed set holds. Grow-only, so the size identifies the set — which is what lets a
+     * cached walk tell whether the analysis has learned anything since: PHPStan gates trait inlining on this
+     * set, so a file primed after a walk makes a later pass over the same file richer than the recorded one.
+     */
+    public function analysedFileCount(): int;
+
     /** Normalise a path exactly the way PHPStan's parser router does. */
     public function normalize(string $file): string;
 

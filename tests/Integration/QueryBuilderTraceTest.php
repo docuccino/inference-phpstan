@@ -65,3 +65,36 @@ it('detects pagination through a custom terminal with the outermost per-page', f
     expect($perPageByTerminal['paginateList'])->toBe(25)
         ->and($perPageByTerminal['paginate'])->toBeNull();
 })->group('fixture');
+
+it('keeps a first-class-callable filter recovered beside the arguments that do fold', function (): void {
+    // The pin for the one measured raw-vs-stabilised scope divergence (§2). Every consumer now reads a
+    // stabilised scope, which types the first-class callable in
+    // `AllowedFilter::callback('tag', $this->tagFilter(...))` as `mixed` where the raw fiber scope typed it
+    // `Closure(...)`. Nothing downstream depends on that argument's TYPE, so the entry is recovered either
+    // way — and the siblings in the same call fold from their arguments, so if the widening ever spread past
+    // first-class callables they are what breaks here.
+    $harvest = FixtureRunner::traceQbEnrich(
+        'modules/Billing/ChargeController.php',
+        'Modules\\Billing\\ChargeController',
+        'index',
+    );
+
+    $byName = [];
+    foreach ($harvest['filters'] as $filter) {
+        $byName[$filter['name']] = $filter;
+    }
+
+    expect(array_keys($byName))->toBe(['status', 'active', 'tag', 'title_search', 'state']);
+
+    // The callable itself is unreadable at the call site whichever scope answers, so the honest recovery is
+    // the name and the kind, with no column guessed for it.
+    expect($byName['tag']['kind'])->toBe('callback')
+        ->and($byName['tag']['typeColumn'])->toBeNull()
+        ->and($byName['tag']['columnKind'])->toBeNull();
+
+    // The arguments that DO fold, in the same call: an enum class-string, a plain string key column, and a
+    // typed `new` expression.
+    expect($byName['status']['factoryEnum'])->toBe('App\\Enums\\ListingStatus')
+        ->and($byName['active']['columnKind'])->toBe('scalar')
+        ->and($byName['title_search']['filterClass'])->toBe('App\\Filters\\ListingTitleSearchFilter');
+})->group('fixture');

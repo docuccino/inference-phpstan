@@ -7,12 +7,11 @@ use Docuccino\Inference\PhpStan\Analysis\AccessorKind;
 use Docuccino\Inference\PhpStan\Analysis\EnumAccessorFolder;
 use Docuccino\Inference\PhpStan\Analysis\FileAnalyzer;
 use Docuccino\Inference\PhpStan\Analysis\ParamAccessor;
-use Docuccino\Inference\PhpStan\Runtime\RuntimeAdapter;
+use Docuccino\Inference\PhpStan\Runtime\FileWalks;
 use Docuccino\Inference\PhpStan\Support\ProjectFilter;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\FolderProbeEnum;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\PlainProbeEnum;
-use PHPStan\Analyser\Scope;
-use PHPStan\Reflection\ReflectionProvider;
+use Docuccino\Inference\PhpStan\Tests\Support\ScriptedRuntimeAdapter;
 
 /**
  * In-process coverage for the reflection-only folds (`->value`/`->name`) and the project-only
@@ -23,35 +22,13 @@ use PHPStan\Reflection\ReflectionProvider;
  */
 function makeEnumAccessorFolder(array &$recorded, bool $projectSees = false): EnumAccessorFolder
 {
-    $adapter = new class implements RuntimeAdapter
-    {
-        public function boot(): void {}
-
-        public function prime(array $files): void {}
-
-        public function processFile(string $file, callable $callback): void {}
-
-        public function normalize(string $file): string
-        {
-            return $file;
-        }
-
-        public function stableScope(Scope $scope): Scope
-        {
-            return $scope;
-        }
-
-        public function reflectionProvider(): ReflectionProvider
-        {
-            throw new RuntimeException('not used in this unit');
-        }
-    };
+    $adapter = new ScriptedRuntimeAdapter;
 
     // A project path of `/` sees every file; an empty set sees none — how the method gate is exercised.
     $projectFilter = new ProjectFilter($projectSees ? ['/'] : [], static fn (string $f): string => $f);
 
     return new EnumAccessorFolder(
-        new FileAnalyzer($adapter),
+        new FileAnalyzer($adapter, new FileWalks($adapter)),
         $projectFilter,
         static function (string $file) use (&$recorded): void {
             $recorded[] = $file;

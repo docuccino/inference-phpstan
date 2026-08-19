@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Docuccino\Inference\PhpStan\Analysis;
 
 use Docuccino\Core\Inference\LocalWrites;
+use Docuccino\Inference\PhpStan\Runtime\FileWalks;
 use Docuccino\Inference\PhpStan\Runtime\RuntimeAdapter;
 use PhpParser\Node;
 use PHPStan\Analyser\Scope;
@@ -12,33 +13,38 @@ use PHPStan\Node\ClosureReturnStatementsNode;
 use PHPStan\Node\MethodReturnStatementsNode;
 use PHPStan\Reflection\ParameterReflection;
 use PHPStan\Type\ObjectType;
+use Throwable;
 
 /**
- * Parses a file once and harvests its virtual `MethodReturnStatementsNode`s by method name — the node that
- * pairs every `return` with its flow-refined scope and carries the method's throw points. Memoised per file
- * so descent reuses one rich parse; the adapter's priming is what keeps the bodies from being stripped.
+ * Parses a file once and harvests everything the engine reads out of it: the virtual
+ * `MethodReturnStatementsNode`s — the node that pairs every `return` with its flow-refined scope and carries
+ * the method's throw points — plus the closures and the local assignments. Memoised per file so descent
+ * reuses one rich parse; the adapter's priming is what keeps the bodies from being stripped.
+ *
+ * @phpstan-type FileHarvest array{
+ *     methods: array<string, MethodReturnStatementsNode>,
+ *     closures: array<int, ClosureReturnStatementsNode>,
+ *     arrays: array<string, array<string, Node\Expr\Array_>>,
+ *     locals: array<string, array<string, array{Node\Expr, Scope}|null>>,
+ * }
  *
  * @internal
  */
 final class FileAnalyzer
 {
-    /** @var array<string, array<string, MethodReturnStatementsNode>> file → `Class::method` → its returns */
+    /** @var array<string, FileHarvest> */
     private array $cache = [];
 
-    /** @var array<string, array<int, ClosureReturnStatementsNode>> */
-    private array $closureCache = [];
-
-    /** @var array<string, array<string, array<string, Node\Expr\Array_>>> file → scope → varName → first array-literal assigned */
-    private array $arrayAssignmentCache = [];
-
-    /** @var array<string, array<string, array<string, array{Node\Expr, Scope}|null>>> file → scope → varName → its ONE assignment, or null when it takes several */
-    private array $localAssignmentCache = [];
-
-    public function __construct(private readonly RuntimeAdapter $adapter) {}
+    public function __construct(
+        private readonly RuntimeAdapter $adapter,
+        private readonly FileWalks $walks,
+    ) {}
 
     /**
      * Every node this class hands out is consumed after its walk finished, so the scopes hanging off them
-     * must be stabilised before they are queried — see {@see RuntimeAdapter::stableScope()}.
+     * must be stabilised before they are queried — see {@see RuntimeAdapter::stableScope()}. That is the
+     * scope INSIDE a harvested node (a return statement's), which no walk hands to a callback; the callback
+     * scopes {@see FileWalks} deals in arrive stabilised already, and this is a no-op on them.
      */
     public function stableScope(Scope $scope): Scope
     {
@@ -54,21 +60,7 @@ final class FileAnalyzer
      */
     public function analyze(string $file): array
     {
-        $normalised = $this->adapter->normalize($file);
-        if (isset($this->cache[$normalised])) {
-            return $this->cache[$normalised];
-        }
-
-        $collected = [];
-        $this->adapter->processFile($file, static function (Node $node, Scope $scope) use (&$collected): void {
-            // Watching for this virtual node is the sanctioned way to pair returns with refined scope.
-            // @phpstan-ignore phpstanApi.instanceofAssumption
-            if ($node instanceof MethodReturnStatementsNode) {
-                $collected[$node->getClassReflection()->getName().'::'.$node->getMethodName()] = $node;
-            }
-        });
-
-        return $this->cache[$normalised] = $collected;
+        return $this->harvest($file)['methods'];
     }
 
     /**
@@ -102,20 +94,7 @@ final class FileAnalyzer
      */
     public function closures(string $file): array
     {
-        $normalised = $this->adapter->normalize($file);
-        if (isset($this->closureCache[$normalised])) {
-            return $this->closureCache[$normalised];
-        }
-
-        $collected = [];
-        $this->adapter->processFile($file, static function (Node $node, Scope $scope) use (&$collected): void {
-            // @phpstan-ignore phpstanApi.instanceofAssumption
-            if ($node instanceof ClosureReturnStatementsNode) {
-                $collected[$node->getClosureExpr()->getStartLine()] = $node;
-            }
-        });
-
-        return $this->closureCache[$normalised] = $collected;
+        return $this->harvest($file)['closures'];
     }
 
     /**
@@ -128,15 +107,16 @@ final class FileAnalyzer
      */
     public function arrayAssignments(string $file): array
     {
-        return $this->assignments($file)[0];
+        return $this->harvest($file)['arrays'];
     }
 
     /**
      * Every local's assignment by scope ({@see scopeKey()}) then variable name, as `[what was assigned, the
-     * scope it was assigned in]` — and NULL for a local written more than once, or written in any of the
-     * ways that leave no expression to speak for it ({@see LocalWrites}, plus a call writing it through a
-     * by-reference parameter). Lets the refiner follow a response built into a local and then returned back
-     * to the expression that built it, whose shape the variable's own bare type has already thrown away.
+     * scope it was assigned in]` — and NULL for a local written more than once, written in any of the ways
+     * that leave no expression to speak for it ({@see LocalWrites}, plus a call writing it through a
+     * by-reference parameter), or sitting in a scope whose writes could not be read at all. Lets the refiner
+     * follow a response built into a local and then returned back to the expression that built it, whose
+     * shape the variable's own bare type has already thrown away.
      *
      * The scope is the one at the ASSIGNMENT, not at the return: an expression read in the wrong scope
      * binds whatever the arguments happen to hold later, which is how a shape stops being true.
@@ -145,7 +125,7 @@ final class FileAnalyzer
      */
     public function localAssignments(string $file): array
     {
-        return $this->assignments($file)[1];
+        return $this->harvest($file)['locals'];
     }
 
     /**
@@ -167,19 +147,24 @@ final class FileAnalyzer
     }
 
     /**
-     * Both assignment harvests off ONE walk of the file — the array-literal initialisers and every local's
-     * single assignment. Memoised together because they read the same nodes; a second walk would cost a
-     * full re-analysis of the file to collect what this one already saw.
+     * Every harvest off ONE walk of the file — the method bodies, the closures, the array-literal
+     * initialisers and every local's single assignment. Memoised together because they read the same nodes:
+     * a second harvest would have to walk the file again to collect what this one already saw. The walk
+     * itself comes from {@see FileWalks}, so it is also the walk the trace reuses.
      *
-     * @return array{array<string, array<string, Node\Expr\Array_>>, array<string, array<string, array{Node\Expr, Scope}|null>>}
+     * @return FileHarvest
      */
-    private function assignments(string $file): array
+    private function harvest(string $file): array
     {
         $normalised = $this->adapter->normalize($file);
-        if (isset($this->arrayAssignmentCache[$normalised])) {
-            return [$this->arrayAssignmentCache[$normalised], $this->localAssignmentCache[$normalised]];
+        if (isset($this->cache[$normalised])) {
+            return $this->cache[$normalised];
         }
 
+        /** @var array<string, MethodReturnStatementsNode> $methods `Class::method` → its returns */
+        $methods = [];
+        /** @var array<int, ClosureReturnStatementsNode> $closures */
+        $closures = [];
         /** @var array<string, array<string, Node\Expr\Array_>> $arrays */
         $arrays = [];
         /** @var array<string, array<string, array{Node\Expr, Scope}|null>> $locals */
@@ -187,33 +172,58 @@ final class FileAnalyzer
         /** @var array<string, true> $opaque scopes where a write named no single local */
         $opaque = [];
 
-        $this->adapter->processFile($file, function (Node $node, Scope $scope) use (&$arrays, &$locals, &$opaque): void {
-            $key = self::scopeKey($scope);
-            if ($key === null) {
-                return;
+        $this->walks->walk($file, function (Node $node, Scope $scope) use (&$methods, &$closures, &$arrays, &$locals, &$opaque): void {
+            // Watching for these virtual nodes is the sanctioned way to pair returns with refined scope.
+            // Collected first and outside the guard below, so that a reader wanting only a method body — the
+            // throw analyzer, the tracer descending into a callee — never pays for the write half's failures.
+            // @phpstan-ignore phpstanApi.instanceofAssumption
+            if ($node instanceof MethodReturnStatementsNode) {
+                $methods[$node->getClassReflection()->getName().'::'.$node->getMethodName()] = $node;
             }
 
-            $assignment = LocalWrites::assignment($node);
-            if ($assignment !== null) {
-                [$name, $expr] = $assignment;
-                // A second write retires the first: the variable at the return is whichever branch ran, and
-                // picking one of them would publish a body the other branch never sends.
-                $locals[$key][$name] = array_key_exists($name, $locals[$key] ?? []) ? null : [$expr, $scope];
+            // @phpstan-ignore phpstanApi.instanceofAssumption
+            if ($node instanceof ClosureReturnStatementsNode) {
+                $closures[$node->getClosureExpr()->getStartLine()] = $node;
+            }
 
-                if ($expr instanceof Node\Expr\Array_) {
-                    // First assignment wins — the initialiser carries the provenance.
-                    $arrays[$key][$name] ??= $expr;
+            $key = null;
+
+            try {
+                $key = self::scopeKey($scope);
+                if ($key === null) {
+                    return; // outside any function, where there are no locals to harvest
                 }
-            }
 
-            // Every other way the language writes a local — see LocalWrites for the list — plus the one no
-            // expression shows, a callee assigning through a by-reference parameter.
-            foreach ([...LocalWrites::retires($node), ...$this->byReferenceWrites($node, $scope)] as $name) {
-                $locals[$key][$name] = null;
-            }
+                $assignment = LocalWrites::assignment($node);
+                if ($assignment !== null) {
+                    [$name, $expr] = $assignment;
+                    // A second write retires the first: the variable at the return is whichever branch ran, and
+                    // picking one of them would publish a body the other branch never sends.
+                    $locals[$key][$name] = array_key_exists($name, $locals[$key] ?? []) ? null : [$expr, $scope];
 
-            if (LocalWrites::retiresEveryLocal($node)) {
-                $opaque[$key] = true;
+                    if ($expr instanceof Node\Expr\Array_) {
+                        // First assignment wins — the initialiser carries the provenance.
+                        $arrays[$key][$name] ??= $expr;
+                    }
+                }
+
+                // Every other way the language writes a local — see LocalWrites for the list — plus the one no
+                // expression shows, a callee assigning through a by-reference parameter.
+                foreach ([...LocalWrites::retires($node), ...$this->byReferenceWrites($node, $scope)] as $name) {
+                    $locals[$key][$name] = null;
+                }
+
+                if (LocalWrites::retiresEveryLocal($node)) {
+                    $opaque[$key] = true;
+                }
+            } catch (Throwable) {
+                // Resolving a callee is the one thing here that can throw out of PHPStan, and a scope whose
+                // writes could not be read is the scope an unreadable write already retires — vague but true,
+                // and confined to the answers it is about. Letting it out instead would cost every return and
+                // throw point in the file a shape this same walk had already recovered.
+                if ($key !== null) {
+                    $opaque[$key] = true;
+                }
             }
         });
 
@@ -223,9 +233,12 @@ final class FileAnalyzer
             $locals[$key] = array_map(static fn (): null => null, $locals[$key] ?? []);
         }
 
-        $this->localAssignmentCache[$normalised] = $locals;
-
-        return [$this->arrayAssignmentCache[$normalised] = $arrays, $locals];
+        return $this->cache[$normalised] = [
+            'methods' => $methods,
+            'closures' => $closures,
+            'arrays' => $arrays,
+            'locals' => $locals,
+        ];
     }
 
     /**
@@ -245,6 +258,11 @@ final class FileAnalyzer
         }
         if ($node->isFirstClassCallable()) {
             return []; // a callable, not a call
+        }
+        if (! self::hasVariableArgument($node)) {
+            // Resolving the callee is the expensive half — and the half PHPStan can throw out of — so a call
+            // that passes nothing a reference could bind to skips it. Most calls in a file are that call.
+            return [];
         }
 
         $parameters = $this->parametersOf($node, $scope);
@@ -271,6 +289,26 @@ final class FileAnalyzer
         }
 
         return $written;
+    }
+
+    /**
+     * Whether any argument is a plain `$var`, the only form {@see byReferenceWrites()} ever reports. Reads
+     * the same grammar as that loop, spread included — recognising fewer shapes would skip a call whose write
+     * the loop would have found.
+     */
+    private static function hasVariableArgument(Node\Expr\FuncCall|Node\Expr\MethodCall|Node\Expr\StaticCall $node): bool
+    {
+        foreach ($node->getArgs() as $arg) {
+            if ($arg->unpack) {
+                return false; // as in the loop: nothing past a spread binds positionally
+            }
+
+            if ($arg->value instanceof Node\Expr\Variable && is_string($arg->value->name)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

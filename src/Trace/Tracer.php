@@ -9,6 +9,7 @@ use Docuccino\Core\Inference\FoldsCallReturns;
 use Docuccino\Core\Inference\FollowsReturnType;
 use Docuccino\Core\Inference\TraceVisitor;
 use Docuccino\Core\Inference\TypeEngine;
+use Docuccino\Inference\PhpStan\Runtime\FileWalks;
 use Docuccino\Inference\PhpStan\Runtime\RuntimeAdapter;
 use Docuccino\Inference\PhpStan\Support\ProjectFilter;
 use Docuccino\Inference\PhpStan\Support\SourceOrder;
@@ -32,6 +33,9 @@ use Throwable;
  * file analysed, so the request is queued and {@see ReturnValueFolder} answers it once the walk returns —
  * the same collect-then-recurse discipline the descent uses.
  *
+ * The per-file walk comes from {@see FileWalks}, which is why tracing a route the analysis already looked at
+ * costs no second pass over its controller.
+ *
  * @internal
  */
 final class Tracer
@@ -54,6 +58,7 @@ final class Tracer
 
     public function __construct(
         private readonly RuntimeAdapter $adapter,
+        private readonly FileWalks $walks,
         private readonly TypeTranslator $translator,
         private readonly ProjectFilter $projectFilter,
         private readonly CalleeResolver $calleeResolver,
@@ -78,7 +83,7 @@ final class Tracer
         $descend = [];
 
         try {
-            $this->adapter->processFile($file, function (Node $node, Scope $scope) use ($class, $method, $depth, &$descend): void {
+            $this->walks->walk($file, function (Node $node, Scope $scope) use ($class, $method, $depth, &$descend): void {
                 // Confine the walk to the target method. Matching class + function name also excludes
                 // closures for free (their function name won't match) — no method stack needed.
                 if ($scope->getClassReflection()?->getName() !== $class
@@ -134,8 +139,8 @@ final class Tracer
     }
 
     /**
-     * Queue a return fold, gated by {@see canFoldCallee()}. The call site's arguments are folded HERE, on
-     * the live scope, so nothing of PHPStan's has to be retained until the fold runs.
+     * Queue a return fold, gated by {@see canFoldCallee()}. The call site's arguments are folded HERE, in the
+     * walk, because answering the fold means analysing another file and that must not nest `processNodes`.
      *
      * @param  callable(?ConstValue, ?Node\Expr): void  $onFolded
      */

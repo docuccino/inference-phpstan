@@ -8,6 +8,7 @@ use Docuccino\Core\Inference\NullTypeEngine;
 use Docuccino\Core\Inference\TypeEngine;
 use Docuccino\Inference\PhpStan\Metadata\ClassMetadataFactory;
 use Docuccino\Inference\PhpStan\Runtime\BootFailedException;
+use Docuccino\Inference\PhpStan\Runtime\FileWalks;
 use Docuccino\Inference\PhpStan\Runtime\RuntimeAdapterFactory;
 use Docuccino\Inference\PhpStan\Runtime\RuntimeConfig;
 use Docuccino\Inference\PhpStan\Runtime\UnsupportedPhpStanVersionException;
@@ -36,7 +37,9 @@ final class PhpStanEngineFactory
         }
 
         $translator = new TypeTranslator;
-        $fileAnalyzer = new FileAnalyzer($adapter);
+        // One recorder for the whole build: the method harvest and every trace of a file share its walk.
+        $walks = new FileWalks($adapter);
+        $fileAnalyzer = new FileAnalyzer($adapter, $walks);
         $normalize = static fn (string $path): string => $adapter->normalize($path);
         // Descend scope (throws / QB-trace / inline-rules): the bounded interprocedural set.
         $projectFilter = new ProjectFilter($engineConfig->projectPaths, $normalize);
@@ -56,6 +59,7 @@ final class PhpStanEngineFactory
             projectFilter: $projectFilter,
             classMetadataFactory: new ClassMetadataFactory,
             refinerFilter: $refinerFilter,
+            walks: $walks,
         );
     }
 }

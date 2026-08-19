@@ -19,6 +19,7 @@ declare(strict_types=1);
  *   php engine-runner.php refine-pair               <fileBudget> <traceDepth> <file1> <class1> <method1> <file2> <class2> <method2>
  *   php engine-runner.php class-metadata            <ignored>        <class>
  *   php engine-runner.php trace-qb                  <controllerFile> <class> <method>
+ *   php engine-runner.php trace-qb-replay           <controllerFile> <class> <method>
  *   php engine-runner.php trace-qb-enrich           <controllerFile> <class> <method>
  *   php engine-runner.php trace-rules               <file> <class> <method>
  *   php engine-runner.php trace-inline-rules        <controllerFile> <class> <method>
@@ -43,8 +44,11 @@ use Docuccino\Core\Inference\ClassRef;
 use Docuccino\Inference\PhpStan\Analysis\EngineConfig;
 use Docuccino\Inference\PhpStan\Analysis\PhpStanEngineFactory;
 use Docuccino\Inference\PhpStan\Analysis\PhpStanTypeEngineBuilder;
+use Docuccino\Inference\PhpStan\Runtime\RuntimeAdapter;
+use Docuccino\Inference\PhpStan\Runtime\RuntimeAdapterFactory;
 use Docuccino\Inference\PhpStan\Runtime\RuntimeConfig;
 use Docuccino\Inference\PhpStan\Tests\Support\ClosureReturnProbe;
+use Docuccino\Inference\PhpStan\Tests\Support\CountingRuntimeAdapter;
 use Docuccino\Inference\PhpStan\Tests\Support\QueryBuilderProbe;
 use Docuccino\Laravel\Extensions\FileResponseCall;
 use Docuccino\Laravel\Extensions\FileResponseVisitor;
@@ -149,21 +153,56 @@ if ($mode === 'refine-pair') {
 //
 // analyze-with-config hands the builder a user neon (argv[5]) — the app's own PHPStan config, which
 // the generated one includes.
+//
+// trace-qb-replay counts the passes each file costs, so it builds through an adapter factory that wraps
+// what the real one produced. The rest of the wiring is the real builder's, which is the point: the count
+// only comes out at 1 if PhpStanEngineFactory gave the method harvest and every trace the SAME recorder.
+/** @var list<CountingRuntimeAdapter> $countedAdapters */
+$countedAdapters = [];
+$adapterFactory = new class($countedAdapters) extends RuntimeAdapterFactory
+{
+    /** @param  list<CountingRuntimeAdapter>  $adapters */
+    public function __construct(private array &$adapters) {}
+
+    public function create(RuntimeConfig $config): RuntimeAdapter
+    {
+        return $this->adapters[] = new CountingRuntimeAdapter(parent::create($config));
+    }
+};
+
 $engine = $mode === 'refine-pair'
     ? (new PhpStanEngineFactory)->create(
         new RuntimeConfig($app, $tmp, PHP_VERSION_ID, [$app.'/app', $app.'/modules']),
         $engineConfig,
     )
-    : (new PhpStanTypeEngineBuilder)->build(
-        projectRoot: $app,
-        tmpDir: $tmp,
-        vendorPath: $app.'/vendor',
-        primePaths: [$app.'/app', $app.'/modules'],
-        descendPaths: [$app.'/app'],
-        configFile: $mode === 'analyze-with-config' ? ($argv[5] ?? null) : null,
-    );
+    : (new PhpStanTypeEngineBuilder($mode === 'trace-qb-replay'
+        ? new PhpStanEngineFactory($adapterFactory)
+        : new PhpStanEngineFactory))->build(
+            projectRoot: $app,
+            tmpDir: $tmp,
+            vendorPath: $app.'/vendor',
+            primePaths: [$app.'/app', $app.'/modules'],
+            descendPaths: [$app.'/app'],
+            configFile: $mode === 'analyze-with-config' ? ($argv[5] ?? null) : null,
+        );
 
 $ref = new ActionRef($file, $class === '' ? null : $class, $method);
+
+// Shared by trace-qb and trace-qb-replay, whose whole point is that the two harvests are comparable.
+$qbHarvest = static function () use ($engine, $ref): array {
+    $probe = new QueryBuilderProbe;
+    $engine->trace($ref, $probe);
+
+    return [
+        'filters' => $probe->allowedFilters,
+        'sorts' => $probe->allowedSorts,
+        'default' => $probe->defaultSort,
+        'terminals' => $probe->terminals,
+        'paginates' => $probe->paginates(),
+        'perPage' => $probe->recoveredPerPage(),
+        'outermost' => $probe->outermostTerminal()['terminal'] ?? null,
+    ];
+};
 
 $result = match ($mode) {
     'analyze', 'analyze-with-config' => $engine->analyzeAction($ref)->toArray(),
@@ -188,18 +227,25 @@ $result = match ($mode) {
         ];
     })(),
     'class-metadata' => $engine->classMetadata(new ClassRef($class))->toArray(),
-    'trace-qb' => (static function () use ($engine, $ref): array {
-        $probe = new QueryBuilderProbe;
-        $engine->trace($ref, $probe);
+    'trace-qb' => $qbHarvest(),
+    // The replay layer's real-path parity: analyse the action first, so the controller's walk is recorded
+    // by the METHOD harvest, then trace it twice off that recording. Every harvest here — and the one
+    // trace-qb takes off a live pass in its own subprocess — must be the same harvest.
+    'trace-qb-replay' => (static function () use ($engine, $ref, $qbHarvest, &$countedAdapters): array {
+        $analysis = $engine->analyzeAction($ref);
+        $first = $qbHarvest();
+        $second = $qbHarvest();
+
+        // How many live walks the action's own file cost across all three asks. One recorder shared by the
+        // harvest and both traces makes it 1; a recorder per consumer makes it more.
+        $adapter = $countedAdapters[0] ?? null;
+        $passes = $adapter?->passes[$adapter->normalize($ref->file)] ?? null;
 
         return [
-            'filters' => $probe->allowedFilters,
-            'sorts' => $probe->allowedSorts,
-            'default' => $probe->defaultSort,
-            'terminals' => $probe->terminals,
-            'paginates' => $probe->paginates(),
-            'perPage' => $probe->recoveredPerPage(),
-            'outermost' => $probe->outermostTerminal()['terminal'] ?? null,
+            'returns' => count($analysis->returns),
+            'passes' => $passes,
+            'first' => $first,
+            'second' => $second,
         ];
     })(),
     'trace-qb-enrich' => (static function () use ($engine, $ref): array {

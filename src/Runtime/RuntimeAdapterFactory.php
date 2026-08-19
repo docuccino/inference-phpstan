@@ -12,9 +12,13 @@ use OutOfRangeException;
  * Selects the {@see RuntimeAdapter} for the installed PHPStan minor — the seam where a new per-minor adapter
  * slots in. Today there's one, targeting 2.2.x/2.3.x.
  *
+ * Overridable so the seam is usable as one: `Analysis\PhpStanEngineFactory` takes this as a dependency, and
+ * the fixture harness substitutes a subclass that wraps the adapter to count its passes — which is how "one
+ * walk per file, shared by every consumer" is asserted end to end.
+ *
  * @internal
  */
-final class RuntimeAdapterFactory
+class RuntimeAdapterFactory
 {
     /**
      * Tested-minor allowlist, widened only as the CI matrix goes green — never open-ended. This ONE
