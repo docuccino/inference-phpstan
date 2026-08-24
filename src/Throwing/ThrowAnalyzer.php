@@ -35,14 +35,13 @@ use PHPStan\Type\Type;
  *
  * Result identity is `(fqcn, httpStatusHint)` — two aborts (403/404) are two responses, so never dedupe by
  * FQCN alone. Vendor-declared 500-class exceptions are demoted to `internal`; dropped bare-`Throwable`
- * noise is counted, never surfaced.
+ * noise is discarded silently — how much of it there was says nothing about the API, and nothing the
+ * author writes would change it.
  *
  * @internal
  */
 final class ThrowAnalyzer
 {
-    private int $droppedCount = 0;
-
     /** @var array<string, true> */
     private array $visitedFiles = [];
 
@@ -60,17 +59,11 @@ final class ThrowAnalyzer
      */
     public function analyze(MethodReturnStatementsNode $node, string $selfLabel): array
     {
-        $this->droppedCount = 0;
         $this->visitedFiles = [];
 
         $raw = $this->analyzeMethod($node, $selfLabel, 0, [], []);
 
         return $this->dedupe($raw);
-    }
-
-    public function droppedCount(): int
-    {
-        return $this->droppedCount;
     }
 
     /**
@@ -121,17 +114,11 @@ final class ThrowAnalyzer
                 continue;
             }
 
-            // Layer 3: implicit bare Throwable — descend or drop.
+            // Layer 3: implicit bare Throwable — descend, or drop it as noise.
             if (! $explicit) {
-                $descended = $this->applyDescent($callee, $depth, $visited, $priorChain, $frame);
-                if ($descended !== null) {
-                    foreach ($descended as $result) {
-                        $results[] = $result;
-                    }
-
-                    continue;
+                foreach ($this->applyDescent($callee, $depth, $visited, $priorChain, $frame) ?? [] as $result) {
+                    $results[] = $result;
                 }
-                $this->droppedCount++;
             }
         }
 

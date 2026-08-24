@@ -128,24 +128,12 @@ final class PhpStanTypeEngine implements TypeEngine
         $throwAnalyzer = $this->makeThrowAnalyzer();
         $throws = $throwAnalyzer->analyze($node, $this->selfLabel($action));
 
-        $diagnostics = [];
-        $dropped = $throwAnalyzer->droppedCount();
-        if ($dropped > 0) {
-            $diagnostics[] = new Diagnostic(
-                Severity::Hint,
-                'inference.throw-noise-dropped',
-                sprintf('Dropped %d implicit "any-throwable" point(s) in %s.', $dropped, $action->symbol()),
-            );
-        }
         $truncation = $this->refinerTruncation($action->symbol());
-        if ($truncation !== null) {
-            $diagnostics[] = $truncation;
-        }
 
         return new ActionAnalysis(
             returns: $returns,
             throws: $throws,
-            diagnostics: $diagnostics,
+            diagnostics: $truncation === null ? [] : [$truncation],
             dependencyFiles: [$action->file, ...$throwAnalyzer->visitedFiles(), ...$this->drainRefinerFiles()],
         );
     }
