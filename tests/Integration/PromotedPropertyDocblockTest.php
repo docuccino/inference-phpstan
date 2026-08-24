@@ -98,6 +98,26 @@ it('keeps the prose of the property it takes the type from', function (): void {
         ->and($permissions?->type)->toEqual(new ListT(ScalarT::string()));
 })->group('fixture');
 
+/*
+ * The specimen that broke a released export, against the real engine: a free-form map — `mixed` values,
+ * so the value schema is the EMPTY schema — carrying an `@example`. Neither half is exotic; the pair is
+ * what nothing in this repo's fixtures had, so the example lint shipped measured against a corpus
+ * missing the one shape it could not read.
+ */
+it('reads the example beside a free-form map, which is the pair that ended a build', function (): void {
+    $metadata = ClassMetadata::fromArray(FixtureRunner::classMetadata('App\\Data\\SnapshotData'));
+
+    $candidate = null;
+    foreach ($metadata->properties as $property) {
+        if ($property->name === 'candidate') {
+            $candidate = $property;
+        }
+    }
+
+    expect($candidate?->type)->toEqual(new MapT(ScalarT::string(), new UnknownT('mixed')))
+        ->and($candidate?->example)->toBe('{"first_name": "Ada", "last_name": "Lovelace"}');
+})->group('fixture');
+
 it('parameterises a natively-typed DataCollection from its constructor @param', function (): void {
     // A bare `DataCollection` reflects to a precise ClassT that still says nothing about its elements, so
     // the docblock is read for the arguments alone — the class it names is the same one.
