@@ -218,10 +218,11 @@ final class PhpStanTypeEngine implements TypeEngine
             Severity::Info,
             'inference.response-shape-truncated',
             sprintf(
-                'Response-shape recovery in %s stopped at its descent bound %d time(s); the response is documented as its declared type. Shorten the helper chain, or state the response explicitly.',
+                'Response-shape recovery in %s stopped at its descent bound %d time(s); the response is documented as its declared type.',
                 $symbol,
                 $truncations,
             ),
+            help: 'Flatten the chain between the `return` and the value it builds — every project-code call on the way is one hop, and the bound is not something config can raise. That is the only thing that clears this: stating the shape at a later layer corrects the document and leaves this notice naming the callable.',
         );
     }
 

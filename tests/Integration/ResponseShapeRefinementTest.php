@@ -447,6 +447,16 @@ it('reports a bound-truncated response shape instead of degrading quietly', func
 
     expect($codes($pair['first']))->toContain('inference.response-shape-truncated')
         ->and($codes($pair['second']))->not->toContain('inference.response-shape-truncated');
+
+    // Flattening the chain is the only thing that clears it: the bound is not configurable, and the
+    // engine never sees the layer that could state the shape, so the help promises nothing there.
+    $truncated = array_values(array_filter(
+        $pair['first']['diagnostics'],
+        static fn (array $d): bool => $d['code'] === 'inference.response-shape-truncated',
+    ));
+    expect($truncated[0]['help'])->toBe(
+        'Flatten the chain between the `return` and the value it builds — every project-code call on the way is one hop, and the bound is not something config can raise. That is the only thing that clears this: stating the shape at a later layer corrects the document and leaves this notice naming the callable.',
+    );
 })->group('fixture');
 
 it('folds each case independently + deterministically (memoisation keyed per enum-case+method)', function (): void {
