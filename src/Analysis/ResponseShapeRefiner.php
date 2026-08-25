@@ -16,6 +16,7 @@ use Docuccino\Core\Inference\DType\StatusMarkerT;
 use Docuccino\Core\Inference\DType\UnknownT;
 use Docuccino\Core\Inference\DType\VoidT;
 use Docuccino\Inference\PhpStan\Runtime\RuntimeAdapter;
+use Docuccino\Inference\PhpStan\Support\ContentTypeHeader;
 use Docuccino\Inference\PhpStan\Support\OmissionSentinel;
 use Docuccino\Inference\PhpStan\Support\ProjectFilter;
 use Docuccino\Inference\PhpStan\Support\ScalarFold;
@@ -71,6 +72,9 @@ final class ResponseShapeRefiner
     /** Reads the `#[ErrorComponent]` each descended hop declares for the body it answers with. */
     private readonly ComponentDeclarations $declarations;
 
+    /** Peels `->setStatusCode(…)`/`->header(…)` off a response so the shape is read where it was built. */
+    private readonly FluentResponseChain $fluentChain;
+
     public function __construct(
         private readonly RuntimeAdapter $adapter,
         private readonly TypeTranslator $translator,
@@ -83,6 +87,7 @@ final class ResponseShapeRefiner
     ) {
         $this->budget = new DescentBudget($maxDepth, $fileBudget);
         $this->declarations = new ComponentDeclarations($reflectionProvider);
+        $this->fluentChain = new FluentResponseChain($reflectionProvider, $translator);
         $this->enumFolder = new EnumAccessorFolder(
             $this->fileAnalyzer,
             $this->projectFilter,
@@ -102,6 +107,18 @@ final class ResponseShapeRefiner
     public function refine(Node\Expr $expr, Scope $scope): ?RefinedResponse
     {
         return $this->refineExpr($expr, $scope, [], 0);
+    }
+
+    /**
+     * Whether this reads the expression better than the response type PHPStan resolved for it, so the
+     * harvest knows a parameterised type is not the last word. Two shapes qualify: a `new` whose arguments
+     * fold to more than the erased generic the stub's `@template` bounds leave behind, and a fluent chain,
+     * whose links can restate a status the receiver's own type carries unchanged
+     * ({@see FluentResponseChain}).
+     */
+    public function outranksResolvedType(Node\Expr $expr, Scope $scope): bool
+    {
+        return $expr instanceof Node\Expr\New_ || $this->fluentChain->peel($expr, $scope) !== null;
     }
 
     /**
@@ -131,6 +148,16 @@ final class ResponseShapeRefiner
      */
     private function refineExpr(Node\Expr $expr, Scope $scope, array $paramNames, int $depth): ?RefinedResponse
     {
+        // 0. A fluent tail on the response the code built (`->setStatusCode(202)`, `->header(…)`): the
+        // shape belongs to the receiver and the chain only restates what it set, so refine the receiver
+        // and apply the difference ({@see applyChain()}).
+        if ($expr instanceof Node\Expr\MethodCall) {
+            $chain = $this->fluentChain->peel($expr, $scope);
+            if ($chain !== null) {
+                return $this->applyChain($chain, $scope, $paramNames, $depth);
+            }
+        }
+
         // 1. `new JsonResponse($body, $status, [headers])` — fold the constructor arguments directly.
         if ($expr instanceof Node\Expr\New_ && $expr->class instanceof Node\Name) {
             $class = $scope->resolveName($expr->class);
@@ -190,6 +217,32 @@ final class ResponseShapeRefiner
         }
 
         return null;
+    }
+
+    /**
+     * The receiver's own shape with the chain's statements laid over it. A status stated on the wire beats
+     * whatever the receiver carried — it is the last thing that ran — and clears a pass-through accessor
+     * with it, since nothing a caller passes can change a status the chain pinned here.
+     *
+     * A receiver that recovers nothing still leaves a chain worth reporting: a status the code states
+     * plainly is the fact this exists to carry, and the body stays exactly as unrecovered as it was. The
+     * depth is the caller's — peeling is not a call hop, so it costs no budget.
+     *
+     * @param  array{receiver: Node\Expr, status: LiteralT|null, contentType: string|null, contentTypeUnknown: bool}  $chain
+     * @param  list<string>  $paramNames
+     */
+    private function applyChain(array $chain, Scope $scope, array $paramNames, int $depth): ?RefinedResponse
+    {
+        $refined = $this->refineExpr($chain['receiver'], $scope, $paramNames, $depth) ?? new RefinedResponse;
+
+        if ($chain['contentType'] !== null || $chain['contentTypeUnknown']) {
+            $refined = $refined->withContentType($chain['contentType']);
+        }
+        if ($chain['status'] !== null) {
+            $refined = $refined->withBoundStatus($chain['status']);
+        }
+
+        return $refined->isDocumentable() ? $refined : null;
     }
 
     /**
@@ -258,7 +311,7 @@ final class ResponseShapeRefiner
         };
 
         $headers = $args->at(2);
-        $contentType = $headers === null ? null : $this->contentTypeOf($headers, $scope);
+        $contentType = $headers === null ? null : ContentTypeHeader::inArray($headers, $scope);
 
         // A member reading the same accessor as the status echoes the status: the factory marks it, so a
         // call site folding the status folds the member too, and an unfolded one still fills at doc time.
@@ -783,30 +836,6 @@ final class ResponseShapeRefiner
         $folded = ScalarFold::of($scope->getType($expr));
 
         return $folded !== null && is_scalar($folded[0]) ? new LiteralT($folded[0]) : null;
-    }
-
-    /** Matched case-insensitively; null when absent or non-constant. */
-    private function contentTypeOf(Node\Expr $expr, Scope $scope): ?string
-    {
-        if (! $expr instanceof Node\Expr\Array_) {
-            return null;
-        }
-
-        foreach ($expr->items as $item) {
-            if ($item->key === null) {
-                continue;
-            }
-            $keys = $scope->getType($item->key)->getConstantStrings();
-            if (count($keys) !== 1 || strcasecmp($keys[0]->getValue(), 'content-type') !== 0) {
-                continue;
-            }
-            $values = $scope->getType($item->value)->getConstantStrings();
-            if (count($values) === 1) {
-                return $values[0]->getValue();
-            }
-        }
-
-        return null;
     }
 
     /** The payload DType, or null when it is not a documentable body (void/never/unknown). */

@@ -663,3 +663,97 @@ it('keeps two same-named methods in one file from answering for each other', fun
         ->and($return['args'])->toBe(0)
         ->and($return['status'])->toBeNull();
 })->group('fixture');
+
+/**
+ * The recovered shape of a controller action whose response is stamped through a fluent setter.
+ *
+ * @return array{status: int|null, contentType: string|null, keys: list<string>}
+ */
+function fluentShape(string $method): array
+{
+    $analysis = ActionAnalysis::fromArray(FixtureRunner::analyze(
+        'app/Http/Controllers/WebhookReceiptController.php',
+        'App\\Http\\Controllers\\WebhookReceiptController',
+        $method,
+    ));
+
+    expect($analysis->returns)->toHaveCount(1);
+    $type = $analysis->returns[0]->type;
+    expect($type)->toBeInstanceOf(ClassT::class)->and($type->fqcn)->toBe('Illuminate\\Http\\JsonResponse');
+
+    $status = $type->typeArgs[1] ?? null;
+    $contentType = $type->typeArgs[2] ?? null;
+    $payload = $type->typeArgs[0] ?? null;
+
+    return [
+        'status' => $status instanceof LiteralT && is_int($status->value) ? $status->value : null,
+        'contentType' => $contentType instanceof LiteralT && is_string($contentType->value) ? $contentType->value : null,
+        'keys' => $payload instanceof ArrayShapeT
+            ? array_map(static fn ($field): string => (string) $field->key, $payload->fields)
+            : [],
+    ];
+}
+
+it('reads the status a fluent setter states, over the one the body-builder defaulted to', function (): void {
+    // `response()->json($body)` types as `JsonResponse<…, 200>` and `setStatusCode()` returns `static`, so
+    // the 200 rides straight through the chain untouched. Publishing it would mark a working 202 invalid in
+    // a generated client — the sharpest form of a confidently wrong answer.
+    expect(fluentShape('store'))->toBe([
+        'status' => 202,
+        'contentType' => null,
+        'keys' => ['queued', 'id'],
+    ]);
+})->group('fixture');
+
+it('crosses a header link to reach the status, and reads the media type one of them set', function (): void {
+    // Two headers between the body and the status: one this documents nothing about, one that decides the
+    // media type the payload is published under.
+    expect(fluentShape('reject'))->toBe([
+        'status' => 422,
+        'contentType' => 'application/problem+json',
+        'keys' => ['type', 'title'],
+    ]);
+})->group('fixture');
+
+it('peels a chain off a constructed response without spending descent budget on it', function (): void {
+    // `new JsonResponse($body)` carries only the stub's `@template` bounds, so the erased generic is not
+    // the last word about it; the constructor arguments are, and the chain restates the status over them.
+    expect(fluentShape('replay'))->toBe([
+        'status' => 207,
+        'contentType' => null,
+        'keys' => ['replayed'],
+    ]);
+})->group('fixture');
+
+it('declines the chain rather than guessing a status it cannot fold', function (): void {
+    // A relayed status is whatever the upstream answered. The document has no way to say "unknown status",
+    // so this degrades to the framework default — but it degrades from the code, not from a folded value
+    // this build invented for it.
+    expect(fluentShape('relay'))->toBe([
+        'status' => 200,
+        'contentType' => null,
+        'keys' => ['relayed'],
+    ]);
+})->group('fixture');
+
+it('refuses a whole chain when a link may have rewritten the body', function (): void {
+    // `->setData(...)` returns `static` exactly as `->setStatusCode()` does, so passing the receiver's
+    // payload through would publish a body the endpoint replaced. The guard is the same function as the
+    // fold: a mutation of a response it does not model takes the chain with it, status included.
+    expect(fluentShape('digest'))->toBe([
+        'status' => null,
+        'contentType' => null,
+        'keys' => [],
+    ]);
+})->group('fixture');
+
+it('drops a recovered media type behind a header link whose name it could not read', function (): void {
+    // The constructor stated `application/problem+json`; a later header names itself from configuration,
+    // so this build cannot tell whether that header replaced it. A header can only ever affect the media
+    // type, so the status still comes back — the uncertainty is confined to the fact it belongs to.
+    expect(fluentShape('stale'))->toBe([
+        'status' => 409,
+        'contentType' => null,
+        'keys' => ['type', 'title'],
+    ]);
+})->group('fixture');

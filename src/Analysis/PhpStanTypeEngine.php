@@ -174,9 +174,11 @@ final class PhpStanTypeEngine implements TypeEngine
             return ['type' => $type, 'component' => null];
         }
 
-        // Already rich (our extension typed `response()->json()`/`noContent()`) — authoritative, keep it.
-        // Only a bare erased response, or a `new JsonResponse(...)`, goes through helper indirection.
-        if ($type->typeArgs !== [] && ! $expr instanceof Node\Expr\New_) {
+        // Already rich (our extension typed `response()->json()`/`noContent()`) — authoritative, keep it,
+        // unless the refiner reads the expression better than its resolved type does
+        // ({@see ResponseShapeRefiner::outranksResolvedType()}): a `new JsonResponse(...)`, or a fluent
+        // chain whose `->setStatusCode()` the erased generic carried straight past.
+        if ($type->typeArgs !== [] && ! $this->refiner()->outranksResolvedType($expr, $scope)) {
             return ['type' => $type, 'component' => null];
         }
 

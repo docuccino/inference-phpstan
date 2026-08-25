@@ -84,8 +84,12 @@ final readonly class RefinedResponse
         return $this->payload !== null || $this->status !== null || $this->contentType !== null;
     }
 
-    /** Labels the media type recovered from a header the helper set after building the response. */
-    public function withContentType(string $contentType): self
+    /**
+     * Labels the media type recovered from a header the helper set after building the response. Null
+     * CLEARS it: a later header this build could not read may have replaced the one recovered here, and
+     * the default media type is the honest answer where that cannot be told apart.
+     */
+    public function withContentType(?string $contentType): self
     {
         return new self($this->payload, $this->status, $this->statusSource, $contentType, $this->delegates, $this->payloadParamProvenance, $this->payloadMembers, $this->component);
     }

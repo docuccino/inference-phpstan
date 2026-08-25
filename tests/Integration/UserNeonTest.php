@@ -12,8 +12,9 @@ use Docuccino\Inference\PhpStan\Tests\Support\FixtureRunner;
  *
  * The baseline is pinned next door (FrameworkResponseReachabilityTest): `SsoRedirectController::reset`
  * hands back whatever the gateway answered, and the gateway's own return type is a bare `JsonResponse`,
- * so out of the box the payload is unrecoverable. Here the app has told PHPStan what that call really
- * answers, and the same action recovers the payload.
+ * so out of the box the payload is unrecoverable — a status stamped on it fluently is all there is to
+ * recover. Here the app has told PHPStan what that call really answers, and the same action recovers the
+ * payload as well.
  */
 beforeEach(function (): void {
     ensureFixtureAvailable(FixtureRunner::available());
@@ -55,5 +56,8 @@ it('analyses without a configured file that is not there, rather than failing', 
 
     expect($returns)->toHaveCount(1)
         ->and($returns[0]['type']['fqcn'])->toBe('Illuminate\\Http\\JsonResponse')
-        ->and($returns[0]['type']['typeArgs'])->toBe([]);
+        // Without the include the action recovers only what it states itself — the fluent status — and
+        // the payload stays unresolved, which is the same answer as before the file was configured.
+        ->and($returns[0]['type']['typeArgs'][0]['kind'] ?? null)->toBe('unknown')
+        ->and($returns[0]['type']['typeArgs'][1]['value'] ?? null)->toBe(200);
 })->group('fixture');
