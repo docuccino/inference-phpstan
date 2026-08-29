@@ -1,14 +1,15 @@
 {
     "name": "docuccino/inference-phpstan",
-    "description": "PHPStan/Larastan type inference engine for Docuccino, behind the core TypeEngine contract.",
+    "description": "PHPStan and Larastan type inference for Docuccino: infers response and exception shapes from the real types in your code.",
     "type": "library",
     "keywords": [
         "openapi",
         "api-documentation",
-        "uir",
         "phpstan",
         "larastan",
+        "static-analysis",
         "type-inference",
+        "uir",
         "scramble-alternative"
     ],
     "homepage": "https://docuccino.app",
