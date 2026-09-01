@@ -26,6 +26,7 @@ use Throwable;
  *     closures: array<int, ClosureReturnStatementsNode>,
  *     arrays: array<string, array<string, Node\Expr\Array_>>,
  *     locals: array<string, array<string, array{Node\Expr, Scope}|null>>,
+ *     calls: array<int, Scope>,
  * }
  *
  * @internal
@@ -95,6 +96,24 @@ final class FileAnalyzer
     public function closures(string $file): array
     {
         return $this->harvest($file)['closures'];
+    }
+
+    /**
+     * The scope PHPStan resolved AT one construction or static call, or null where the file holds no such
+     * call at that position. Keyed by start offset rather than by node identity: the same file parses to
+     * fresh nodes whenever a recorded walk has been discarded, and an offset survives that where an object
+     * handle does not.
+     *
+     * This is the scope a reader folding one ARGUMENT of that call must use. The method's end scope answers
+     * a different question — what a variable holds once the body has finished — and a constructor that
+     * reassigns its status parameter after forwarding it makes the two disagree, with the end scope naming
+     * a value the callee never received.
+     */
+    public function scopeAtCall(string $file, Node\Expr\New_|Node\Expr\StaticCall $call): ?Scope
+    {
+        $position = $call->getStartFilePos();
+
+        return $position < 0 ? null : ($this->harvest($file)['calls'][$position] ?? null);
     }
 
     /**
@@ -169,10 +188,12 @@ final class FileAnalyzer
         $arrays = [];
         /** @var array<string, array<string, array{Node\Expr, Scope}|null>> $locals */
         $locals = [];
+        /** @var array<int, Scope> $calls the scope at each construction/static call, by start offset */
+        $calls = [];
         /** @var array<string, true> $opaque scopes where a write named no single local */
         $opaque = [];
 
-        $this->walks->walk($file, function (Node $node, Scope $scope) use (&$methods, &$closures, &$arrays, &$locals, &$opaque): void {
+        $this->walks->walk($file, function (Node $node, Scope $scope) use (&$methods, &$closures, &$arrays, &$locals, &$calls, &$opaque): void {
             // Watching for these virtual nodes is the sanctioned way to pair returns with refined scope.
             // Collected first and outside the guard below, so that a reader wanting only a method body — the
             // throw analyzer, the tracer descending into a callee — never pays for the write half's failures.
@@ -184,6 +205,15 @@ final class FileAnalyzer
             // @phpstan-ignore phpstanApi.instanceofAssumption
             if ($node instanceof ClosureReturnStatementsNode) {
                 $closures[$node->getClosureExpr()->getStartLine()] = $node;
+            }
+
+            // The two call forms whose arguments a status read folds ({@see scopeAtCall()}), paired with the
+            // scope they are evaluated in. Collected here rather than on a walk of their own, so the pairing
+            // is the same walk's and costs nothing beyond the entry.
+            if (($node instanceof Node\Expr\New_ || $node instanceof Node\Expr\StaticCall)
+                && $node->getStartFilePos() >= 0
+            ) {
+                $calls[$node->getStartFilePos()] = $scope;
             }
 
             $key = null;
@@ -238,6 +268,7 @@ final class FileAnalyzer
             'closures' => $closures,
             'arrays' => $arrays,
             'locals' => $locals,
+            'calls' => $calls,
         ];
     }
 

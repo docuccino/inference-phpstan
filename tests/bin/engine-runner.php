@@ -26,6 +26,7 @@ declare(strict_types=1);
  *   php engine-runner.php trace-json-api-paginate   <controllerFile> <class> <method>
  *   php engine-runner.php trace-pagination-terminal <controllerFile> <class> <method>
  *   php engine-runner.php trace-created-resource    <controllerFile> <class> <method>
+ *   php engine-runner.php data-response-status      <dataFile>       <class[,class…]> <ignored>
  *   php engine-runner.php trace-file-responses      <controllerFile> <class> <method>
  *   php engine-runner.php trace-closure             <file> <ignored> <ignored> <line>
  *
@@ -37,6 +38,10 @@ declare(strict_types=1);
  * it is ignored by the caller.
  */
 
+use Docuccino\Core\Extensions\Context\AttributeSet;
+use Docuccino\Core\Extensions\Context\DocumentConfig;
+use Docuccino\Core\Extensions\Context\RouteContext;
+use Docuccino\Core\Extensions\Context\RouteDescriptor;
 use Docuccino\Core\Extensions\Schema\EnumReflection;
 use Docuccino\Core\Inference\ActionRef;
 use Docuccino\Core\Inference\CallableRef;
@@ -61,6 +66,7 @@ use Docuccino\Laravel\Integrations\QueryBuilder\QbBuilderRoots;
 use Docuccino\Laravel\Integrations\QueryBuilder\QbEntry;
 use Docuccino\Laravel\Integrations\QueryBuilder\QueryBuilderTraceVisitor;
 use Docuccino\Laravel\Integrations\QueryBuilder\ScopeParameterResolver;
+use Docuccino\Laravel\Integrations\SpatieData\DataResponseStatus;
 use Docuccino\Laravel\Integrations\Support\PaginationTerminalVisitor;
 
 $repoRoot = dirname(__DIR__, 4);
@@ -439,6 +445,49 @@ $result = match ($mode) {
         $engine->trace($ref, $visitor);
 
         return ['created' => $visitor->created];
+    })(),
+    'data-response-status' => (static function () use ($engine, $class): array {
+        // The whole adapter-side resolver over the real engine, once per route and per Data class: a
+        // name-conditional calculateResponseStatus() override folds to `200|201` from the return type, and
+        // the route's own name settles which of the two THIS operation publishes. Without that, every one
+        // of them publishes both. Several classes in one invocation because a PHPStan container costs
+        // more to boot than every analysis behind it.
+        $resolver = new DataResponseStatus;
+
+        $routes = [
+            'things.store' => new RouteDescriptor(['POST'], '/api/things', 'things.store'),
+            'things.publish' => new RouteDescriptor(['POST'], '/api/things/publish', 'things.publish'),
+            'things.show' => new RouteDescriptor(['GET'], '/api/things/{thing}', 'things.show'),
+            'unnamed' => new RouteDescriptor(['GET'], '/api/things', null),
+        ];
+
+        $statuses = [];
+        $diagnostics = [];
+        foreach (explode(',', $class) as $fqcn) {
+            $statuses[$fqcn] = [];
+            $diagnostics[$fqcn] = [];
+
+            foreach ($routes as $key => $descriptor) {
+                $context = new RouteContext(
+                    route: $descriptor,
+                    actionRef: new ActionRef('', 'App\\Http\\Controllers\\ThingController', 'show'),
+                    attributes: new AttributeSet,
+                    engine: $engine,
+                    document: new DocumentConfig('default', []),
+                );
+
+                $statuses[$fqcn][$key] = $resolver->resolveStatuses($context, $fqcn);
+                $diagnostics[$fqcn] = [...$diagnostics[$fqcn], ...array_map(
+                    static fn ($diagnostic): string => $diagnostic->code,
+                    $context->components->diagnostics(),
+                )];
+                // The fold's cache input: the file the override was READ from has to be a dependency, or a
+                // warm build serves a status the edited class no longer answers.
+                $statuses[$fqcn][$key.'.files'] = array_map('basename', $context->dependencyFiles());
+            }
+        }
+
+        return ['statuses' => $statuses, 'diagnostics' => $diagnostics];
     })(),
     default => ['error' => 'unknown mode: '.$mode],
 };

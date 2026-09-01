@@ -232,6 +232,20 @@ final class FixtureRunner
     }
 
     /**
+     * Resolve each named Data class's success status with the real adapter resolver, once per route,
+     * against the real engine. Returns `statuses` and `diagnostics`, both keyed by class: each class's
+     * statuses are keyed by route, holding the resolved status list plus a `.files` entry naming the
+     * dependency files the fold recorded, and its diagnostics are every code raised. One invocation
+     * covers several classes because booting a PHPStan container costs more than the analyses do.
+     *
+     * @return array<string, mixed>
+     */
+    public static function dataResponseStatuses(string $relPath, string ...$classes): array
+    {
+        return self::invoke('data-response-status', self::path($relPath), implode(',', $classes), '');
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private static function invoke(string $mode, string $file, string $class, string $method, string ...$extra): array

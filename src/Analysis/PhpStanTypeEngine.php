@@ -28,6 +28,10 @@ use Docuccino\Inference\PhpStan\Runtime\FileWalks;
 use Docuccino\Inference\PhpStan\Runtime\RuntimeAdapter;
 use Docuccino\Inference\PhpStan\Support\ProjectFilter;
 use Docuccino\Inference\PhpStan\Support\SourceOrder;
+use Docuccino\Inference\PhpStan\Throwing\AnalyzedBodies;
+use Docuccino\Inference\PhpStan\Throwing\ClassBodies;
+use Docuccino\Inference\PhpStan\Throwing\FactoryStatus;
+use Docuccino\Inference\PhpStan\Throwing\HttpExceptionStatus;
 use Docuccino\Inference\PhpStan\Throwing\ThrowAnalyzer;
 use Docuccino\Inference\PhpStan\Trace\CalleeResolver;
 use Docuccino\Inference\PhpStan\Trace\ReturnValueFolder;
@@ -68,6 +72,17 @@ final class PhpStanTypeEngine implements TypeEngine
 
     /** Reads the `#[ErrorComponent]` an analysed callable declares for the body it answers with. */
     private ?ComponentDeclarations $declarations = null;
+
+    /**
+     * Built once per engine, so an exception class thrown by forty routes is read once. Each answer is a
+     * function of the class — or of the class and one factory name — alone, which is what makes the memo
+     * sound across routes.
+     */
+    private ?HttpExceptionStatus $httpExceptionStatus = null;
+
+    private ?FactoryStatus $factoryStatus = null;
+
+    private ?ClassBodies $classBodies = null;
 
     public function __construct(
         private readonly RuntimeAdapter $adapter,
@@ -129,11 +144,12 @@ final class PhpStanTypeEngine implements TypeEngine
         $throws = $throwAnalyzer->analyze($node, $this->selfLabel($action));
 
         $truncation = $this->refinerTruncation($action->symbol());
+        $diagnostics = $throwAnalyzer->diagnostics();
 
         return new ActionAnalysis(
             returns: $returns,
             throws: $throws,
-            diagnostics: $truncation === null ? [] : [$truncation],
+            diagnostics: $truncation === null ? $diagnostics : [...$diagnostics, $truncation],
             dependencyFiles: [$action->file, ...$throwAnalyzer->visitedFiles(), ...$this->drainRefinerFiles()],
         );
     }
@@ -622,12 +638,17 @@ final class PhpStanTypeEngine implements TypeEngine
 
     private function makeThrowAnalyzer(): ThrowAnalyzer
     {
+        $bodies = $this->classBodies ??= new AnalyzedBodies($this->fileAnalyzer);
+        $statuses = $this->httpExceptionStatus ??= new HttpExceptionStatus($bodies, $this->projectFilter);
+
         return new ThrowAnalyzer(
             $this->adapter->reflectionProvider(),
             $this->projectFilter,
             $this->fileAnalyzer,
             $this->config->knownThrowers,
             new CalleeResolver($this->adapter->reflectionProvider()),
+            $statuses,
+            $this->factoryStatus ??= new FactoryStatus($statuses, $bodies, $this->projectFilter),
             $this->config->throwDepth,
         );
     }
