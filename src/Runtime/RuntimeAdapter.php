@@ -55,10 +55,12 @@ interface RuntimeAdapter
     public function normalize(string $file): string;
 
     /**
-     * Make a scope safe to query after its walk has finished. Since 2.2 the scope handed to a `processFile`
-     * callback resolves expressions by suspending its fiber, so it only answers while that fiber is alive —
-     * retaining one (as harvesting a `MethodReturnStatementsNode` does) and calling `getType()` later throws
-     * "Cannot suspend outside of a fiber". Call this on any scope that outlives the callback that produced it.
+     * Make a scope safe to query after its walk has finished. The scope handed to a `processFile` callback is
+     * the walk's own, and what it costs to keep has moved within one minor: PHPStan 2.2.0–2.2.9 resolve
+     * expressions by suspending a fiber, so retaining one (as harvesting a `MethodReturnStatementsNode` does)
+     * and calling `getType()` later throws "Cannot suspend outside of a fiber"; 2.2.10 dropped fibers for a
+     * callback scope that answers a retained ask on its own. Call this on any scope that outlives the callback
+     * that produced it and the adapter does whichever its analyser needs — on 2.2.10+ that is nothing.
      */
     public function stableScope(Scope $scope): Scope;
 

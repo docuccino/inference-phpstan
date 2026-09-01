@@ -12,7 +12,6 @@ use Docuccino\Inference\PhpStan\Runtime\BootFailedException;
 use Docuccino\Inference\PhpStan\Runtime\RuntimeAdapter as RuntimeAdapterContract;
 use Docuccino\Inference\PhpStan\Runtime\RuntimeConfig;
 use FilesystemIterator;
-use PHPStan\Analyser\Fiber\FiberScope;
 use PHPStan\Analyser\NodeScopeResolver;
 use PHPStan\Analyser\Scope;
 use PHPStan\Analyser\ScopeContext;
@@ -190,11 +189,15 @@ final class RuntimeAdapter implements RuntimeAdapterContract
 
     public function stableScope(Scope $scope): Scope
     {
-        // The container hands us FiberNodeScopeResolver, so callbacks receive a FiberScope; its getType()
-        // suspends. toMutatingScope() reads the scope as captured instead, which is what a retained scope
-        // wants. instanceof is safely false on any minor without the class, so this needs no version branch.
-        // @phpstan-ignore phpstanApi.class, phpstanApi.method
-        return $scope instanceof FiberScope ? $scope->toMutatingScope() : $scope;
+        // A walk hands a callback a scope of its own making, and which one moved inside 2.2: up to 2.2.9 it
+        // was a fiber scope, whose getType() suspends and so answers only while its fiber lives; from 2.2.10
+        // it is a node-callback scope that answers a retained ask directly. `toMutatingScope()` is the read
+        // both eras agree on — the captured scope in the first, the scope itself in the second — so the call
+        // is the whole body and no version branch is needed. It is asked of the `Scope` INTERFACE, which is
+        // the point: the interface carries `@api` and has declared this method across the minor, while the
+        // concrete class only one era had did not survive a patch release. Naming no concrete scope class is
+        // what keeps this compiling on both. AnalyserDriftTest fails if either half of that stops holding.
+        return $scope->toMutatingScope();
     }
 
     public function reflectionProvider(): ReflectionProvider
