@@ -7,6 +7,15 @@ User-facing changes to `docuccino/inference-phpstan` — features, fixes, perfor
 taken from the commit messages scoped `inference-phpstan`. Entries begin after v0.1.2; older history is in
 the [repository](https://github.com/docuccino/docuccino) git log.
 
+## v0.13.1
+
+### Bug fixes
+
+- read a construction's status by one rule, in the scope it is written ([#350](https://github.com/docuccino/docuccino/pull/350))
+- read the status from the factory a throw names ([#348](https://github.com/docuccino/docuccino/pull/348))
+- read the status an HttpException subclass sets on itself ([#347](https://github.com/docuccino/docuccino/pull/347))
+- stabilise a walk scope through the interface that promises the call ([#339](https://github.com/docuccino/docuccino/pull/339))
+
 ## v0.10.0
 
 ### Bug fixes
