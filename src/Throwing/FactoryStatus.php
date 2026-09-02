@@ -19,8 +19,8 @@ use ReflectionMethod;
  *
  * Every way the read could publish a status the code does not pass is a decline: a factory whose file is not
  * the project's, a body that builds the class more than once and folds to two different statuses, a slot
- * nothing can be said about ({@see ConstructionStatus}), and a factory some other class declares, where
- * `self` names that class and its constructor slots need not be this one's.
+ * nothing can be said about ({@see ConstructionStatus}), and a base's factory whose `new self(…)` builds the
+ * base rather than this class.
  *
  * @phpstan-type FactoryRead array{status: int|null, files: list<string>}
  *
@@ -78,56 +78,53 @@ final class FactoryStatus
             return $this->cache[$key];
         }
 
+        $declaring = $factory->getDeclaringClass()->getName();
         $body = $this->projectFilter->isProjectFile($file)
-            ? ($this->bodies->methods($file, $fqcn)[$method] ?? null)
+            ? ($this->bodies->methods($file, $declaring)[$method] ?? null)
             : null;
 
-        return $this->cache[$key] = [
-            'status' => $body === null ? null : $this->fromBody($fqcn, $file, $body, $slot),
-            'files' => [$file],
-        ];
+        $files = [$file];
+        $status = $body === null ? null : $this->fromBody($fqcn, $declaring, $file, $body, $slot, $files);
+
+        return $this->cache[$key] = ['status' => $status, 'files' => array_values(array_unique($files))];
     }
 
     /**
-     * The one status every construction in the body agrees on. A body that builds the class twice with two
-     * statuses states neither, and one construction that would not fold takes the whole answer with it.
+     * The one status every construction in the body agrees on — the same rule the throw site reads a
+     * `throw new X(…)` by, so one hop apart cannot mean two answers. `$declaring` is the class the body is
+     * written in, which decides what its relative names build ({@see StatusForwarding::constructionsOf()}).
+     * `$files` collects the declarations the folds read, for the dependency set.
      *
      * @param  array<array-key, Node\Stmt>  $body
+     * @param  list<string>  $files
      */
-    private function fromBody(string $fqcn, string $file, array $body, int $slot): ?int
+    private function fromBody(string $fqcn, string $declaring, string $file, array $body, int $slot, array &$files): ?int
     {
-        $constructions = StatusForwarding::constructionsOf($body, $fqcn);
-        if ($constructions === []) {
-            return null;
-        }
+        $sites = array_map(
+            static fn (Node\Expr\New_ $construction): ConstructionSite => new ConstructionSite($construction, $file, $declaring),
+            StatusForwarding::constructionsOf($body, $fqcn, $declaring),
+        );
 
-        $constructor = $this->statuses->constructorSlot($fqcn, $slot);
+        return ConstructionStatus::agreedIn(
+            $sites,
+            $slot,
+            $this->statuses->constructorSlot($fqcn, $slot),
+            function (Node\Expr $argument, ConstructionSite $site) use (&$files): ?int {
+                $files = [...$files, ...ConstantSource::files($argument, $site->declaringClass)];
 
-        $status = null;
-        foreach ($constructions as $construction) {
-            // The same rule the throw site reads a `throw new X(…)` by, so one hop apart cannot mean two
-            // answers.
-            $one = ConstructionStatus::inSlot(
-                $construction,
-                $slot,
-                $constructor,
-                fn (Node\Expr $argument): ?int => $this->bodies->foldInt($file, $argument, $construction),
-            );
-
-            if ($one === null || ($status !== null && $one !== $status)) {
-                return null;
-            }
-
-            $status = $one;
-        }
-
-        return $status;
+                return $this->bodies->foldInt($site->file, $argument, $site->construction);
+            },
+        );
     }
 
     /**
-     * The static factory the class itself declares, or null for anything else a `throw X::y()` could name —
-     * an instance method, a name the class does not have, and one inherited from a parent, whose `new self`
-     * builds the parent rather than this class.
+     * The static factory a `throw X::y()` names, or null for anything else it could name — an instance
+     * method, or a name the class does not have.
+     *
+     * A factory a BASE declares is one of them: `X::unavailable()` is how the class is built whoever wrote
+     * the line, and the same rule {@see HttpExceptionStatus::agreed()} reads a hierarchy by says a base's
+     * `new static(…)` builds this class. What the base's `new self(…)` builds is the base, which is why
+     * the declaring class travels with the body rather than being assumed to be this one.
      */
     private static function factory(string $fqcn, string $method): ?ReflectionMethod
     {
@@ -142,6 +139,6 @@ final class FactoryStatus
 
         $factory = $class->getMethod($method);
 
-        return $factory->isStatic() && $factory->getDeclaringClass()->getName() === $fqcn ? $factory : null;
+        return $factory->isStatic() ? $factory : null;
     }
 }

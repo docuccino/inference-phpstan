@@ -88,14 +88,38 @@ final class FileAnalyzer
     }
 
     /**
-     * Keyed by start line — how an exception-handler render callback is located, since `ReflectionFunction`
-     * gives us file+line and nothing else.
+     * The file's closures by START OFFSET, which is what a caller holding the `Closure` node asks with.
+     * Keyed by offset rather than by line for the reason {@see scopeAtCall()} is: an offset is unique per
+     * node and survives a re-parse, and two closures written on one line are two bodies a line-keyed map
+     * answers the last of for both. {@see closureAtLine()} is the ask a caller with only a line makes.
      *
      * @return array<int, ClosureReturnStatementsNode>
      */
     public function closures(string $file): array
     {
         return $this->harvest($file)['closures'];
+    }
+
+    /**
+     * The closure starting at `$line`, for the caller that has no offset to ask with: an
+     * exception-handler render callback, which `ReflectionFunction` gives us as file+line and nothing
+     * else. Null where the line carries more than one, which reflection cannot tell apart — answering
+     * either would publish one callback's response as the other's.
+     */
+    public function closureAtLine(string $file, int $line): ?ClosureReturnStatementsNode
+    {
+        $found = null;
+        foreach ($this->closures($file) as $closure) {
+            if ($closure->getClosureExpr()->getStartLine() !== $line) {
+                continue;
+            }
+            if ($found !== null) {
+                return null;
+            }
+            $found = $closure;
+        }
+
+        return $found;
     }
 
     /**
@@ -182,7 +206,7 @@ final class FileAnalyzer
 
         /** @var array<string, MethodReturnStatementsNode> $methods `Class::method` → its returns */
         $methods = [];
-        /** @var array<int, ClosureReturnStatementsNode> $closures */
+        /** @var array<int, ClosureReturnStatementsNode> $closures by start offset */
         $closures = [];
         /** @var array<string, array<string, Node\Expr\Array_>> $arrays */
         $arrays = [];
@@ -203,8 +227,10 @@ final class FileAnalyzer
             }
 
             // @phpstan-ignore phpstanApi.instanceofAssumption
-            if ($node instanceof ClosureReturnStatementsNode) {
-                $closures[$node->getClosureExpr()->getStartLine()] = $node;
+            if ($node instanceof ClosureReturnStatementsNode
+                && $node->getClosureExpr()->getStartFilePos() >= 0
+            ) {
+                $closures[$node->getClosureExpr()->getStartFilePos()] = $node;
             }
 
             // The two call forms whose arguments a status read folds ({@see scopeAtCall()}), paired with the

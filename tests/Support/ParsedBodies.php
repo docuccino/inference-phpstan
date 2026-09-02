@@ -18,11 +18,15 @@ use PhpParser\ParserFactory;
  * constant evaluator with `constant()` behind it, so a class constant folds the way the analyser folds it.
  * Names are resolved as PHPStan resolves them, which is what the class-name comparisons downstream expect.
  *
- * Where it differs from the analyser is the one place nothing asks it to agree: a trait's methods are keyed
- * under the TRAIT here and under the using class there, and a class that uses a trait declines before
- * either is read. The scope at a call is not modelled at all — a constant folds the same wherever it is
- * asked, and a VARIABLE folds nowhere here, which is what the analyser answers too for a parameter whose
- * callers it cannot see.
+ * A trait is where the two are built differently and answer alike. Parsing a trait's file keys its methods
+ * under the TRAIT; the analyser's walk of that file holds no method bodies AT ALL, because PHPStan analyses
+ * a trait's body in the context of each using class — measured as `keys=[]`. So neither reader answers
+ * `methods(<trait file>, <using class>)`, and a factory a trait writes declines on both sides —
+ * `ThrowStatusTest` carries the real-engine row that says so.
+ *
+ * The scope at a call is not modelled at all — a constant folds the same wherever it is asked, and a
+ * VARIABLE folds nowhere here, which is what the analyser answers too for a parameter whose callers it
+ * cannot see.
  *
  * @phpstan-type ParsedFile array<string, array<string, array{
  *     stmts: array<array-key, Node\Stmt>,

@@ -273,7 +273,7 @@ final class PhpStanTypeEngine implements TypeEngine
     {
         $method = $callable->method;
         $node = $method === null
-            ? ($this->fileAnalyzer->closures($callable->file)[$callable->line] ?? null)
+            ? $this->fileAnalyzer->closureAtLine($callable->file, $callable->line)
             : $this->fileAnalyzer->method($callable->file, $callable->class, $method);
 
         if (! $node instanceof ReturnStatementsNode) {

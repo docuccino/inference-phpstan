@@ -124,16 +124,21 @@ it('recovers an invokable renderer’s shape via method analysis of __invoke', f
     expect($keys)->toContain('type', 'title', 'status', 'instance');
 })->group('fixture');
 
-it('recovers a per-exception render-callback closure by file+line', function (): void {
+/** The 1-based line of the first line in `RenderCallbacks.php` containing `$needle`. */
+function renderCallbackLine(string $needle): int
+{
     $source = (string) file_get_contents(FixtureRunner::path('app/Exceptions/RenderCallbacks.php'));
-    $line = 0;
     foreach (explode("\n", $source) as $index => $text) {
-        if (str_contains($text, 'function (OutOfStockException')) {
-            $line = $index + 1;
-
-            break;
+        if (str_contains($text, $needle)) {
+            return $index + 1;
         }
     }
+
+    return 0;
+}
+
+it('recovers a per-exception render-callback closure by file+line', function (): void {
+    $line = renderCallbackLine('function (OutOfStockException');
     expect($line)->toBeGreaterThan(0);
 
     $analysis = ActionAnalysis::fromArray(FixtureRunner::analyzeCallable(
@@ -151,6 +156,26 @@ it('recovers a per-exception render-callback closure by file+line', function ():
 
     $keys = array_map(static fn (array $f): string => $f['key'] ?? '', $type->typeArgs[0]->toArray()['fields'] ?? []);
     expect($keys)->toContain('error', 'detail');
+})->group('fixture');
+
+it('recovers nothing for a line carrying TWO render callbacks', function (): void {
+    // A callback is located by what `ReflectionFunction` reports, which is a file and a line — and two
+    // closures written on one line share both. Neither can be told from the other, so the honest answer is
+    // no body at all: answering either would publish one renderer's 409 for the exception the other
+    // handles, and the 423 beside it would never be published for anything.
+    $line = renderCallbackLine('return [function (OutOfStockException');
+    expect($line)->toBeGreaterThan(0);
+
+    $analysis = ActionAnalysis::fromArray(FixtureRunner::analyzeCallable(
+        'app/Exceptions/RenderCallbacks.php',
+        '',
+        '',
+        line: $line,
+    ));
+
+    expect($analysis->returns)->toBe([])
+        ->and(array_map(static fn ($d): string => $d->code, $analysis->diagnostics))
+        ->toContain('inference.callable-not-found');
 })->group('fixture');
 
 /**

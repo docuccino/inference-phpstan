@@ -7,9 +7,11 @@ use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Http\ProbeBranchingFactor
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Http\ProbeFactory;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Http\ProbeIndirectFactory;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Http\ProbeInheritsFactory;
+use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Http\ProbeInheritsSelfFactory;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Http\ProbeMovedStatus;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Http\ProbeNamedFactory;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Http\ProbeOverridingFactory;
+use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Http\ProbeOwnAndInheritedFactory;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Http\ProbePinsWithFactory;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Http\ProbePlain;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Http\ProbeScanFactory;
@@ -24,7 +26,7 @@ use Docuccino\Inference\PhpStan\Throwing\HttpExceptionStatus;
  * The one hop from a `throw X::y()` into the factory it names, over REAL exception classes: the hierarchy,
  * the visibility and the constructor defaults are reflection over the probes, and only the bodies and the
  * fold come from a source. That the analyser hands over the same bodies is the fixture group's job
- * ({@see ThrowCasesTest}); everything the hop DECIDES is decided here.
+ * ({@see ThrowStatusTest}); everything the hop DECIDES is decided here.
  */
 function factoryStatuses(bool $projectSeesTheFile = true): FactoryStatus
 {
@@ -57,7 +59,14 @@ it('reads the status the factory named at the throw builds with', function (stri
     // The constructor moves the status it was handed, so what the factory puts in the slot is not what the
     // response is — and reading the default it left empty would publish a 422 for a 400.
     'a factory of a class whose constructor moves the status' => [ProbeMovedStatus::class, 'none', null],
-    'a factory the class inherits rather than declares' => [ProbeInheritsFactory::class, 'unavailable', null],
+    // A factory a BASE declares is how the class is built too: its `new static(…)` builds whichever class
+    // was entered, so `ProbeInheritsFactory::unavailable()` really is a 503.
+    'a factory the class inherits, building `static`' => [ProbeInheritsFactory::class, 'unavailable', 503],
+    // …read per factory, so a class whose own and inherited factories DISAGREE still answers each of them.
+    'the base\'s factory on a class that also declares one' => [ProbeOwnAndInheritedFactory::class, 'unavailable', 503],
+    'that class\'s own factory beside it' => [ProbeOwnAndInheritedFactory::class, 'tooLarge', 413],
+    // …and the other half: a base naming `self` builds the BASE, whose 410 is another class's status.
+    'a factory the class inherits, building `self`' => [ProbeInheritsSelfFactory::class, 'gone', null],
     'a factory a trait writes, in another file' => [ProbeTraitFactory::class, 'conflicting', null],
     'an instance method, which no factory throw names' => [ProbeScanFactory::class, 'detail', null],
     'a method the class does not have' => [ProbeScanFactory::class, 'nope', null],

@@ -82,6 +82,25 @@ final class FixtureRunner
     }
 
     /**
+     * As {@see traceQb()} under mutated descent bounds, plus the dependency files the walk reported.
+     * The bounds are what makes the Tracer's reachability frontier measurable: a budget or a depth one
+     * short of the chain has to stop recovering exactly the fact the missing hop was carrying.
+     *
+     * @return array<string, mixed>
+     */
+    public static function traceQbBounds(int $fileBudget, int $traceDepth, string $controllerRelPath, string $class, string $method): array
+    {
+        return self::invoke(
+            'trace-qb-bounds',
+            (string) $fileBudget,
+            (string) $traceDepth,
+            self::path($controllerRelPath),
+            $class,
+            $method,
+        );
+    }
+
+    /**
      * Trace a controller with the real QueryBuilderTraceVisitor, then enrich its exact filters with the
      * real FilterColumnResolver: returns the recovered subject model plus, per filter, the resolved
      * column cast shape (enum FQCN + backing values + case descriptions, or a native scalar schema).

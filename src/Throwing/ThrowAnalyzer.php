@@ -18,7 +18,9 @@ use Docuccino\Inference\PhpStan\Trace\Callee;
 use Docuccino\Inference\PhpStan\Trace\CalleeResolver;
 use PhpParser\Node;
 use PHPStan\Analyser\Scope;
+use PHPStan\Node\ClosureReturnStatementsNode;
 use PHPStan\Node\MethodReturnStatementsNode;
+use PHPStan\Node\ReturnStatementsNode;
 use PHPStan\Reflection\ReflectionProvider;
 use PHPStan\Type\Constant\ConstantIntegerType;
 use PHPStan\Type\Type;
@@ -37,9 +39,11 @@ use PHPStan\Type\Type;
  * A status comes from {@see KnownThrowers} where a name-keyed entry has one, and otherwise from what an
  * `HttpException` subclass sets on itself ({@see HttpExceptionStatus}) or, for a class that sets none, from
  * the construction THIS throw makes — the arguments of a `throw new X(…)`, or the `new` inside the static
- * factory it names ({@see FactoryStatus}). Only when none of them speaks is the answer the 500 that means
- * "not an HTTP error at all" — which is the fallback {@see ThrowSignal} reads to tell an API error from
- * vendor plumbing.
+ * factory it names ({@see FactoryStatus}). A throw carrying no construction at all — one inside a closure
+ * the callee runs, one written in a trait and declared at the caller, a rethrow — falls back to the status
+ * every construction the class writes of itself agrees on. Only when none of them speaks is the answer the
+ * 500 that means "not an HTTP error at all" — which is the fallback {@see ThrowSignal} reads to tell an API
+ * error from vendor plumbing.
  *
  * Result identity is `(fqcn, httpStatusHint)` — two aborts (403/404) are two responses, so never dedupe by
  * FQCN alone. Vendor-declared 500-class exceptions are demoted to `internal`; dropped bare-`Throwable`
@@ -64,7 +68,10 @@ final class ThrowAnalyzer
         private readonly CalleeResolver $calleeResolver,
         private readonly HttpExceptionStatus $httpExceptionStatus,
         private readonly FactoryStatus $factoryStatus,
-        private readonly int $maxDepth = 3,
+        // No default: the budget is `EngineConfig::$throwDepth` and nowhere else. A second copy here
+        // was dead — the one construction always passes the config's — and it read as the real one, so
+        // changing it moved nothing while looking like it had.
+        private readonly int $maxDepth,
     ) {}
 
     /**
@@ -121,7 +128,7 @@ final class ThrowAnalyzer
      * @return list<ThrownException>
      */
     private function analyzeMethod(
-        MethodReturnStatementsNode $methodNode,
+        ReturnStatementsNode $methodNode,
         string $selfLabel,
         int $depth,
         array $visited,
@@ -137,6 +144,12 @@ final class ThrowAnalyzer
             $calleeName = $this->calleeResolver->name($node);
             $callee = $this->calleeResolver->resolve($node, $scope);
             $frame = $this->frame($selfLabel, $scope, $node);
+
+            // Layer 3': a closure handed to the callee. Ahead of the layers because they each `continue`,
+            // and because the callee's own answer says nothing about what the closure it runs throws.
+            foreach ($this->applyClosures($node, $scope, $selfLabel, $depth, $visited, $priorChain, $frame) as $result) {
+                $results[] = $result;
+            }
 
             // Layer 2: KnownThrowers registry, keyed on the callee name — for callees we cannot read.
             $registryResult = $this->applyRegistry($calleeName, $callee, $node, $scope, $type, $explicit, $priorChain, $frame);
@@ -255,6 +268,13 @@ final class ThrowAnalyzer
         $calleeIsProject = ! $isLiteral && $callee !== null
             && $this->projectFilter->isProjectFile($callee->file);
 
+        // The `@throws` this point is reading is WRITTEN in the callee — a trait's guard clause, a service
+        // method — so that file decides which exception the route publishes and joins the dependency set.
+        // Descent records its callee for the same reason; an explicit point never reaches descent.
+        if ($calleeIsProject) {
+            $this->dependOn([$callee->file, $callee->writtenIn()]);
+        }
+
         $results = [];
         foreach ($this->concreteClasses($type) as $class) {
             $resolution = $this->statusForType($class, $node, $scope);
@@ -295,7 +315,8 @@ final class ThrowAnalyzer
             return []; // cycle guard — treated as descended (no drop)
         }
 
-        $this->visitedFiles[$callee->file] = true;
+        // Both files: the harvest comes off the declaring class's, and a trait's body is written in another.
+        $this->dependOn([$callee->file, $callee->writtenIn()]);
         $childNode = $this->fileAnalyzer->method($callee->file, $callee->class, $callee->method);
         if ($childNode === null) {
             return [];
@@ -310,6 +331,77 @@ final class ThrowAnalyzer
             [...$visited, $key],
             [...$priorChain, $frame],
         );
+    }
+
+    /**
+     * The throws of a closure the analysed body hands to the call at this throw point.
+     *
+     * PHPStan scopes a closure separately, so a `throw` inside one reaches the enclosing method as the
+     * CALL that was given the closure — a bare `Throwable` where the callee declares one and nothing at
+     * all where it does not. The closure's own body is where the exception and its status are written, and
+     * {@see FileAnalyzer::closures()} already holds it against the same walk.
+     *
+     * One hop and no further, and no interprocedural analysis: the closure has to be one this body itself
+     * writes, either at the argument or one assignment behind it. Depth is descent's own, so a closure
+     * counts against the same budget a callee does and a callee reached from inside one is bounded by what
+     * the closure spent. There is no vendor gate, because there is no new file to gate: the closure is
+     * written in the body the analysis is already reading, and refusing it would drop a real error from a
+     * route whose action a package happens to ship.
+     *
+     * @param  list<string>  $visited
+     * @param  list<Frame>  $priorChain
+     * @return list<ThrownException>
+     */
+    private function applyClosures(
+        Node $node,
+        Scope $scope,
+        string $selfLabel,
+        int $depth,
+        array $visited,
+        array $priorChain,
+        Frame $frame,
+    ): array {
+        if ($depth >= $this->maxDepth
+            || ! $node instanceof Node\Expr\CallLike
+            || $node->isFirstClassCallable()
+        ) {
+            return [];
+        }
+
+        $results = [];
+        foreach ($node->getArgs() as $argument) {
+            $closure = $this->closureArgument($argument->value, $scope);
+            if ($closure === null) {
+                continue;
+            }
+
+            $this->dependOn([$scope->getFile()]);
+
+            // `$visited` travels through untouched: a closure is not a callee anyone can cycle back into,
+            // and the depth it spends is what bounds it. What it must not do is lose the callees the path
+            // has already descended into, which is what that list is.
+            foreach ($this->analyzeMethod(
+                $closure,
+                $selfLabel.'::{closure}',
+                $depth + 1,
+                $visited,
+                [...$priorChain, $frame],
+            ) as $result) {
+                $results[] = $result;
+            }
+        }
+
+        return $results;
+    }
+
+    /** The harvested closure one argument is — written at the call, or held in a local behind it. */
+    private function closureArgument(Node\Expr $expr, Scope $scope): ?ClosureReturnStatementsNode
+    {
+        [$written] = $this->localValue($expr, $scope);
+
+        return $written instanceof Node\Expr\Closure
+            ? ($this->fileAnalyzer->closures($scope->getFile())[$written->getStartFilePos()] ?? null)
+            : null;
     }
 
     /**
@@ -366,12 +458,26 @@ final class ThrowAnalyzer
             $node,
             $argIndex,
             $constructor,
-            static function (Node\Expr $argument) use ($scope): ?int {
+            function (Node\Expr $argument) use ($scope): ?int {
+                // A `throw new X(HttpStatus::CONFLICT)` takes its status from another file's declaration,
+                // which then decides what this route publishes ({@see ConstantSource}).
+                $this->dependOn(ConstantSource::files($argument, $scope->getClassReflection()?->getName()));
+
                 $type = $scope->getType($argument);
 
                 return $type instanceof ConstantIntegerType ? $type->getValue() : null;
             },
         );
+    }
+
+    /**
+     * @param  list<string>  $files
+     */
+    private function dependOn(array $files): void
+    {
+        foreach ($files as $file) {
+            $this->visitedFiles[$file] = true;
+        }
     }
 
     /**
@@ -432,17 +538,30 @@ final class ThrowAnalyzer
 
     /**
      * What an `HttpException` subclass's status is here: the one the class pins on every instance, else the
-     * one THIS throw builds it with. Null when neither reads, which earns the class one diagnostic
-     * ({@see diagnostics()}).
+     * one THIS throw builds it with — and where the throw carries no construction at all, the one every
+     * construction the class writes of itself agrees on ({@see HttpExceptionStatus::agreed()}). Null when
+     * none of them reads, which earns the class one diagnostic ({@see diagnostics()}).
+     *
+     * The order is what keeps the last of those honest. A site that DID present a construction has already
+     * said what this response is, and a `throw new X($chosenAtRunTime)` that would not fold has said the
+     * class's agreement is not it — so the class answers only where nothing at the site could.
      */
     private function httpStatus(string $fqcn, Node $node, Scope $scope): ?int
     {
         // The class's own file now decides what this route publishes, so it joins the dependency set.
-        foreach ($this->httpExceptionStatus->filesFor($fqcn) as $file) {
-            $this->visitedFiles[$file] = true;
-        }
+        $this->dependOn($this->httpExceptionStatus->filesFor($fqcn));
 
-        $status = $this->httpExceptionStatus->pinned($fqcn) ?? $this->atThrowSite($fqcn, $node, $scope);
+        $status = $this->httpExceptionStatus->pinned($fqcn);
+        if ($status === null) {
+            $site = $this->atThrowSite($fqcn, $node, $scope);
+            if ($site['spoke']) {
+                $status = $site['status'];
+            } else {
+                $agreement = $this->httpExceptionStatus->agreed($fqcn);
+                $status = $agreement['status'];
+                $this->dependOn($agreement['files']);
+            }
+        }
 
         // Only where the author can act. A vendor exception's status is unreadable for a reason no one
         // reading the notice owns, and the remedy it names is an edit to `vendor/` — the non-actionable
@@ -462,39 +581,83 @@ final class ThrowAnalyzer
     }
 
     /**
-     * The status a literal `throw` states for a class that pins none: the argument it writes into the slot
-     * the class forwards, or — where it names a static factory instead — the one that factory builds with.
-     * A throw point that merely DECLARES the exception says nothing about what it was constructed with.
+     * The status a `throw` states for a class that pins none: the argument it writes into the slot the
+     * class forwards, or — where it names a static factory instead — the one that factory builds with.
+     * Read off the construction the throw names, which is the one written at it or one assignment behind
+     * it ({@see localValue()}).
+     *
+     * `spoke` says whether the site PRESENTED a construction at all, which is a different fact from what
+     * that construction folded to. A throw point that merely declares the exception, a rethrow of one
+     * this body did not build, a throw built somewhere this hop is not entitled to read — none of them say
+     * anything about how the exception was constructed, and only there may the class answer for itself. A
+     * construction that presented itself and would not fold has spoken: it says the response is whatever
+     * was chosen at run time, which the class's own agreement is no evidence for.
+     *
+     * @return array{status: int|null, spoke: bool}
      */
-    private function atThrowSite(string $fqcn, Node $node, Scope $scope): ?int
+    private function atThrowSite(string $fqcn, Node $node, Scope $scope): array
     {
         if (! $node instanceof Node\Expr\Throw_) {
-            return null;
+            return ['status' => null, 'spoke' => false];
         }
+
+        [$thrown, $scope] = $this->localValue($node->expr, $scope);
 
         $slot = $this->httpExceptionStatus->statusParameter($fqcn);
-        $construction = $this->construction($node->expr, $fqcn, $scope);
+        $construction = $this->construction($thrown, $fqcn, $scope);
         if ($construction !== null) {
-            return $slot === null ? null : $this->foldStatusArg(
-                $construction,
-                $scope,
-                $slot,
-                $this->httpExceptionStatus->constructorSlot($fqcn, $slot),
-            );
+            return [
+                'status' => $slot === null ? null : $this->foldStatusArg(
+                    $construction,
+                    $scope,
+                    $slot,
+                    $this->httpExceptionStatus->constructorSlot($fqcn, $slot),
+                ),
+                'spoke' => true,
+            ];
         }
 
-        $factory = $this->factoryName($node->expr, $fqcn, $scope);
+        $factory = $this->factoryName($thrown, $fqcn, $scope);
         if ($factory === null) {
-            return null;
+            return ['status' => null, 'spoke' => false];
         }
 
         $read = $this->factoryStatus->forFactory($fqcn, $factory);
         // The factory's file decides what this route publishes too, so it joins the dependency set.
-        foreach ($read['files'] as $file) {
-            $this->visitedFiles[$file] = true;
+        $this->dependOn($read['files']);
+
+        return ['status' => $read['status'], 'spoke' => true];
+    }
+
+    /**
+     * What an expression really names, with the scope that value is written in: the expression itself, or —
+     * where it is a local — the one this body assigned to it exactly once. `$e = new X(451); … throw $e;`
+     * builds its status one statement behind the throw, and a reader that only matched at the throw called
+     * that site silent and let the class's own agreement answer over the top of a construction the code
+     * really made; `$reject = function () { … }; $db->transaction($reject);` hands a body over one
+     * assignment back the same way.
+     *
+     * A local written twice, bound by a `catch`, or taken from a parameter answers null from
+     * {@see FileAnalyzer::localAssignments()}, and the variable stands — which is the rethrow that says
+     * nothing about how the exception was built.
+     *
+     * The scope travels with the expression because a fold happens where the value is WRITTEN, for the
+     * reason {@see FileAnalyzer::scopeAtCall()} states.
+     *
+     * @return array{Node\Expr, Scope}
+     */
+    private function localValue(Node\Expr $expr, Scope $scope): array
+    {
+        if (! $expr instanceof Node\Expr\Variable || ! is_string($expr->name)) {
+            return [$expr, $scope];
         }
 
-        return $read['status'];
+        $key = FileAnalyzer::scopeKey($scope);
+        $assigned = $key === null
+            ? null
+            : ($this->fileAnalyzer->localAssignments($scope->getFile())[$key][$expr->name] ?? null);
+
+        return $assigned === null ? [$expr, $scope] : $assigned;
     }
 
     /** The `new X(...)` a thrown expression is, where X is the exception the status is wanted for. */

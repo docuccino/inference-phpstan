@@ -2,10 +2,7 @@
 
 declare(strict_types=1);
 
-use Docuccino\Core\Draft\OperationDraft;
 use Docuccino\Core\Inference\ClassMetadata;
-use Docuccino\Core\Pipeline\FragmentCache;
-use Docuccino\Core\Pipeline\OperationFragment;
 use Docuccino\Inference\PhpStan\Tests\Support\FixtureRunner;
 
 /**
@@ -72,29 +69,8 @@ it('invalidates a cached fragment when the file the shape was inherited from is 
     // The end of the chain, through the real cache: the recovered dependency list is what a fragment
     // stores, and editing any file on it has to make the entry stale.
     $dependencies = metadataFor('App\\Data\\ListingSummaryData')->dependencyFiles;
-    $path = FixtureRunner::path($edited);
-    $before = file_get_contents($path);
-    expect($before)->toBeString();
 
-    $dir = sys_get_temp_dir().'/docuccino-inherited-deps-'.uniqid('', true);
-    $cache = static fn (): FragmentCache => new FragmentCache(true, $dir, 't', 's', 'i');
-    $key = 'inherited-shape';
-
-    try {
-        $cache()->put($key, new OperationFragment('/listings', 'get', (new OperationDraft)->freeze(), 'GET /listings'), $dependencies);
-
-        // Warm to begin with — otherwise the row would pass with the whole dependency list dropped.
-        expect($cache()->get($key))->not->toBeNull();
-
-        file_put_contents($path, $before."\n// edited\n");
-
-        expect($cache()->get($key))->toBeNull();
-    } finally {
-        file_put_contents($path, (string) $before);
-        array_map('unlink', glob($dir.'/*') ?: []);
-        @unlink($dir.'/.gitignore');
-        @rmdir($dir);
-    }
+    expect(fragmentAcrossDependencyEdit($dependencies, $edited))->toBe(['warm' => true, 'staleAfterEdit' => true]);
 })->with([
     'the parent class' => ['app/Data/BaseListingData.php'],
     'the trait' => ['app/Data/Concerns/HasRevision.php'],

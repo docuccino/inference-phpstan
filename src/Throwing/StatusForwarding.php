@@ -11,8 +11,8 @@ use PhpParser\NodeFinder;
 
 /**
  * The statements half of {@see HttpExceptionStatus}: what a constructor hands its parent in one argument
- * slot, whether the constructor moves that value before handing it over, and whether the class ever builds
- * itself writing that same slot. Nothing here resolves a type, so it answers off the parse alone.
+ * slot, whether the constructor moves that value before handing it over, and every `new` a body makes of
+ * the class. Nothing here resolves a type, so it answers off the parse alone.
  *
  * @internal
  */
@@ -90,53 +90,32 @@ final class StatusForwarding
     }
 
     /**
-     * Whether anything in `$statements` builds `$class` itself and writes `$slot` — the factory that
-     * rejects with a 409 where its siblings all take the default. One of those and the default speaks for
-     * some of the class's instances and not all, which is not a status the class pins.
+     * Every `new` in a body that builds `$target` — a factory's own, and one nested in a closure it
+     * carries. `$declaring` is the class the body is WRITTEN in, which is what decides whether the two
+     * relative names build the target: `new static` does wherever it is written, and `new self` only
+     * where the body is the target's own. A base's `new self(…)` builds the base.
      *
-     * A slot nothing can be said about counts as written, on both the forms that hide one: a first-class
-     * callable, whose arguments are supplied somewhere this build cannot read, and the tail past an
-     * unreadable spread ({@see ArgumentSlots::knows()}), where the argument may well be there and reading
-     * its absence as "the default was taken" would publish a status the call never passed.
-     *
-     * @param  array<array-key, Node\Stmt>  $statements
-     * @param  list<string>  $paramNames  the constructor's parameters in declaration order
-     */
-    public static function writesSlot(array $statements, string $class, int $slot, array $paramNames): bool
-    {
-        foreach (self::constructionsOf($statements, $class) as $construction) {
-            if ($construction->isFirstClassCallable()) {
-                return true;
-            }
-
-            $slots = ArgumentSlots::of($construction->getArgs(), $paramNames);
-            if (! $slots->knows($slot) || $slots->at($slot) !== null) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Every `new` in a body that builds `$class` — a factory's own, and one nested in a closure it carries.
+     * Named rather than defaulted, because the default that reads well here — the body is the target's
+     * own — is the exact wrong answer for the body this read exists to walk: a base's, where `new self`
+     * builds the base and calling it the target publishes another class's status.
      *
      * @param  array<array-key, Node\Stmt>  $statements
      * @return list<Node\Expr\New_>
      */
-    public static function constructionsOf(array $statements, string $class): array
+    public static function constructionsOf(array $statements, string $target, string $declaring): array
     {
         /** @var list<Node\Expr\New_> $constructions */
         $constructions = (new NodeFinder)->find(
             $statements,
-            static fn (Node $node): bool => $node instanceof Node\Expr\New_ && self::constructs($node, $class),
+            static fn (Node $node): bool => $node instanceof Node\Expr\New_
+                && self::constructs($node, $target, $declaring),
         );
 
         return $constructions;
     }
 
-    /** Whether a `new` builds `$class` — by name, or through the `self`/`static` that mean it here. */
-    private static function constructs(Node\Expr\New_ $node, string $class): bool
+    /** Whether a `new` written in `$declaring` builds `$target` — by name, or through `self`/`static`. */
+    private static function constructs(Node\Expr\New_ $node, string $target, string $declaring): bool
     {
         if (! $node->class instanceof Node\Name) {
             return false;
@@ -144,8 +123,10 @@ final class StatusForwarding
 
         $lowered = $node->class->toLowerString();
 
-        return $lowered === 'self'
-            || $lowered === 'static'
-            || $lowered === strtolower(ltrim($class, '\\'));
+        // Late static binding: `new static` builds whichever class was entered, so a base's builds the
+        // subclass. `new self` names the class the line is written in, which is the target only there.
+        return $lowered === 'static'
+            || ($lowered === 'self' && $declaring === $target)
+            || $lowered === strtolower(ltrim($target, '\\'));
     }
 }

@@ -21,6 +21,7 @@ declare(strict_types=1);
  *   php engine-runner.php trace-qb                  <controllerFile> <class> <method>
  *   php engine-runner.php trace-qb-replay           <controllerFile> <class> <method>
  *   php engine-runner.php trace-qb-enrich           <controllerFile> <class> <method>
+ *   php engine-runner.php trace-qb-bounds           <fileBudget> <traceDepth> <controllerFile> <class> <method>
  *   php engine-runner.php trace-rules               <file> <class> <method>
  *   php engine-runner.php trace-inline-rules        <controllerFile> <class> <method>
  *   php engine-runner.php trace-json-api-paginate   <controllerFile> <class> <method>
@@ -110,6 +111,14 @@ $line = (int) ($argv[5] ?? 0);
 $narrowParam = ($argv[6] ?? '') === '' ? null : $argv[6];
 $narrowType = ($argv[7] ?? '') === '' ? null : $argv[7];
 
+// trace-qb-bounds leads with the two descent bounds, the way refine-pair does, so its action arrives
+// two positions further along.
+if ($mode === 'trace-qb-bounds') {
+    $file = $argv[4] ?? '';
+    $class = $argv[5] ?? '';
+    $method = $argv[6] ?? '';
+}
+
 // A unique tmp dir per invocation. PID alone is reused across the many subprocesses a
 // fixture-group run forks, which breaks RuntimeConfig's isolated-per-invocation contract;
 // uniqid() makes it collision-free. Cleaned up on shutdown so runs don't leak.
@@ -131,12 +140,13 @@ register_shutdown_function(static function () use ($tmp): void {
     @rmdir($tmp);
 });
 
-// refine-pair drives the engine with a tiny per-analysis file budget (argv[2]) and descent depth
-// (argv[3]) so a shared helper truncates on a budget-spending path and has headroom on a direct one —
-// the ResponseShapeRefiner's memo-headroom guard, on either bound. Every other mode keeps the real
-// defaults (40 / 4).
+// refine-pair and trace-qb-bounds drive the engine with a tiny per-analysis file budget (argv[2]) and
+// descent depth (argv[3]): the first so a shared helper truncates on a budget-spending path and has
+// headroom on a direct one (the ResponseShapeRefiner's memo-headroom guard), the second so the Tracer's
+// own reachability frontier can be measured at each bound. Every other mode keeps the real defaults (40 / 4).
 $engineConfig = EngineConfig::forProjectWithVendor($app.'/vendor', $app.'/app');
-if ($mode === 'refine-pair') {
+$boundedModes = ['refine-pair', 'trace-qb-bounds'];
+if (in_array($mode, $boundedModes, true)) {
     $engineConfig = new EngineConfig(
         $engineConfig->projectPaths,
         $engineConfig->knownThrowers,
@@ -147,10 +157,10 @@ if ($mode === 'refine-pair') {
     );
 }
 
-// Every mode but refine-pair boots through the package's public entry point — the same
-// TypeEngineBuilder seam an adapter probes for — so the real path proves the seam too. refine-pair
-// needs a hand-built EngineConfig (the file budget above), which the builder deliberately doesn't
-// expose, so it goes through the factory directly.
+// Every unbounded mode boots through the package's public entry point — the same TypeEngineBuilder
+// seam an adapter probes for — so the real path proves the seam too. The two bounded modes need a
+// hand-built EngineConfig (the bounds above), which the builder deliberately doesn't expose, so they
+// go through the factory directly.
 //
 // Prime scope (bodies preserved) covers `modules/` too, so a Query class outside the descend scope
 // isn't body-stripped when the QB trace follows a `$query->query()` hop into it. Descend scope stays
@@ -176,7 +186,7 @@ $adapterFactory = new class($countedAdapters) extends RuntimeAdapterFactory
     }
 };
 
-$engine = $mode === 'refine-pair'
+$engine = in_array($mode, $boundedModes, true)
     ? (new PhpStanEngineFactory)->create(
         new RuntimeConfig($app, $tmp, PHP_VERSION_ID, [$app.'/app', $app.'/modules']),
         $engineConfig,
@@ -252,6 +262,20 @@ $result = match ($mode) {
             'passes' => $passes,
             'first' => $first,
             'second' => $second,
+        ];
+    })(),
+    // The same probe as trace-qb under mutated bounds, plus the files the walk reported: what a budget
+    // or a depth one short of the chain stops recovering, and what it stops depending on.
+    'trace-qb-bounds' => (static function () use ($engine, $ref): array {
+        $probe = new QueryBuilderProbe;
+        $report = $engine->trace($ref, $probe);
+
+        return [
+            'filters' => $probe->allowedFilters,
+            'sorts' => $probe->allowedSorts,
+            'default' => $probe->defaultSort,
+            'terminals' => array_map(static fn (array $terminal): string => $terminal['terminal'], $probe->terminals),
+            'dependencyFiles' => $report->dependencyFiles,
         ];
     })(),
     'trace-qb-enrich' => (static function () use ($engine, $ref): array {
@@ -335,6 +359,7 @@ $result = match ($mode) {
             'pageSizeKey' => $facts->pageSize?->key,
             'pageSizeDefault' => $facts->pageSize?->default,
             'visitedBasenames' => array_map('basename', $dependencyFiles),
+            'dependencyFiles' => $dependencyFiles,
         ];
     })(),
     'trace-rules' => (static function () use ($engine, $ref): array {

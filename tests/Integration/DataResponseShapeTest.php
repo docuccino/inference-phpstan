@@ -168,6 +168,22 @@ it('refuses the same constant behind a `??` default', function (): void {
         ->and($members['title'])->toEqual(new LiteralT('Error'));
 })->group('fixture');
 
+it('leaves a translated member unread rather than folding one locale into the contract', function (): void {
+    // `title: __('errors.forbidden')` is answered by the ANALYSING process, whose `app.locale` is not the
+    // served response's. Folding it would publish one machine's words as the contract and make the
+    // document's bytes a function of the environment that built it, which determinism forbids — so the
+    // member stays supplied-but-unread and is illustrated from its schema instead. This is a decision, not
+    // a limitation: the assertion is here so that adding the fold cannot pass unnoticed.
+    $members = dataProblemShape('DomainException')['members'];
+
+    expect($members)->toHaveKey('title')
+        ->and($members['title'])->not->toBeInstanceOf(LiteralT::class)
+        // The literals beside it still fold, so this is the translator's answer being refused rather than
+        // the whole arm failing to read.
+        ->and($members['status'])->toEqual(new LiteralT(403))
+        ->and($members['detail'])->toEqual(new LiteralT('Something went wrong.'));
+})->group('fixture');
+
 it('does not label a branch with the media type another branch of the same helper set', function (): void {
     // toNegotiatedResponse() builds both branches into `$response`; the plain branch (the one documented,
     // being first) writes no Content-Type, so the body must not inherit the other branch's label.

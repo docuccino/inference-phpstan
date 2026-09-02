@@ -830,6 +830,15 @@ final class ResponseShapeRefiner
 
     /**
      * Null when the argument doesn't fold to a single scalar — a folded `null` isn't a documentable literal.
+     *
+     * A value the ANALYSING process could compute and the served response would not is out of scope here
+     * on purpose, and the commonest is a translated string: a problem document's `title` written as
+     * `__($key)` reads as a constant to anyone holding one locale, and folding it would publish that
+     * locale's words as the contract and change the document's bytes with `app.locale` — which
+     * determinism forbids. The clock and the environment are the same argument. Such a member stays
+     * unread and is illustrated from its schema, which is the honest half of what is known about it.
+     * A value the fold CAN read and must still refuse is a different rule, and lives in
+     * {@see SensitiveConstant}.
      */
     private function constLiteralOf(Node\Expr $expr, Scope $scope): ?LiteralT
     {

@@ -6,7 +6,9 @@ namespace Docuccino\Inference\PhpStan\Trace;
 
 use PhpParser\Node;
 use PHPStan\Analyser\Scope;
+use PHPStan\Reflection\ClassReflection;
 use PHPStan\Reflection\ReflectionProvider;
+use ReflectionException;
 
 /**
  * The one call-resolution service for both the {@see Tracer} and the throw analyzer, on PHPStan's
@@ -76,9 +78,44 @@ final class CalleeResolver
                 return null; // PHP-internal / stub-only ⇒ vendor terminal
             }
 
-            return new Callee($declaring->getName(), $method, $file);
+            return new Callee($declaring->getName(), $method, $file, self::writtenIn($declaring, $method));
         }
 
         return null; // magic / forwarded / unresolvable ⇒ vendor terminal
+    }
+
+    /**
+     * The trace's own root, which arrives as a class/method/file rather than as a call to resolve: the
+     * declaration read is the same one every callee gets, so a trait-imported action is keyed like a
+     * trait-imported callee.
+     */
+    public function root(string $class, string $method, string $file): Callee
+    {
+        $declaring = $this->reflectionProvider->hasClass($class) ? $this->reflectionProvider->getClass($class) : null;
+
+        return new Callee($class, $method, $file, $declaring === null ? null : self::writtenIn($declaring, $method));
+    }
+
+    /**
+     * Where the method's own body is written, which for a TRAIT's method is not the declaring class's file:
+     * PHP reports the member as the using class's, and only asking the METHOD names the file it was copied
+     * from. Asked through the analyser's own reflection, which locates a declaration by reading files —
+     * never `new ReflectionMethod($name, …)`, whose first act is to autoload `$name`, and autoloading a
+     * class executes the file that declares it. This runs for every callee a trace resolves, vendor
+     * included, so that would be the generator running arbitrary analysed code: a top-level side effect,
+     * or a declaration that fatals with an `E_COMPILE_ERROR` no `catch` can reach.
+     *
+     * Null wherever the declaration cannot be located — a stub, a magic forward — leaving
+     * {@see Callee::writtenIn()} on the declaring class's own file.
+     */
+    private static function writtenIn(ClassReflection $class, string $method): ?string
+    {
+        try {
+            $file = $class->getNativeReflection()->getMethod($method)->getFileName();
+        } catch (ReflectionException) {
+            return null; // a member only the provider knows: an `@method`, a magic forward
+        }
+
+        return $file === false ? null : $file;
     }
 }

@@ -36,6 +36,10 @@ use Throwable;
  * The per-file walk comes from {@see FileWalks}, which is why tracing a route the analysis already looked at
  * costs no second pass over its controller.
  *
+ * File accounting is {@see TraceFiles}: what the walk may still afford to open is a separate question from
+ * what the fragment it feeds invalidates on, so a body written in a trait is recorded without ever costing
+ * the traversal a slot.
+ *
  * @internal
  */
 final class Tracer
@@ -43,8 +47,8 @@ final class Tracer
     /** @var array<string, true> memoised class::method */
     private array $visited = [];
 
-    /** @var array<string, true> every file the walk located/analysed */
-    private array $visitedFiles = [];
+    /** Every file the walk read from, and the budget it spends opening them ({@see TraceFiles}). */
+    private readonly TraceFiles $files;
 
     /**
      * Return folds requested during the current method's walk, drained by {@see foldPending()}.
@@ -65,29 +69,42 @@ final class Tracer
         private readonly ReturnValueFolder $returnFolder,
         private readonly TraceVisitor $visitor,
         private readonly int $maxDepth = 4,
-        private readonly int $fileBudget = 40,
+        int $fileBudget = 40,
         ?string $vendorPath = null,
     ) {
+        $this->files = new TraceFiles($fileBudget);
         $this->vendorPrefix = $vendorPath === null ? null : rtrim($adapter->normalize($vendorPath), '/');
     }
 
     public function run(string $class, string $method, string $file, int $depth = 0): void
     {
-        $key = $class.'::'.$method;
-        if ($depth > $this->maxDepth || isset($this->visited[$key]) || ! $this->admitFile($file)) {
+        $this->enter($this->calleeResolver->root($class, $method, $file), $depth);
+    }
+
+    /**
+     * Walk one method, then descend. The file recorded is the one the body is WRITTEN in as well as the
+     * one the walk opens: PHP inlines a trait's method into the using class's file, so the entries a
+     * trait's body carries are harvested from a file no fragment would otherwise depend on
+     * ({@see TraceFiles::depend()}).
+     */
+    private function enter(Callee $callee, int $depth): void
+    {
+        $key = $callee->key();
+        if ($depth > $this->maxDepth || isset($this->visited[$key]) || ! $this->files->admit($callee->file)) {
             return;
         }
         $this->visited[$key] = true;
+        $this->files->depend($callee->writtenIn());
 
         /** @var list<array{callee: Callee, pos: int}> $descend */
         $descend = [];
 
         try {
-            $this->walks->walk($file, function (Node $node, Scope $scope) use ($class, $method, $depth, &$descend): void {
+            $this->walks->walk($callee->file, function (Node $node, Scope $scope) use ($callee, $depth, &$descend): void {
                 // Confine the walk to the target method. Matching class + function name also excludes
                 // closures for free (their function name won't match) — no method stack needed.
-                if ($scope->getClassReflection()?->getName() !== $class
-                    || $scope->getFunction()?->getName() !== $method
+                if ($scope->getClassReflection()?->getName() !== $callee->class
+                    || $scope->getFunction()?->getName() !== $callee->method
                 ) {
                     return;
                 }
@@ -106,17 +123,17 @@ final class Tracer
                     return;
                 }
 
-                $callee = $this->calleeResolver->resolve($node, $scope);
-                if ($callee === null) {
+                $resolved = $this->calleeResolver->resolve($node, $scope);
+                if ($resolved === null) {
                     return; // magic / unresolvable / PHP-internal — the engine declines
                 }
-                if (! $this->projectFilter->isProjectFile($callee->file)
-                    && ! $this->shouldFollowBeyondProject($node, $callee, $scope)
+                if (! $this->projectFilter->isProjectFile($resolved->file)
+                    && ! $this->shouldFollowBeyondProject($node, $resolved, $scope)
                 ) {
                     return; // vendor, or outside project paths with no return-type follow — declined
                 }
 
-                $descend[] = ['callee' => $callee, 'pos' => SourceOrder::of($node)];
+                $descend[] = ['callee' => $resolved, 'pos' => SourceOrder::of($node)];
             });
         } finally {
             // Every queued fold is answered, even when the walk blew up — a visitor that reserved a slot
@@ -125,7 +142,9 @@ final class Tracer
         }
 
         // Order by source position — PHPStan's callback order for a chained expression is not
-        // left-to-right — and let first-seen win. Collect then recurse; never nest processNodes.
+        // left-to-right, and {@see SourceOrder} is what makes a chain's links order by the name they are
+        // written with rather than by the receiver offset they share — and let first-seen win. Collect
+        // then recurse; never nest processNodes.
         usort($descend, static fn (array $a, array $b): int => $a['pos'] <=> $b['pos']);
         $seen = [];
         foreach ($descend as $target) {
@@ -134,7 +153,7 @@ final class Tracer
                 continue;
             }
             $seen[$ck] = true;
-            $this->run($target['callee']->class, $target['callee']->method, $target['callee']->file, $depth + 1);
+            $this->enter($target['callee'], $depth + 1);
         }
     }
 
@@ -203,8 +222,14 @@ final class Tracer
     }
 
     /**
-     * Answer this walk's queued folds, in the order they were requested. No visitor runs during a fold, so
-     * the queue cannot grow while it drains. The callee's file goes through {@see admitFile()} like any other.
+     * Answer this walk's queued folds, in the order they were requested — PHPStan's node-callback order,
+     * which is not the order the calls are written. Unlike the descent that is not an ordering the output
+     * can see: a visitor reserves its entry's position BEFORE asking, so the document reads in walk order
+     * whichever fold answers first, and every fold in the corpus resolves into a file the walk already
+     * opened, so none of them compete for the budget either. Ordering them by source position would be a
+     * mechanism with no measured population; it becomes one the day a fold reaches a file of its own.
+     * No visitor runs during a fold, so the queue cannot grow while it drains. The callee's file is charged
+     * the budget like any other.
      */
     private function foldPending(): void
     {
@@ -214,7 +239,9 @@ final class Tracer
         foreach ($pending as $request) {
             $folded = null;
             try {
-                if ($this->admitFile($request['callee']->file)) {
+                if ($this->files->admit($request['callee']->file)) {
+                    // The value folded is written in the body, which a trait puts in another file.
+                    $this->files->depend($request['callee']->writtenIn());
                     $folded = $this->returnFolder->fold($request['callee'], $request['positional'], $request['named']);
                 }
             } catch (Throwable) {
@@ -227,23 +254,6 @@ final class Tracer
                 // A visitor's own failure must not abandon the rest of the queue.
             }
         }
-    }
-
-    /**
-     * Admits a file to the trace's file set — which is what reports it as a dependency, keeping the fragment
-     * cache sound — unless that would exceed the per-analysis budget. An already-admitted file always passes.
-     */
-    private function admitFile(string $file): bool
-    {
-        if (isset($this->visitedFiles[$file])) {
-            return true;
-        }
-        if (count($this->visitedFiles) >= $this->fileBudget) {
-            return false;
-        }
-        $this->visitedFiles[$file] = true;
-
-        return true;
     }
 
     /**
@@ -280,6 +290,6 @@ final class Tracer
      */
     public function visitedFiles(): array
     {
-        return array_keys($this->visitedFiles);
+        return $this->files->all();
     }
 }
