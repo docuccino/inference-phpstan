@@ -7,6 +7,15 @@ User-facing changes to `docuccino/inference-phpstan` — features, fixes, perfor
 taken from the commit messages scoped `inference-phpstan`. Entries begin after v0.1.2; older history is in
 the [repository](https://github.com/docuccino/docuccino) git log.
 
+## v0.14.0
+
+### Bug fixes
+
+- depend on a declaration a fold read, and locate one without loading it ([#370](https://github.com/docuccino/docuccino/pull/370))
+- depend on every file a traced body was written in, not only the class that reports it ([#368](https://github.com/docuccino/docuccino/pull/368))
+- read a class by everything that builds it, and depend on every file that decided ([#361](https://github.com/docuccino/docuccino/pull/361))
+- read a status where the throw is not a literal construction ([#355](https://github.com/docuccino/docuccino/pull/355))
+
 ## v0.13.1
 
 ### Bug fixes
