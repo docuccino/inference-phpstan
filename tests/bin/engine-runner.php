@@ -15,6 +15,7 @@ declare(strict_types=1);
  * Usage (one mode per invocation — each maps 1:1 onto a FixtureRunner method):
  *   php engine-runner.php analyze                   <controllerFile> <class> <method>
  *   php engine-runner.php analyze-with-config       <controllerFile> <class> <method> <userNeon>
+ *   php engine-runner.php analyze-repeat           <controllerFile> <class> <method> <otherMethod>
  *   php engine-runner.php analyze-callable          <file> <class> <method> <line> <narrowParam> <narrowType>
  *   php engine-runner.php refine-pair               <fileBudget> <traceDepth> <file1> <class1> <method1> <file2> <class2> <method2>
  *   php engine-runner.php class-metadata            <ignored>        <class>
@@ -222,6 +223,36 @@ $qbHarvest = static function () use ($engine, $ref): array {
 
 $result = match ($mode) {
     'analyze', 'analyze-with-config' => $engine->analyzeAction($ref)->toArray(),
+    // One engine, the same ActionRef twice — what every version document in an export run does. The
+    // engine's per-ref memo has to serve the second ask the FIRST ask's own object (nothing else can
+    // return an identical instance, since both the analysis and its failure arm always construct a new
+    // ActionAnalysis), while a different ref, and two closure refs that share a `symbol()`, each get
+    // their own. The serialized asks go back too, so the caller can hold them against a cold run's.
+    'analyze-repeat' => (static function () use ($engine, $ref, $file, $class, $argv): array {
+        $other = new ActionRef($file, $class === '' ? null : $class, (string) ($argv[5] ?? ''));
+        // Two closures in one routes file: `symbol()` is `file::{closure}` for both, so a memo keyed on
+        // it would answer the second with the first's analysis.
+        $closureA = new ActionRef($file, null, '{closure}', 10);
+        $closureB = new ActionRef($file, null, '{closure}', 20);
+
+        // Every analysis is held for the whole comparison: spl_object_id is reused once an object is
+        // freed, so ids taken off temporaries would compare equal for two unrelated answers.
+        $first = $engine->analyzeAction($ref);
+        $second = $engine->analyzeAction($ref);
+        $third = $engine->analyzeAction($other);
+        $fromClosureA = $engine->analyzeAction($closureA);
+        $fromClosureB = $engine->analyzeAction($closureB);
+
+        return [
+            'first' => $first->toArray(),
+            'second' => $second->toArray(),
+            'other' => $third->toArray(),
+            'repeatIsMemoised' => spl_object_id($first) === spl_object_id($second),
+            'otherIsSeparate' => spl_object_id($third) !== spl_object_id($first),
+            'closureSymbolsCollide' => $closureA->symbol() === $closureB->symbol(),
+            'closuresAreSeparate' => spl_object_id($fromClosureA) !== spl_object_id($fromClosureB),
+        ];
+    })(),
     'analyze-callable' => $engine->analyzeCallable(new CallableRef(
         $file,
         $class === '' ? null : $class,

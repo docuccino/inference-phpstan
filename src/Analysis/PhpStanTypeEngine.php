@@ -22,6 +22,8 @@ use Docuccino\Core\Inference\SourceLocation;
 use Docuccino\Core\Inference\TraceReport;
 use Docuccino\Core\Inference\TraceVisitor;
 use Docuccino\Core\Inference\TypeEngine;
+use Docuccino\Core\Provenance\MessagePaths;
+use Docuccino\Core\Provenance\RootRelativeSourcePathResolver;
 use Docuccino\Core\Support\Fqcn;
 use Docuccino\Inference\PhpStan\Metadata\ClassMetadataFactory;
 use Docuccino\Inference\PhpStan\Runtime\FileWalks;
@@ -57,6 +59,16 @@ use Throwable;
 final class PhpStanTypeEngine implements TypeEngine
 {
     /**
+     * Per-build memo of action analyses, so one controller method is analysed once however many routes
+     * reach it — and once for a whole export run rather than once per version document, since every
+     * document asks the identical {@see ActionRef} sequence and the answer is a function of the ref alone.
+     * Keyed on the ref's whole tuple and not on {@see ActionRef::symbol()}: see {@see actionKey()}.
+     *
+     * @var array<string, ActionAnalysis>
+     */
+    private array $actionMemo = [];
+
+    /**
      * Per-build memo of callable analyses, so one handler body queried by many routes is analysed once.
      * It lives and dies with the engine instance — one container, one build, one memo.
      *
@@ -84,6 +96,19 @@ final class PhpStanTypeEngine implements TypeEngine
 
     private ?ClassBodies $classBodies = null;
 
+    /**
+     * The publishable form of a ref's label. Both {@see ActionRef::symbol()} and
+     * {@see CallableRef::target()} fall back to the FILE where there is no class, and both say in so many
+     * words that this makes them identity keys rather than something a diagnostic may print — so a
+     * closure route named one absolutely in every message below until they came through here. No base
+     * path has to be threaded in: the resolver's ladder finds the checkout from the file itself.
+     *
+     * The adapter relativises every action-analysis message again on the way into the document, which
+     * is why nothing published ever carried the path — but the callable-side diagnostics cross no such
+     * seam, and an engine is a contract another host can call, so the label leaves here publishable.
+     */
+    private readonly MessagePaths $labels;
+
     public function __construct(
         private readonly RuntimeAdapter $adapter,
         private readonly EngineConfig $config,
@@ -93,9 +118,37 @@ final class PhpStanTypeEngine implements TypeEngine
         private readonly ClassMetadataFactory $classMetadataFactory,
         private readonly ProjectFilter $refinerFilter,
         private readonly FileWalks $walks,
-    ) {}
+    ) {
+        $this->labels = new MessagePaths(new RootRelativeSourcePathResolver(''));
+    }
+
+    /** A ref's label, relativised — {@see $labels}. Never the memo key, which stays the raw identity. */
+    private function label(ActionRef|CallableRef $ref): string
+    {
+        return $this->labels->relative($ref->symbol());
+    }
 
     public function analyzeAction(ActionRef $action): ActionAnalysis
+    {
+        return $this->actionMemo[self::actionKey($action)] ??= $this->analyzeActionUncached($action);
+    }
+
+    /**
+     * The whole ref, and not {@see ActionRef::symbol()}, because symbol() is a LABEL and not an identity:
+     * a closure route carries no class, so every closure in one routes file collapses onto
+     * `routes/api.php::{closure}` there. What the answer can depend on is the file, the declaring class and
+     * the method — {@see FileAnalyzer::method()} reads exactly those — plus the line, which is not there
+     * merely to be reported: {@see traceClosure()} SELECTS which closure it walks by
+     * `getStartLine() === $action->line`, so two refs differing only in line name two different bodies
+     * and get two different answers. Two refs equal on all four are indistinguishable to this engine,
+     * which is what lets one answer serve both.
+     */
+    private static function actionKey(ActionRef $action): string
+    {
+        return $action->file."\0".($action->class ?? '')."\0".$action->method."\0".$action->line;
+    }
+
+    private function analyzeActionUncached(ActionRef $action): ActionAnalysis
     {
         try {
             return $this->doAnalyze($action);
@@ -109,7 +162,7 @@ final class PhpStanTypeEngine implements TypeEngine
                 diagnostics: [new Diagnostic(
                     Severity::Warning,
                     'inference.action-failed',
-                    sprintf('Type analysis of %s failed: %s', $action->symbol(), $e->getMessage()),
+                    sprintf('Type analysis of %s failed: %s', $this->label($action), $e->getMessage()),
                 )],
                 dependencyFiles: [$action->file],
             );
@@ -132,7 +185,7 @@ final class PhpStanTypeEngine implements TypeEngine
                 diagnostics: [new Diagnostic(
                     Severity::Warning,
                     'inference.method-not-found',
-                    sprintf('No analysable method body for %s.', $action->symbol()),
+                    sprintf('No analysable method body for %s.', $this->label($action)),
                 )],
                 dependencyFiles: [$action->file],
             );
@@ -143,7 +196,7 @@ final class PhpStanTypeEngine implements TypeEngine
         $throwAnalyzer = $this->makeThrowAnalyzer();
         $throws = $throwAnalyzer->analyze($node, $this->selfLabel($action));
 
-        $truncation = $this->refinerTruncation($action->symbol());
+        $truncation = $this->refinerTruncation($this->label($action));
         $diagnostics = $throwAnalyzer->diagnostics();
 
         return new ActionAnalysis(
@@ -258,7 +311,7 @@ final class PhpStanTypeEngine implements TypeEngine
                 diagnostics: [new Diagnostic(
                     Severity::Warning,
                     'inference.callable-failed',
-                    sprintf('Analysis of %s failed: %s', $callable->symbol(), $e->getMessage()),
+                    sprintf('Analysis of %s failed: %s', $this->label($callable), $e->getMessage()),
                 )],
                 dependencyFiles: [$callable->file],
             );
@@ -281,14 +334,14 @@ final class PhpStanTypeEngine implements TypeEngine
                 diagnostics: [new Diagnostic(
                     Severity::Info,
                     'inference.callable-not-found',
-                    sprintf('No analysable body for %s.', $callable->symbol()),
+                    sprintf('No analysable body for %s.', $this->label($callable)),
                 )],
                 dependencyFiles: [$callable->file],
             );
         }
 
         $narrowed = $this->harvestNarrowed($node, $callable);
-        $truncation = $this->refinerTruncation($callable->symbol());
+        $truncation = $this->refinerTruncation($this->label($callable));
 
         // The analysed callable is the outermost hop on every path below it, so its own declaration wins
         // over any it descended through — and it is the only anchor a one-body renderer (an exception's
@@ -539,7 +592,7 @@ final class PhpStanTypeEngine implements TypeEngine
                 'More than one return site is reachable when %s narrows to %s in %s; the first in source order was chosen and the recovered shape may be ambiguous.',
                 '$'.$param,
                 $narrowTo,
-                $callable->symbol(),
+                $this->label($callable),
             ),
         )];
     }

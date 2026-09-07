@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Docuccino\Inference\PhpStan\Tests\Support;
 
 use Docuccino\Core\Inference\ActionAnalysis;
+use Docuccino\Core\Inference\ActionRef;
 use Docuccino\Core\Inference\ClassMetadata;
 use RuntimeException;
 
@@ -57,6 +58,20 @@ final class FixtureRunner
     public static function analyzeWithConfig(string $controllerRelPath, string $class, string $method, string $userNeon): array
     {
         return self::invoke('analyze-with-config', self::path($controllerRelPath), $class, $method, $userNeon);
+    }
+
+    /**
+     * Ask ONE engine for the same action twice, then for `$otherMethod` on the same class — the shape of
+     * an export run, where every version document asks the identical {@see ActionRef} sequence. Returns
+     * the three serialized analyses plus what the engine did with them:
+     * `repeatIsMemoised` (the second ask got the first ask's own object), `otherIsSeparate`, and the
+     * closure pair whose `symbol()` collides but whose analyses must not.
+     *
+     * @return array<string, mixed>
+     */
+    public static function analyzeRepeat(string $controllerRelPath, string $class, string $method, string $otherMethod): array
+    {
+        return self::invoke('analyze-repeat', self::path($controllerRelPath), $class, $method, $otherMethod);
     }
 
     /**
