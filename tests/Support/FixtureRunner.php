@@ -50,6 +50,18 @@ final class FixtureRunner
     }
 
     /**
+     * Every named method analysed by ONE engine, keyed by method name — the shape a sweep over a whole
+     * controller needs, since a subprocess per action pays for a container boot per action.
+     *
+     * @param  list<string>  $methods
+     * @return array<string, mixed>
+     */
+    public static function analyzeMany(string $controllerRelPath, string $class, array $methods): array
+    {
+        return self::invoke('analyze-many', self::path($controllerRelPath), $class, implode(',', $methods));
+    }
+
+    /**
      * As {@see analyze()}, but with an application PHPStan config file handed to the builder — the
      * `engine.neon` escape hatch, all the way through to the generated neon's `includes`.
      *

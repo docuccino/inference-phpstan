@@ -16,6 +16,7 @@ declare(strict_types=1);
  *   php engine-runner.php analyze                   <controllerFile> <class> <method>
  *   php engine-runner.php analyze-with-config       <controllerFile> <class> <method> <userNeon>
  *   php engine-runner.php analyze-repeat           <controllerFile> <class> <method> <otherMethod>
+ *   php engine-runner.php analyze-many              <controllerFile> <class> <method,method,…>
  *   php engine-runner.php analyze-callable          <file> <class> <method> <line> <narrowParam> <narrowType>
  *   php engine-runner.php refine-pair               <fileBudget> <traceDepth> <file1> <class1> <method1> <file2> <class2> <method2>
  *   php engine-runner.php class-metadata            <ignored>        <class>
@@ -228,6 +229,20 @@ $result = match ($mode) {
     // return an identical instance, since both the analysis and its failure arm always construct a new
     // ActionAnalysis), while a different ref, and two closure refs that share a `symbol()`, each get
     // their own. The serialized asks go back too, so the caller can hold them against a cold run's.
+    // One boot, every method named — the sweep the reconciliation guard reads. A subprocess per action
+    // would be the same answer at fifty times the container boots.
+    'analyze-many' => (static function () use ($engine, $file, $class, $method): array {
+        $out = [];
+        foreach (explode(',', $method) as $name) {
+            $name = trim($name);
+            if ($name === '') {
+                continue;
+            }
+            $out[$name] = $engine->analyzeAction(new ActionRef($file, $class === '' ? null : $class, $name))->toArray();
+        }
+
+        return $out;
+    })(),
     'analyze-repeat' => (static function () use ($engine, $ref, $file, $class, $argv): array {
         $other = new ActionRef($file, $class === '' ? null : $class, (string) ($argv[5] ?? ''));
         // Two closures in one routes file: `symbol()` is `file::{closure}` for both, so a memo keyed on

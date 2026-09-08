@@ -106,6 +106,8 @@ final class PhpStanTypeEngine implements TypeEngine
      * The adapter relativises every action-analysis message again on the way into the document, which
      * is why nothing published ever carried the path — but the callable-side diagnostics cross no such
      * seam, and an engine is a contract another host can call, so the label leaves here publishable.
+     * {@see ThrowAnalyzer} is handed the same relativiser for the same reason: the site an unread-status
+     * notice names comes straight off the analyser, so it crosses here rather than incidentally later.
      */
     private readonly MessagePaths $labels;
 
@@ -702,6 +704,7 @@ final class PhpStanTypeEngine implements TypeEngine
             new CalleeResolver($this->adapter->reflectionProvider()),
             $statuses,
             $this->factoryStatus ??= new FactoryStatus($statuses, $bodies, $this->projectFilter),
+            $this->labels,
             $this->config->throwDepth,
         );
     }
