@@ -7,6 +7,17 @@ User-facing changes to `docuccino/inference-phpstan` — features, fixes, perfor
 taken from the commit messages scoped `inference-phpstan`. Entries begin after v0.1.2; older history is in
 the [repository](https://github.com/docuccino/docuccino) git log.
 
+## v0.15.0
+
+### Bug fixes
+
+- read a throw as the file the fold gave up in, not the file its class was declared in ([#396](https://github.com/docuccino/docuccino/pull/396))
+- report every status it could not read, and name the throw it came from ([#392](https://github.com/docuccino/docuccino/pull/392))
+
+### Performance
+
+- analyse an action once per build, not once per version document ([#383](https://github.com/docuccino/docuccino/pull/383))
+
 ## v0.14.0
 
 ### Bug fixes
