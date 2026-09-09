@@ -63,7 +63,7 @@ final class FixtureRunner
 
     /**
      * As {@see analyze()}, but with an application PHPStan config file handed to the builder — the
-     * `engine.neon` escape hatch, all the way through to the generated neon's `includes`.
+     * `engine.config` escape hatch, all the way through to the generated neon's `includes`.
      *
      * @return array<string, mixed>
      */

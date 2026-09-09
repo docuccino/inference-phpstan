@@ -42,7 +42,7 @@ it('lets an application PHPStan extension shape what the engine recovers', funct
 })->group('fixture');
 
 it('analyses without a configured file that is not there, rather than failing', function (): void {
-    // The degradation the adapter reports as `config.engine-neon-missing`: the engine skips the path
+    // The degradation the adapter reports as `config.engine-config-missing`: the engine skips the path
     // and answers what it can, so a mistyped key costs a warning and some precision, never a build.
     $analysis = FixtureRunner::analyzeWithConfig(
         'app/Http/Controllers/SsoRedirectController.php',

@@ -13,7 +13,7 @@ namespace Docuccino\Inference\PhpStan\Throwing;
  * Immutable and additive — `withFunction()`/`withMethod()` return a new registry — but that is internal
  * wiring rather than a user surface. A bare name is a guess that stands down the moment a body is
  * readable, so publishing it would freeze a rescue heuristic as API; a project teaches the analysis
- * about its own code through its own PHPStan config instead (`engine.neon`, design §7).
+ * about its own code through its own PHPStan config instead (`engine.config`, design §7).
  *
  * @internal
  */
