@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Docuccino\Inference\PhpStan\Tests\Unit;
 
 use Docuccino\Core\Inference\SourceLocation;
+use Docuccino\Inference\PhpStan\Tests\Support\MissingStatusProducers;
 use Docuccino\Inference\PhpStan\Throwing\ThrowAnalyzer;
 use Docuccino\Inference\PhpStan\Throwing\UnreadStatus;
 use Docuccino\Inference\PhpStan\Throwing\UnreadStatusReason;
@@ -139,14 +140,16 @@ it('produces a missing status in one place only, and files a reason there', func
     $finder = new NodeFinder;
     $src = dirname(__DIR__, 2).'/src';
 
-    $sources = [];
+    $texts = [];
     /** @var SplFileInfo $entry */
     foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator($src, RecursiveDirectoryIterator::SKIP_DOTS)) as $entry) {
         if ($entry->isFile() && $entry->getExtension() === 'php') {
-            $sources[$entry->getPathname()] = $parser->parse((string) file_get_contents($entry->getPathname())) ?? [];
+            $texts[$entry->getPathname()] = (string) file_get_contents($entry->getPathname());
         }
     }
-    ksort($sources);
+    ksort($texts);
+
+    $sources = array_map(static fn (string $text): array => $parser->parse($text) ?? [], $texts);
 
     // A walk that stopped finding the package would agree with everything below.
     expect(count($sources))->toBeGreaterThan(20);
@@ -207,32 +210,18 @@ it('produces a missing status in one place only, and files a reason there', func
     $analyzer = $src.'/Throwing/ThrowAnalyzer.php';
     expect(array_keys($sinkFiles))->toBe([$analyzer]);
 
-    // The producers, derived from what each method's declared type admits rather than from a list of
-    // names: a scalar `?int`/`null`, or an array shape carrying a nullable `status`.
-    $admitsMissing = static function (Node\Stmt\ClassMethod $method): bool {
-        $type = $method->returnType;
-        if ($type instanceof Node\Identifier && $type->toLowerString() === 'null') {
-            return true;
-        }
+    // A package that declared no shape alias would leave the alias half of the reading dead and silent.
+    expect(MissingStatusProducers::aliases($texts))->not->toBeEmpty();
 
-        if ($type instanceof Node\NullableType && (string) $type->type === 'int') {
-            return true;
-        }
-
-        if ($type instanceof Node\UnionType) {
-            $names = array_map(static fn (Node $part): string => strtolower((string) $part), $type->types);
-            if (in_array('int', $names, true) && in_array('null', $names, true)) {
-                return true;
-            }
-        }
-
-        return preg_match('/status\s*:\s*(\?int|int\|null|null\|int)/', (string) $method->getDocComment()?->getText()) === 1;
-    };
+    // The producers, derived from what each method's declared type ADMITS rather than from a list of
+    // names — and from the type rather than from a spelling of it, which is what
+    // `MissingStatusProducersTest` executes one producer per spelling against.
+    $named = MissingStatusProducers::in($texts, $analyzer);
 
     $producers = [];
     foreach ($finder->find($sources[$analyzer], static fn (Node $node): bool => $node instanceof Node\Stmt\ClassMethod) as $method) {
         /** @var Node\Stmt\ClassMethod $method */
-        if ($admitsMissing($method)) {
+        if (in_array($method->name->toString(), $named, true)) {
             $producers[$method->name->toString()] = $method;
         }
     }
@@ -245,6 +234,7 @@ it('produces a missing status in one place only, and files a reason there', func
         'atThrowSite' => 'intermediate',
         'foldStatusArg' => 'intermediate',
         'httpStatus' => 'terminal',
+        'inDeclaringCallee' => 'intermediate',
         'statusForType' => 'terminal',
         'unread' => 'recorder',
     ];

@@ -118,7 +118,10 @@ final class PhpStanTypeEngine implements TypeEngine
         private readonly FileAnalyzer $fileAnalyzer,
         private readonly ProjectFilter $projectFilter,
         private readonly ClassMetadataFactory $classMetadataFactory,
-        private readonly ProjectFilter $refinerFilter,
+        private readonly ProjectFilter $appFilter,
+        // The descend scope the host would have used with nothing configured: not a scope anything
+        // walks by, only the one that says which declined hops are the host's narrowing to undo.
+        private readonly ProjectFilter $declaredFilter,
         private readonly FileWalks $walks,
     ) {
         $this->labels = new MessagePaths(new RootRelativeSourcePathResolver(''));
@@ -694,16 +697,22 @@ final class PhpStanTypeEngine implements TypeEngine
     private function makeThrowAnalyzer(): ThrowAnalyzer
     {
         $bodies = $this->classBodies ??= new AnalyzedBodies($this->fileAnalyzer);
-        $statuses = $this->httpExceptionStatus ??= new HttpExceptionStatus($bodies, $this->projectFilter);
+        // Application scope for the two status READS, descend scope for the analyzer's own walk: how far
+        // this build may descend is `project_paths`' question, and whether a declaration is the
+        // application's is not. An exception class in a modular root is the application's, its file is
+        // primed, and reading it grows no analysed set.
+        $statuses = $this->httpExceptionStatus ??= new HttpExceptionStatus($bodies, $this->appFilter);
 
         return new ThrowAnalyzer(
             $this->adapter->reflectionProvider(),
             $this->projectFilter,
+            $this->appFilter,
+            $this->declaredFilter,
             $this->fileAnalyzer,
             $this->config->knownThrowers,
             new CalleeResolver($this->adapter->reflectionProvider()),
             $statuses,
-            $this->factoryStatus ??= new FactoryStatus($statuses, $bodies, $this->projectFilter),
+            $this->factoryStatus ??= new FactoryStatus($statuses, $bodies, $this->appFilter),
             $this->labels,
             $this->config->throwDepth,
         );
@@ -721,9 +730,10 @@ final class PhpStanTypeEngine implements TypeEngine
             $this->translator,
             $this->fileAnalyzer,
             new CalleeResolver($this->adapter->reflectionProvider()),
-            // Prime-scoped filter, not $this->projectFilter: render helpers can live in any primed app
-            // root (`Modules\…`), outside the descend scope throws/QB-trace use. Vendor still never folds.
-            $this->refinerFilter,
+            // Application scope, not $this->projectFilter: render helpers can live in any primed app
+            // root (`Modules\…`), outside the descend scope the QB trace and throw descent walk by.
+            // Vendor still never folds.
+            $this->appFilter,
             $this->adapter->reflectionProvider(),
             $this->config->traceDepth,
             $this->config->fileBudget,

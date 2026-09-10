@@ -41,15 +41,22 @@ final class PhpStanEngineFactory
         $walks = new FileWalks($adapter);
         $fileAnalyzer = new FileAnalyzer($adapter, $walks);
         $normalize = static fn (string $path): string => $adapter->normalize($path);
-        // Descend scope (throws / QB-trace / inline-rules): the bounded interprocedural set.
+        // Descend scope (throws / QB-trace / inline-rules): the bounded interprocedural set, which
+        // `project_paths` is the knob for. It answers "how far may this build walk", and nothing else.
         $projectFilter = new ProjectFilter($engineConfig->projectPaths, $normalize);
-        // Prime scope (refiner + enum folder): every primed app source root, so a render helper in a
-        // modular `Modules\…` root folds too. Vendor isn't a primed root, so containment is unchanged.
-        // Falls back to the descend scope, which is the same thing for a non-modular app.
-        $refinerFilter = new ProjectFilter(
+        // Application scope: every primed app source root, so a class in a modular `Modules\…` root is
+        // still the application's — which is the question a READ of a declaration asks (the refiner and
+        // enum folder, and the status an exception class pins on itself), and the question actionability
+        // asks of a notice. Vendor isn't a primed root, so containment is unchanged. Falls back to the
+        // descend scope, which is the same thing for a non-modular app.
+        $appFilter = new ProjectFilter(
             $runtimeConfig->projectPaths !== [] ? $runtimeConfig->projectPaths : $engineConfig->projectPaths,
             $normalize,
         );
+        // Declared scope: what descent would have covered had the host narrowed nothing. It answers one
+        // question only — is a declined hop the HOST's narrowing, which the reader can undo, or this
+        // engine's own containment, which they cannot — and an empty list answers "no" to all of them.
+        $declaredFilter = new ProjectFilter($engineConfig->declaredPaths, $normalize);
 
         return new PhpStanTypeEngine(
             adapter: $adapter,
@@ -58,7 +65,8 @@ final class PhpStanEngineFactory
             fileAnalyzer: $fileAnalyzer,
             projectFilter: $projectFilter,
             classMetadataFactory: new ClassMetadataFactory,
-            refinerFilter: $refinerFilter,
+            appFilter: $appFilter,
+            declaredFilter: $declaredFilter,
             walks: $walks,
         );
     }

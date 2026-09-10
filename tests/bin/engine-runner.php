@@ -17,6 +17,7 @@ declare(strict_types=1);
  *   php engine-runner.php analyze-with-config       <controllerFile> <class> <method> <userNeon>
  *   php engine-runner.php analyze-repeat           <controllerFile> <class> <method> <otherMethod>
  *   php engine-runner.php analyze-many              <controllerFile> <class> <method,method,…>
+ *   php engine-runner.php analyze-many-narrow       <controllerFile> <class> <method,method,…>
  *   php engine-runner.php analyze-callable          <file> <class> <method> <line> <narrowParam> <narrowType>
  *   php engine-runner.php refine-pair               <fileBudget> <traceDepth> <file1> <class1> <method1> <file2> <class2> <method2>
  *   php engine-runner.php class-metadata            <ignored>        <class>
@@ -58,6 +59,7 @@ use Docuccino\Inference\PhpStan\Runtime\RuntimeConfig;
 use Docuccino\Inference\PhpStan\Tests\Support\ClosureReturnProbe;
 use Docuccino\Inference\PhpStan\Tests\Support\CountingRuntimeAdapter;
 use Docuccino\Inference\PhpStan\Tests\Support\QueryBuilderProbe;
+use Docuccino\Laravel\Engine\AnalysisScopes;
 use Docuccino\Laravel\Extensions\FileResponseCall;
 use Docuccino\Laravel\Extensions\FileResponseVisitor;
 use Docuccino\Laravel\Integrations\ApiResources\CreatedResourceVisitor;
@@ -146,7 +148,7 @@ register_shutdown_function(static function () use ($tmp): void {
 // descent depth (argv[3]): the first so a shared helper truncates on a budget-spending path and has
 // headroom on a direct one (the ResponseShapeRefiner's memo-headroom guard), the second so the Tracer's
 // own reachability frontier can be measured at each bound. Every other mode keeps the real defaults (40 / 4).
-$engineConfig = EngineConfig::forProjectWithVendor($app.'/vendor', $app.'/app');
+$engineConfig = EngineConfig::forProjectWithVendor($app.'/vendor', $app.'/app', $app.'/modules');
 $boundedModes = ['refine-pair', 'trace-qb-bounds'];
 if (in_array($mode, $boundedModes, true)) {
     $engineConfig = new EngineConfig(
@@ -164,10 +166,16 @@ if (in_array($mode, $boundedModes, true)) {
 // hand-built EngineConfig (the bounds above), which the builder deliberately doesn't expose, so they
 // go through the factory directly.
 //
-// Prime scope (bodies preserved) covers `modules/` too, so a Query class outside the descend scope
-// isn't body-stripped when the QB trace follows a `$query->query()` hop into it. Descend scope stays
-// `app/` (throws/inline-rules bounded); vendorPath lets the QB trace follow a QueryBuilder-return-type
-// hop into the primed `modules/` Query class, never into vendor.
+// Both scopes come off the fixture app's own `composer.json` through `AnalysisScopes` — the adapter's
+// own class, not a restatement of it, so the runner cannot drift from what an installed default does
+// and a throw a modular callee raises is read here for the reason it is read in a real application.
+// (`fixtureDescends()` in tests/Pest.php IS a deliberate restatement: a guard that asked this code for
+// its own rule would agree with whatever the code did.) vendorPath still lets a QB trace follow a
+// QueryBuilder-return-type hop into a primed class outside either scope, never into vendor.
+//
+// `analyze-many-narrow` is the one mode that pins descent back to `app/`: the population of an install
+// that wrote `project_paths` itself, which is the only thing that still produces a narrowed-scope
+// notice now that the default is the declared set.
 //
 // analyze-with-config hands the builder a user neon (argv[5]) — the app's own PHPStan config, which
 // the generated one includes.
@@ -188,9 +196,16 @@ $adapterFactory = new class($countedAdapters) extends RuntimeAdapterFactory
     }
 };
 
+$scopes = new AnalysisScopes($app);
+$declaredPaths = $scopes->declared();
+$descendPaths = $mode === 'analyze-many-narrow'
+    ? $scopes->descend(['project_paths' => ['app']])
+    : $declaredPaths;
+$primePaths = $scopes->prime($descendPaths);
+
 $engine = in_array($mode, $boundedModes, true)
     ? (new PhpStanEngineFactory)->create(
-        new RuntimeConfig($app, $tmp, PHP_VERSION_ID, [$app.'/app', $app.'/modules']),
+        new RuntimeConfig($app, $tmp, PHP_VERSION_ID, $primePaths),
         $engineConfig,
     )
     : (new PhpStanTypeEngineBuilder($mode === 'trace-qb-replay'
@@ -199,8 +214,9 @@ $engine = in_array($mode, $boundedModes, true)
             projectRoot: $app,
             tmpDir: $tmp,
             vendorPath: $app.'/vendor',
-            primePaths: [$app.'/app', $app.'/modules'],
-            descendPaths: [$app.'/app'],
+            primePaths: $primePaths,
+            descendPaths: $descendPaths,
+            declaredPaths: $declaredPaths,
             configFile: $mode === 'analyze-with-config' ? ($argv[5] ?? null) : null,
         );
 
@@ -231,7 +247,7 @@ $result = match ($mode) {
     // their own. The serialized asks go back too, so the caller can hold them against a cold run's.
     // One boot, every method named — the sweep the reconciliation guard reads. A subprocess per action
     // would be the same answer at fifty times the container boots.
-    'analyze-many' => (static function () use ($engine, $file, $class, $method): array {
+    'analyze-many', 'analyze-many-narrow' => (static function () use ($engine, $file, $class, $method): array {
         $out = [];
         foreach (explode(',', $method) as $name) {
             $name = trim($name);

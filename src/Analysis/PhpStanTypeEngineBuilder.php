@@ -7,6 +7,7 @@ namespace Docuccino\Inference\PhpStan\Analysis;
 use Docuccino\Core\Inference\TypeEngine;
 use Docuccino\Core\Inference\TypeEngineBuilder;
 use Docuccino\Inference\PhpStan\Runtime\RuntimeConfig;
+use Docuccino\Inference\PhpStan\Throwing\KnownThrowers;
 
 /**
  * This package's entry point for a host adapter: core's {@see TypeEngineBuilder} seam over
@@ -25,6 +26,7 @@ final readonly class PhpStanTypeEngineBuilder implements TypeEngineBuilder
         string $vendorPath,
         array $primePaths,
         array $descendPaths,
+        array $declaredPaths = [],
         ?string $configFile = null,
     ): TypeEngine {
         $runtime = new RuntimeConfig(
@@ -35,6 +37,11 @@ final readonly class PhpStanTypeEngineBuilder implements TypeEngineBuilder
             userNeon: $configFile,
         );
 
-        return $this->factory->create($runtime, EngineConfig::forProjectWithVendor($vendorPath, ...$descendPaths));
+        return $this->factory->create($runtime, new EngineConfig(
+            projectPaths: $descendPaths,
+            knownThrowers: KnownThrowers::default(),
+            vendorPath: $vendorPath,
+            declaredPaths: $declaredPaths,
+        ));
     }
 }

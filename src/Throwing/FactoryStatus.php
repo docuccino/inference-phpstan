@@ -18,7 +18,8 @@ use ReflectionMethod;
  * hop and no further; this is not constant propagation, it is reading the `new` the named factory makes.
  *
  * Every way the read could publish a status the code does not pass is a decline: a factory whose file is not
- * the project's, a body that builds the class more than once and folds to two different statuses, a slot
+ * the application's own ({@see HttpExceptionStatus}'s docblock for what that scope is, and why it is not the
+ * descend scope), a body that builds the class more than once and folds to two different statuses, a slot
  * nothing can be said about ({@see ConstructionStatus}), and a base's factory whose `new self(…)` builds the
  * base rather than this class.
  *
@@ -40,7 +41,7 @@ final class FactoryStatus
     public function __construct(
         private readonly HttpExceptionStatus $statuses,
         private readonly ClassBodies $bodies,
-        private readonly ProjectFilter $projectFilter,
+        private readonly ProjectFilter $appFilter,
     ) {}
 
     /**
@@ -79,7 +80,7 @@ final class FactoryStatus
         }
 
         $declaring = $factory->getDeclaringClass()->getName();
-        $body = $this->projectFilter->isProjectFile($file)
+        $body = $this->appFilter->isProjectFile($file)
             ? ($this->bodies->methods($file, $declaring)[$method] ?? null)
             : null;
 

@@ -61,6 +61,19 @@ it('publishes the status each construction shape writes', function (string $meth
     // Every row here surfaced the exception with no status at all until the class was asked.
     'a class that builds itself one way, thrown from a trait' => ['traitThrownStatus', ['ProbeStaleException@409']],
     'the same class reached by a rethrow' => ['rethrownStatus', ['ProbeStaleException@409']],
+    // The named-factory idiom, where the class states nothing and every factory states its own. The
+    // first three are the same throw at three distances; the fourth is the shape an application that
+    // documents its guards actually writes, and a `@throws` on the callee used to stop the read at the
+    // call — publishing the placeholder 500 for a 409 written two lines into the callee.
+    'a factory named at the action\'s own throw' => ['manifestStatusAtAction', ['ManifestRejectedException@404']],
+    'the same factory one undeclared call away' => ['manifestStatusOneCallAway', ['ManifestRejectedException@404']],
+    'the same factory two undeclared calls away' => ['manifestStatusTwoCallsAway', ['ManifestRejectedException@404']],
+    'a factory behind a callee that DECLARES the throw' => ['manifestStatusDeclaredByCallee', ['ManifestRejectedException@409']],
+    'the same declared callee naming another factory' => ['manifestStatusDeclaredNotFound', ['ManifestRejectedException@404']],
+    // And the same four facts where the code lives outside the descend scope: reading a status is not
+    // walking into a body, so a modular guard states one as plainly as a guard in `app/`.
+    'a modular class thrown from inside the descend scope' => ['modularExceptionClassStatus', ['LedgerRejectedException@404']],
+    'a modular class behind a modular callee that declares it' => ['modularDeclaredStatus', ['LedgerRejectedException@409']],
     // A closure is its own scope, so the analysed method's throw point is the CALL that was handed the
     // closure — a bare `Throwable`, or nothing at all. The status is written one scope in.
     'a status written at a throw inside a closure' => ['closureThrownStatus', ['ExportLockedException@423']],
@@ -89,6 +102,9 @@ it('publishes the status each construction shape writes', function (string $meth
     // adding nothing still has a status, and one adding a factory of its own has two and states neither.
     'a factory the subclass inherits from its base' => ['inheritedFactoryStatus', ['ExportRelocatedException@503']],
     'a class its own base and its own factory build differently' => ['inheritedAgreementStatus', ['ExportOfflineException@null']],
+    // …and the same class reached by a RETHROW, which builds nothing and has no declaring callee to read
+    // either, so only the class could have answered and it agrees on neither of its two statuses.
+    'the same class reached by a rethrow that builds nothing' => ['rethrownAgreementStatus', ['ExportOfflineException@null']],
     // Two closures handed to one call on ONE line are two bodies and two errors; a reader keying them by
     // line resolves both to the second, and the first error leaves the document without a word.
     'two closures written on one line' => ['pairedClosureThrownStatus', ['ExportLockedException@423', 'ExportUnsupportedException@422']],

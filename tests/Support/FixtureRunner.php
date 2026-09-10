@@ -62,6 +62,19 @@ final class FixtureRunner
     }
 
     /**
+     * As {@see analyzeMany()}, but with descent pinned back to `app/` — an install that wrote
+     * `engine.project_paths` itself and so descends less far than the roots it declares. The only
+     * population left that a narrowed-scope notice can come from.
+     *
+     * @param  list<string>  $methods
+     * @return array<string, mixed>
+     */
+    public static function analyzeManyNarrow(string $controllerRelPath, string $class, array $methods): array
+    {
+        return self::invoke('analyze-many-narrow', self::path($controllerRelPath), $class, implode(',', $methods));
+    }
+
+    /**
      * As {@see analyze()}, but with an application PHPStan config file handed to the builder — the
      * `engine.config` escape hatch, all the way through to the generated neon's `includes`.
      *

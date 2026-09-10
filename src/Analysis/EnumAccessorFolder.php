@@ -18,9 +18,9 @@ use Throwable;
  * Folds an accessor on a known enum case to a literal — the last hop of the folding arc, driven by
  * {@see ResponseShapeRefiner}. Two containment rules live here: `->value`/`->name` come off the case by
  * reflection, so vendor enums work too (`->value` needs a backed enum, `->name` is universal); `->method()`
- * only folds for a project enum, by analysing one body with `$this` narrowed to the case — a
- * `match ($this)` arm or a plain constant return. Anything computed, or any vendor enum method, folds to
- * null rather than a guess.
+ * only folds for an enum the application declares, by analysing one body with `$this` narrowed to the
+ * case — a `match ($this)` arm or a plain constant return. Anything computed, or any vendor enum method,
+ * folds to null rather than a guess.
  *
  * Memoised per (enum-case, method); the enum's file goes through {@see $recordFile} on every path, hit
  * included, so it reaches `dependencyFiles`.
@@ -41,7 +41,7 @@ final class EnumAccessorFolder
      */
     public function __construct(
         private readonly FileAnalyzer $fileAnalyzer,
-        private readonly ProjectFilter $projectFilter,
+        private readonly ProjectFilter $appFilter,
         private readonly Closure $recordFile,
     ) {}
 
@@ -100,7 +100,7 @@ final class EnumAccessorFolder
     private function computeMethod(string $enumFqcn, string $caseName, string $method): ?LiteralT
     {
         $file = $this->declaringFile($enumFqcn, $method);
-        if ($file === null || ! $this->projectFilter->isProjectFile($file)) {
+        if ($file === null || ! $this->appFilter->isProjectFile($file)) {
             return null; // vendor / unresolved — never analyse a vendor enum's method body
         }
 
@@ -146,7 +146,7 @@ final class EnumAccessorFolder
     private function recordDeclaringFile(string $enumFqcn, string $method): void
     {
         $file = $this->declaringFile($enumFqcn, $method);
-        if ($file !== null && $this->projectFilter->isProjectFile($file)) {
+        if ($file !== null && $this->appFilter->isProjectFile($file)) {
             ($this->recordFile)($file);
         }
     }

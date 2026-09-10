@@ -34,6 +34,19 @@ it('depends on the file a declared exception was written in', function (): void 
         ->toContain('ProbeStaleException.php');
 })->group('fixture');
 
+it('depends on the file the declaring callee builds the exception in', function (string $method, string $callee, string $exception): void {
+    // The status now comes out of a `throw` written in the callee whose `@throws` surfaced it, so that body
+    // decides what this route publishes: changing which factory the guard names changes the response, and
+    // the exception class's own file cannot say so.
+    expect(throwDependencyNames($method))
+        ->toContain($callee)
+        ->toContain($exception);
+})->with([
+    'a guard inside the descend scope' => ['manifestStatusDeclaredByCallee', 'ManifestDeclaredQuery.php', 'ManifestRejectedException.php'],
+    // And one outside it, where the read is entitled to the body and descent is not.
+    'a guard outside it' => ['modularDeclaredStatus', 'LedgerReviewQuery.php', 'LedgerRejectedException.php'],
+])->group('fixture');
+
 it('depends on the file a status constant a DEFAULT names is declared in', function (): void {
     // The private constructor's default is what every instance of this class carries, and the number is
     // written in another file: reflection names the constant off the declaration rather than evaluating
@@ -94,4 +107,7 @@ it('invalidates a cached fragment when a file the status was read from is edited
     // The same constant one spelling on: a defaulted status slot, whose value a construction leaving the
     // slot empty passes and whose declaration reflection names rather than evaluates.
     'the file a defaulted status constant is declared in' => ['pinnedHttpStatus', 'app/Support/ProbeStatuses.php'],
+    // The body a `@throws` sent the status read into: which factory the guard names is what the route
+    // publishes, so editing the guard has to make the entry stale.
+    'the guard whose `@throws` surfaced the exception' => ['manifestStatusDeclaredByCallee', 'app/Services/ManifestDeclaredQuery.php'],
 ])->group('fixture');

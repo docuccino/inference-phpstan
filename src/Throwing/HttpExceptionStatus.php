@@ -42,19 +42,27 @@ use ReflectionParameter;
  * subclass's own `parent::__construct()` writes into. `HttpException` itself is the base case — argument 0
  * of its constructor IS the status.
  *
- * Only a PROJECT class's constructor is read. Not as a policy but as a measurement: PHPStan hands back an
- * unprimed file with its bodies stripped, so a vendor subclass's `parent::__construct(409, …)` arrives as
- * an empty statement list and the read declines anyway — while asking for it primes that file, growing the
- * analysed set and discarding every recorded walk the replay layer holds. The gate turns a cost with no
- * answer behind it into neither, and it is the same gate {@see FactoryStatus} applies one hop on.
+ * Only a class the APPLICATION declares has its constructor read, and that means every source root the
+ * adapter primes — `app/` and a modular `Modules\…` root alike — never the narrower set interprocedural
+ * descent is bounded by. Not as a policy but as a measurement: PHPStan hands back an UNPRIMED file with its
+ * bodies stripped, so a vendor subclass's `parent::__construct(409, …)` arrives as an empty statement list
+ * and the read declines anyway — while asking for it primes that file, growing the analysed set and
+ * discarding every recorded walk the replay layer holds. The gate turns a cost with no answer behind it
+ * into neither, and it is the same gate {@see FactoryStatus} applies one hop on.
  *
- * And the gate is also why the reads below cost the replay layer nothing, which is worth recording so it is
- * not re-litigated: the adapter primes the application's whole PSR-4 tree at boot, so every project
- * exception class is already in the analysed set and reading one cannot grow it. Measured over one build of
- * the fixture app's 41 throw actions, the analysed-file count is 144 with these reads, without them, and
- * without the hierarchy walk — identical, so no recording is ever discarded. What they do cost is 2 more
- * live file walks out of 15, for exception classes nothing else opened, which is inside run-to-run noise
- * (1.24–1.28s against 1.24–1.29s).
+ * That argument is about PRIMING, so it reaches vendor and stops there. A primed root is already in the
+ * analysed set: its bodies are intact, and reading one grows nothing. A read scoped to the descend paths
+ * instead would decline for a class the build had already loaded and could have folded — publishing a
+ * placeholder 500 for an exception whose 409 is written two lines into a file this build holds open, and
+ * nothing recorded for a notice to be actionable about.
+ *
+ * Priming is also why the reads below cost the replay layer nothing, which is worth recording so it is not
+ * re-litigated: the adapter primes the application's whole PSR-4 tree at boot, so every one of its
+ * exception classes is already in the analysed set and reading one cannot grow it. Measured over one build
+ * of the fixture app's 57 throw actions, the analysed-file count is the same whether the reads are scoped
+ * to the application or to the descend paths — so no recording is ever discarded, and the modular root is
+ * no different because being primed is the whole of what makes that true. What the wider scope costs is
+ * one more live file walk, for an exception class nothing else opened.
  *
  * @phpstan-type StatusPin array{status: int|null, parameter: int|null, files: list<string>}
  * @phpstan-type AgreedRead array{status: int|null, files: list<string>}
@@ -86,7 +94,7 @@ final class HttpExceptionStatus
 
     public function __construct(
         private readonly ClassBodies $bodies,
-        private readonly ProjectFilter $projectFilter,
+        private readonly ProjectFilter $appFilter,
     ) {}
 
     public function isHttpException(string $fqcn): bool
@@ -256,7 +264,7 @@ final class HttpExceptionStatus
         array $files,
     ): array {
         $file = $class->getFileName();
-        if ($file === false || ! $this->projectFilter->isProjectFile($file)) {
+        if ($file === false || ! $this->appFilter->isProjectFile($file)) {
             return self::nothing($files);
         }
 
@@ -401,10 +409,10 @@ final class HttpExceptionStatus
      * inherits from: `new static(…)` in a base builds the subclass as surely as `new self(…)` in the
      * subclass does, and reading only the subclass's own answers a status for a class that has two. So
      * the walk is the hierarchy, up to `HttpException`, whose own constructor takes the status and builds
-     * no subclass. Read them all or read none: an ancestor written in a file this build cannot open — a
-     * class outside the project, whose bodies PHPStan strips — or one using a TRAIT, whose methods live in
-     * a file this read never opens, leaves a construction unseen, and a partial set is a status the class
-     * may not have.
+     * no subclass. Read them all or read none: an ancestor written in a file this build cannot open — one a
+     * package declares, whose bodies PHPStan strips — or one using a TRAIT, whose methods live in a file
+     * this read never opens, leaves a construction unseen, and a partial set is a status the class may not
+     * have.
      *
      * @param  ReflectionClass<object>  $class
      * @return list<ConstructionSite>|null
@@ -422,7 +430,7 @@ final class HttpExceptionStatus
             $file = $declaring->getFileName();
             if ($file === false
                 || $declaring->getTraitNames() !== []
-                || ! $this->projectFilter->isProjectFile($file)
+                || ! $this->appFilter->isProjectFile($file)
             ) {
                 return null;
             }
@@ -459,14 +467,14 @@ final class HttpExceptionStatus
      * Asked of the declaration through {@see ClassBodies::intDefault()} rather than of reflection, which
      * would EXECUTE the initialiser — PHP has allowed `new` in one since 8.1.
      *
-     * Project files only, for the reason the class docblock gives: reading a vendor declaration costs the
-     * file's analysis, and `HttpException` and every subclass of it Symfony ships take their status with no
-     * default at all, so there is nothing behind the cost.
+     * The application's own files only, for the reason the class docblock gives: reading a package's
+     * declaration costs the file's analysis, and `HttpException` and every subclass of it Symfony ships take
+     * their status with no default at all, so there is nothing behind the cost.
      */
     private function constantDefault(?ReflectionMethod $method, int $index): ?int
     {
         $file = $method?->getFileName();
-        if ($method === null || $file === false || $file === null || ! $this->projectFilter->isProjectFile($file)) {
+        if ($method === null || $file === false || $file === null || ! $this->appFilter->isProjectFile($file)) {
             return null;
         }
 

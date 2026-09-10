@@ -38,8 +38,12 @@ it('names the class whose HTTP status it could not read', function (string $meth
     // change — and the class's own agreement may not answer over the top of it.
     'a construction whose status is chosen at run time' => ['runtimeStatusAtThrowSite', 'App\\Exceptions\\ExportBlockedException'],
     'the same construction one assignment behind the throw' => ['heldRuntimeConstructionAtThrowSite', 'App\\Exceptions\\ExportBlockedException'],
-    // A class its base and its own factory build at two statuses, reached where nothing says which ran.
-    'a class built two ways, reached with no construction' => ['inheritedAgreementStatus', 'App\\Exceptions\\ExportOfflineException'],
+    // A class its base and its own factory build at two statuses, reached through a guard that declares
+    // it: the guard's own two `throw`s are read, and they name the two statuses rather than one.
+    'a class built two ways, reached through a guard that declares it' => ['inheritedAgreementStatus', 'App\\Exceptions\\ExportOfflineException'],
+    // The same class reached by a RETHROW, which is the one shape left where nothing on the way to the
+    // throw builds the exception and only the class could have answered.
+    'a class built two ways, reached by a rethrow' => ['rethrownAgreementStatus', 'App\\Exceptions\\ExportOfflineException'],
     // Two shapes the author really can act on: a constant that is no status, and a factory written in a
     // trait — moving either into the class the status belongs to is what the notice asks for.
     'a constant reaching the parent that is no status' => ['unreadableConstantStatus', 'App\\Exceptions\\ExportRelayedException'],
@@ -60,7 +64,7 @@ it('names the throw site and the fold that gave up, not the line the route enter
 
     expect($reported)->toHaveCount(1)
         ->and($reported[0])->toContain('ExportProbeQuery.php')
-        ->and($reported[0])->toContain('the construction the throw names does not fold to one status')
+        ->and($reported[0])->toContain('the construction behind the throw does not fold to one status')
         ->and($reported[0])->not->toContain('ThrowsController.php');
 })->group('fixture');
 
@@ -133,4 +137,11 @@ it('says nothing where the status read, and nothing about a class the author doe
     'inheritedFactoryStatus',
     'pairedClosureThrownStatus',
     'constantPinnedStatus',
+    // The named-factory idiom behind a callee that DECLARES the throw, which is how an application
+    // documents a guard. Its status is read one hop on, so the author is asked for nothing — and the
+    // notice these two used to earn named a class whose every factory already states a status, which is
+    // the shape that trains a reader to ignore the channel.
+    'manifestStatusDeclaredByCallee',
+    'manifestStatusDeclaredNotFound',
+    'modularDeclaredStatus',
 ])->group('fixture');

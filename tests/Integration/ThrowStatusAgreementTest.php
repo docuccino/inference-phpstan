@@ -37,6 +37,26 @@ it('answers the same status whether the throw is written inline or inside a clos
         ->and(signalThrows('heldClosureThrownStatus'))->toBe(signalThrows('closureThrownStatus'));
 })->group('fixture');
 
+it('answers the same status whether or not the callee DECLARES what it throws', function (): void {
+    // The rule stated from the contract rather than read off the code: a `@throws` says which class a call
+    // raises and says nothing about which status, so documenting a guard may not change the response the
+    // document publishes for it. The same factory is named at the action's own `throw` and behind a callee
+    // that declares it, and those two answered 404 against nothing at all — the placeholder 500 that
+    // filed a documented guard's rejection as a server failure.
+    expect(signalThrows('manifestStatusDeclaredNotFound'))
+        ->toBe(signalThrows('manifestStatusAtAction'))
+        ->and(signalThrows('manifestStatusDeclaredNotFound'))->toBe(['ManifestRejectedException@404']);
+})->group('fixture');
+
+it('answers the same status whichever source root the declared guard is written in', function (): void {
+    // The other half of the same rule: how far interprocedural descent may WALK is bounded by
+    // `project_paths`, and whose declaration a file IS is not. Both guards are declared, both name the
+    // same factory of their own class, and one is written outside the descend scope — so a difference
+    // here would be the directory deciding what an API publishes.
+    expect(signalThrows('modularDeclaredStatus'))->toBe(['LedgerRejectedException@409'])
+        ->and(signalThrows('manifestStatusDeclaredByCallee'))->toBe(['ManifestRejectedException@409']);
+})->group('fixture');
+
 it('names the closure the throw was written in', function (): void {
     // The chain is what an author is shown when they go looking, and a throw two scopes down that reports
     // only the action names a line with no `throw` on it.

@@ -80,7 +80,7 @@ final class ResponseShapeRefiner
         private readonly TypeTranslator $translator,
         private readonly FileAnalyzer $fileAnalyzer,
         private readonly CalleeResolver $calleeResolver,
-        private readonly ProjectFilter $projectFilter,
+        private readonly ProjectFilter $appFilter,
         private readonly ReflectionProvider $reflectionProvider,
         int $maxDepth = 4,
         int $fileBudget = 40,
@@ -90,7 +90,7 @@ final class ResponseShapeRefiner
         $this->fluentChain = new FluentResponseChain($reflectionProvider, $translator);
         $this->enumFolder = new EnumAccessorFolder(
             $this->fileAnalyzer,
-            $this->projectFilter,
+            $this->appFilter,
             function (string $file): void {
                 $this->touch($file);
             },
@@ -193,7 +193,7 @@ final class ResponseShapeRefiner
                     return null;
                 }
                 $callee = $this->calleeResolver->resolve($expr, $scope);
-                if ($callee !== null && $this->projectFilter->isProjectFile($callee->file)) {
+                if ($callee !== null && $this->appFilter->isProjectFile($callee->file)) {
                     if (! $this->budget->withinBudget($this->adapter->normalize($callee->file))) {
                         $this->budget->truncate(); // file-budget cutoff — likewise a truncation
 
@@ -551,7 +551,7 @@ final class ResponseShapeRefiner
         }
 
         $factory = $this->calleeResolver->resolve($receiver, $scope);
-        if ($factory === null || ! $this->projectFilter->isProjectFile($factory->file)) {
+        if ($factory === null || ! $this->appFilter->isProjectFile($factory->file)) {
             return $child; // vendor / unresolvable — a deterministic decline
         }
         if (! $this->budget->withinBudget($this->adapter->normalize($factory->file))) {

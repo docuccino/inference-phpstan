@@ -11,7 +11,10 @@ use Docuccino\Core\Inference\SourceLocation;
  * and which fold gave up on it.
  *
  * `inProjectCode` is the actionability fact, and it is the file the FOLD READ — not where the exception
- * class happens to be declared (docs/design/inference-embedding.md §6).
+ * class happens to be declared (docs/design/inference-embedding.md §6). Whichever file that is, the
+ * question asked of it is whether the APPLICATION owns it, so every source root the build primes counts and
+ * the narrower set interprocedural descent is bounded by does not: a reader owns a modular PSR-4 root as
+ * much as `app/`, and a notice silenced by which directory the code sits in is one nobody asked for.
  *
  * @internal
  */
