@@ -112,15 +112,12 @@ function fixtureDeclaresClass(string $fqcn): bool
         }
     }
 
-    // The sections that name no namespace at all: the declaration has to be looked for.
-    $namespace = str_contains($fqcn, '\\') ? substr($fqcn, 0, (int) strrpos($fqcn, '\\')) : '';
-    $short = str_contains($fqcn, '\\') ? substr($fqcn, (int) strrpos($fqcn, '\\') + 1) : $fqcn;
-    $declares = '/^\s*(?:final\s+|abstract\s+|readonly\s+)*(?:class|interface|trait|enum)\s+'.preg_quote($short, '/').'\b/m';
-
+    // The sections that name no namespace at all: the declaration has to be looked for. Off the parsed
+    // source, because FALSE is the answer that grants the excuse — a spelling the reader could not
+    // recognise ( an attribute on the declaration line, a braced namespace, a name broken over two
+    // lines) would keep a ledger row alive that should have expired.
     foreach (fixtureAutoloadedFiles($paths) as $file) {
-        $source = (string) file_get_contents($file);
-        $declared = preg_match('/^\s*namespace\s+([^;{]+)/m', $source, $matches) === 1 ? trim($matches[1]) : '';
-        if ($declared === $namespace && preg_match($declares, $source) === 1) {
+        if (in_array($fqcn, phpDeclaredTypes((string) file_get_contents($file)), true)) {
             return true;
         }
     }
