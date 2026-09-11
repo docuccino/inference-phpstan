@@ -35,6 +35,9 @@ final class DataToResponseReturnTypeExtension implements DynamicMethodReturnType
 {
     private const RESPONSABLE_DATA = 'Spatie\\LaravelData\\Contracts\\ResponsableData';
 
+    /** The trait that supplies the default `toResponse()`; its file is what marks a body as spatie's. */
+    private const RESPONSABLE_CONCERN = 'Spatie\\LaravelData\\Concerns\\ResponsableData';
+
     private const JSON_RESPONSE = 'Illuminate\\Http\\JsonResponse';
 
     public function getClass(): string
@@ -54,20 +57,16 @@ final class DataToResponseReturnTypeExtension implements DynamicMethodReturnType
      * Only spatie's own `toResponse()` is modelled. A class that overrides it has written the response
      * itself — typically `new JsonResponse(...)` with real headers and a real status — and the refiner's
      * constructor fold reads far more from that than this extension could say. Claiming the type here would
-     * short-circuit it and cost the media type and status the app spelled out.
-     *
-     * The concern-provided method reports the vendor trait's file while the class reports its own, so
-     * comparing the two tells an inherited method from an override.
+     * short-circuit it and cost the media type and status the app spelled out. That holds wherever the
+     * override was written, which is why {@see VendorConcern} asks about the concern's file.
      */
     private static function isSpatieOwn(MethodReflection $methodReflection): bool
     {
-        $class = $methodReflection->getDeclaringClass()->getNativeReflection();
-
-        if (! $class->hasMethod('toResponse')) {
-            return false;
-        }
-
-        return $class->getMethod('toResponse')->getFileName() !== $class->getFileName();
+        return VendorConcern::provides(
+            $methodReflection->getDeclaringClass()->getNativeReflection(),
+            self::RESPONSABLE_CONCERN,
+            'toResponse',
+        );
     }
 
     public function getTypeFromMethodCall(

@@ -78,6 +78,43 @@ it('reads a class that writes its own response, not spatie\'s default', function
         ->and($shape['contentType'])->toBe('application/problem+json');
 })->group('fixture');
 
+it('reads a class whose response is written in an application trait, not spatie\'s default', function (): void {
+    // The same answer as the row above, for the same reason: the body that runs is the application's. Where
+    // the app chose to WRITE it cannot change what the consumer is told, and a trait is the second place an
+    // app writes it. Reflection reports a trait-supplied method against the trait's file — which is what
+    // spatie's own concern looks like too — so the question a reader of this method has to answer is which
+    // file, never merely "not this class's". Answering the loose one hands this response spatie's default
+    // envelope and loses the 422, the label and the payload all three.
+    $shape = dataProblemShape('TypeError');
+
+    expect($shape['payload'])->toBeInstanceOf(ClassT::class)
+        ->and($shape['payload']->fqcn)->toBe('App\\Data\\TraitResponseProblemData')
+        ->and($shape['contentType'])->toBe('application/problem+json')
+        ->and($shape['members']['status'])->toEqual(new LiteralT(422));
+})->group('fixture');
+
+it('reads a class whose response is written on a base class, not spatie\'s default', function (): void {
+    // The third place the same method can be written, and the one that never needed telling apart: an
+    // inherited method is reported as declared by the base class, whose own file IS the method's file, so
+    // even the loosest reading of "somebody else wrote this" already declines. The row is here because a
+    // seam deciding whose body runs owes an answer wherever a body can be written, and so that a claim
+    // that this case was broken can be checked instead of repeated.
+    $shape = dataProblemShape('AssertionError');
+
+    // The fact this row is about: the app's own `Content-Type` survived, which it only can if the
+    // extension declined and the refiner read the constructor.
+    expect($shape['contentType'])->toBe('application/problem+json')
+        // And the degraded half, pinned rather than tidied away. `$this` inside an inherited method is the
+        // BASE, so the body is named by the class that wrote the response and not by the one that was
+        // constructed: a widening (every InheritedProblemData is a BaseProblemData, and an object schema
+        // admits the `detail` this drops) rather than a false claim, and no per-call-site argument binds
+        // through it. That is the refiner's reading of `$this`, not this seam's — the row would say the
+        // same with the extension removed entirely.
+        ->and($shape['payload'])->toBeInstanceOf(ClassT::class)
+        ->and($shape['payload']->fqcn)->toBe('App\\Data\\BaseProblemData')
+        ->and($shape['members'])->toBe([]);
+})->group('fixture');
+
 // Per-call-site constructor arguments: what the body actually carries, which the class alone cannot say.
 
 it('folds every constructor argument a call site wrote as a literal', function (): void {

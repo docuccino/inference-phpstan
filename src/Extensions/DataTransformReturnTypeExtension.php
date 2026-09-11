@@ -32,6 +32,9 @@ final class DataTransformReturnTypeExtension implements DynamicMethodReturnTypeE
 {
     private const TRANSFORMABLE_DATA = 'Spatie\\LaravelData\\Contracts\\TransformableData';
 
+    /** The trait that supplies the default `transform()`; its file is what marks a body as spatie's. */
+    private const TRANSFORMABLE_CONCERN = 'Spatie\\LaravelData\\Concerns\\TransformableData';
+
     public function getClass(): string
     {
         // An FQCN string isn't provably class-string during analysis (spatie/laravel-data isn't a
@@ -46,12 +49,13 @@ final class DataTransformReturnTypeExtension implements DynamicMethodReturnTypeE
             return false;
         }
 
-        // A concern-provided method reports the vendor trait's file while the class reports its own, so
-        // comparing the two tells an inherited method from an override.
-        $class = $methodReflection->getDeclaringClass()->getNativeReflection();
-
-        return $class->hasMethod('transform')
-            && $class->getMethod('transform')->getFileName() !== $class->getFileName();
+        // Only the concern's own body ({@see VendorConcern}); an override is the refiner's to read,
+        // wherever the application chose to write it.
+        return VendorConcern::provides(
+            $methodReflection->getDeclaringClass()->getNativeReflection(),
+            self::TRANSFORMABLE_CONCERN,
+            'transform',
+        );
     }
 
     public function getTypeFromMethodCall(
