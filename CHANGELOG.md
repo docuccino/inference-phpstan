@@ -7,6 +7,12 @@ User-facing changes to `docuccino/inference-phpstan` — features, fixes, perfor
 taken from the commit messages scoped `inference-phpstan`. Entries begin after v0.1.2; older history is in
 the [repository](https://github.com/docuccino/docuccino) git log.
 
+## v0.17.0
+
+### Bug fixes
+
+- tell spatie's own Data body from one an application wrote in a trait ([#473](https://github.com/docuccino/docuccino/pull/473))
+
 ## v0.16.0
 
 ### Bug fixes
