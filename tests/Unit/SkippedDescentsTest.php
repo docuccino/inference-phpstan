@@ -57,6 +57,11 @@ it('publishes one notice naming the callee, the call site and the file it stoppe
         ->and($only->message)->toContain('Modules\\Billing\\LedgerReviewQuery::results()')
         ->and($only->message)->toContain('app/Http/Controllers/LedgerController.php:41')
         ->and($only->message)->toContain('modules/Billing/LedgerReviewQuery.php')
+        // What was not READ, never what the finished document is short of — the engine cannot see it,
+        // and an attribute answers the same node (docs/design/defect-classes.md §"A diagnostic that
+        // asserts an outcome it never reads").
+        ->and($only->message)->toContain('so whatever it raises is not among the responses this build recovered.')
+        ->and($only->message)->not->toContain('this document')
         // The remedy names the setting and the reader's two ways out of it.
         ->and($only->help)->toContain('engine.project_paths')
         ->and($only->help)->toContain('composer.json');

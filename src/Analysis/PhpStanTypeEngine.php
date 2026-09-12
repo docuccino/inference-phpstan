@@ -279,9 +279,13 @@ final class PhpStanTypeEngine implements TypeEngine
     }
 
     /**
-     * A response whose shape recovery ran out of descent depth or file budget is documented as its bare
+     * A response whose shape recovery ran out of descent depth or file budget is recovered as its bare
      * declared type — true, but poorer than the code says, so it is reported rather than degrading
      * quietly. Always drained, so a truncation can't be attributed to the next analysis.
+     *
+     * The sentence speaks of the RECOVERY and not of the finished response, because the engine cannot see
+     * the document and `#[Response(type: …)]` answers the same node
+     * (docs/design/defect-classes.md §"A diagnostic that asserts an outcome it never reads").
      */
     private function refinerTruncation(string $symbol): ?Diagnostic
     {
@@ -294,7 +298,7 @@ final class PhpStanTypeEngine implements TypeEngine
             Severity::Info,
             'inference.response-shape-truncated',
             sprintf(
-                'Response-shape recovery in %s stopped at its descent bound %d time(s); the response is documented as its declared type.',
+                'Response-shape recovery in %s stopped at its descent bound %d time(s); the shape recovered for the response is its bare declared type.',
                 $symbol,
                 $truncations,
             ),

@@ -457,6 +457,12 @@ it('reports a bound-truncated response shape instead of degrading quietly', func
     expect($truncated[0]['help'])->toBe(
         'Flatten the chain between the `return` and the value it builds — every project-code call on the way is one hop, and the bound is not something config can raise. That is the only thing that clears this: stating the shape at a later layer corrects the document and leaves this notice naming the callable.',
     );
+
+    // …which is why the sentence reports the RECOVERY and not the finished response: the help's own
+    // later layer answers that node, so a claim about it would be false for the reader who took the
+    // advice (docs/design/defect-classes.md §"A diagnostic that asserts an outcome it never reads").
+    expect($truncated[0]['message'])->toContain('the shape recovered for the response is its bare declared type.')
+        ->and($truncated[0]['message'])->not->toContain('documented');
 })->group('fixture');
 
 it('folds each case independently + deterministically (memoisation keyed per enum-case+method)', function (): void {

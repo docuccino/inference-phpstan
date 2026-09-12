@@ -46,11 +46,17 @@ final readonly class UnreadStatus
         return $this->exceptionFqcn."\0".$this->reason->value."\0".$this->site->file."\0".$this->site->line;
     }
 
-    /** The sentence the notice is written from: what could not be read, where, and why. */
+    /**
+     * The sentence the notice is written from: what could not be read, where, and why.
+     *
+     * It reports what the FOLD came back with rather than what the error ends up documented as: the
+     * engine cannot see the document, and `#[Response(status: …)]` answers the same node
+     * (docs/design/defect-classes.md §"A diagnostic that asserts an outcome it never reads").
+     */
     public function sentence(): string
     {
         return sprintf(
-            '%s is thrown at %s:%d with no status this build could read: %s. The error is documented without a status of its own, so a later tier files it under one.',
+            '%s is thrown at %s:%d with no status this build could read: %s. Inference recovered no status for the error, so a later tier decides the one it is filed under.',
             $this->exceptionFqcn,
             $this->site->file,
             $this->site->line,

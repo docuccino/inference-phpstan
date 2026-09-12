@@ -12,8 +12,8 @@ use Docuccino\Core\Inference\SourceLocation;
  *
  * The point it was recorded at is what makes it worth a reader's time. Descent is only reached for a
  * throw point PHPStan flagged with nothing but a bare `Throwable` in it, so declining the hop drops the
- * point altogether: whatever that callee raises is documented nowhere, and a response missing outright
- * is the one outcome worse than a placeholder status.
+ * point altogether: whatever that callee raises reaches no response this build recovers, and a response
+ * missing outright is the one outcome worse than a placeholder status.
  *
  * The sentence stays in the conditional for a measured reason. Widening the scope reads the body and
  * sometimes finds nothing publishable — 3 of 7 firings on the fixture corpus recovered a throw and 2 a
@@ -56,7 +56,7 @@ final readonly class SkippedDescent
     public function sentence(): string
     {
         return sprintf(
-            '%s::%s() can throw and is called at %s:%d, and its body was not read: %s is outside the directories inference descends into, so an error response behind that call would be missing from this document.',
+            '%s::%s() can throw and is called at %s:%d, and its body was not read: %s is outside the directories inference descends into, so whatever it raises is not among the responses this build recovered.',
             $this->calleeClass,
             $this->calleeMethod,
             $this->site->file,

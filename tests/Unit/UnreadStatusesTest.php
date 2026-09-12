@@ -41,7 +41,12 @@ it('publishes the firings a reader can act on and drops the rest', function (): 
         ->and($only->severity)->toBe(Severity::Info)
         ->and($only->code)->toBe('inference.http-exception-status-unread')
         ->and($only->help)->toBe(UnreadStatusReason::DynamicConstruction->remedy())
-        ->and($only->message)->toContain('app/Services/Export.php:22');
+        ->and($only->message)->toContain('app/Services/Export.php:22')
+        // What the fold came back with, never what the error ends up documented as: the engine cannot
+        // see the document, and `#[Response(status: …)]` answers the same node
+        // (docs/design/defect-classes.md §"A diagnostic that asserts an outcome it never reads").
+        ->and($only->message)->toContain('Inference recovered no status for the error, so a later tier decides the one it is filed under.')
+        ->and($only->message)->not->toContain('documented');
 });
 
 /**
