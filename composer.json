@@ -1,6 +1,6 @@
 {
     "name": "docuccino/inference-phpstan",
-    "description": "PHPStan and Larastan type inference for Docuccino: infers response and exception shapes from the real types in your code.",
+    "description": "PHPStan and Larastan type inference for Docuccino: recovers OpenAPI response and error schemas from the real types in your code.",
     "type": "library",
     "keywords": [
         "openapi",
@@ -9,7 +9,7 @@
         "larastan",
         "static-analysis",
         "type-inference",
-        "uir",
+        "laravel",
         "scramble-alternative"
     ],
     "homepage": "https://docuccino.app",
