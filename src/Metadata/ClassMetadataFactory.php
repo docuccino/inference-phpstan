@@ -27,8 +27,8 @@ use ReflectionProperty;
  * `@property`/`@property-read` tags count as extra properties, typed through the shared
  * {@see TypeStringParser}: that ide-helper convention is what gives an Eloquent model's magic attributes
  * (which declare no PHP property at all) a typed column universe. A native public property wins over a
- * same-named tag. Memoised per class per run, and total — an unresolvable class yields empty but well-formed
- * metadata.
+ * same-named tag. A property its class fixes to one value is typed as that literal. Memoised per class per
+ * run, and total — an unresolvable class yields empty but well-formed metadata.
  *
  * @internal
  */
@@ -47,6 +47,7 @@ final class ClassMetadataFactory
         private readonly DocBlockReader $docBlocks = new DocBlockReader,
         private readonly NativeTypeMapper $typeMapper = new NativeTypeMapper,
         private readonly TypeStringParser $typeStrings = new TypeStringParser,
+        private readonly FixedPropertyValues $fixedValues = new FixedPropertyValues,
     ) {}
 
     public function forClass(ClassRef $class): ClassMetadata
@@ -69,15 +70,23 @@ final class ClassMetadataFactory
         $location = $file !== false ? new SourceLocation($file) : null;
         $properties = [];
         $seen = [];
+        // Files a fixed value was copied out of, which the class's own hierarchy does not cover.
+        $copied = [];
         foreach ($reflection->getProperties(ReflectionProperty::IS_PUBLIC) as $property) {
             if ($property->isStatic()) {
                 continue;
             }
             $docComment = $property->getDocComment();
             $docComment = $docComment === false ? null : $docComment;
+            $type = $this->propertyType($property, $docComment);
+            $fixed = $this->fixedValues->of($reflection, $property, $type);
+            if ($fixed !== null) {
+                $type = $fixed['type'];
+                $copied = [...$copied, ...$fixed['files']];
+            }
             $properties[] = new PropertyMetadata(
                 name: $property->getName(),
-                type: $this->propertyType($property, $docComment),
+                type: $type,
                 summary: $this->docBlocks->summary($docComment),
                 example: $this->docBlocks->example($docComment),
                 // An inherited property is declared elsewhere, and pointing at the subject's file would
@@ -109,7 +118,7 @@ final class ClassMetadataFactory
             fqcn: $fqcn,
             properties: $properties,
             summary: $this->docBlocks->summary($classDocComment),
-            dependencyFiles: self::dependencies($reflection, $properties),
+            dependencyFiles: self::dependencies($reflection, $properties, $copied),
         );
     }
 
@@ -119,15 +128,17 @@ final class ClassMetadataFactory
      *
      * The whole {@see DeclarationFiles} hierarchy counts, for the reasons stated there. An enum named in
      * a property type counts on top of it: its case names are COPIED into the metadata, so adding a case
-     * changes this answer without moving any file the class itself occupies.
+     * changes this answer without moving any file the class itself occupies. A fixed value's enum or
+     * constant ({@see FixedPropertyValues}) is copied the same way.
      *
      * @param  ReflectionClass<object>  $class
      * @param  list<PropertyMetadata>  $properties
+     * @param  list<string>  $copied
      * @return list<string>
      */
-    private static function dependencies(ReflectionClass $class, array $properties): array
+    private static function dependencies(ReflectionClass $class, array $properties, array $copied): array
     {
-        $files = [];
+        $files = array_fill_keys($copied, true);
         foreach (DeclarationFiles::forClass($class) as $file) {
             $files[$file] = true;
         }

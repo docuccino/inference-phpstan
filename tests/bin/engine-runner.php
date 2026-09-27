@@ -18,7 +18,7 @@ declare(strict_types=1);
  *   php engine-runner.php analyze-repeat           <controllerFile> <class> <method> <otherMethod>
  *   php engine-runner.php analyze-many              <controllerFile> <class> <method,method,…>
  *   php engine-runner.php analyze-many-narrow       <controllerFile> <class> <method,method,…>
- *   php engine-runner.php analyze-callable          <file> <class> <method> <line> <narrowParam> <narrowType>
+ *   php engine-runner.php analyze-callable          <file> <class> <method> <line> <narrowParam> <narrowType> [every]
  *   php engine-runner.php refine-pair               <fileBudget> <traceDepth> <file1> <class1> <method1> <file2> <class2> <method2>
  *   php engine-runner.php class-metadata            <ignored>        <class>
  *   php engine-runner.php trace-qb                  <controllerFile> <class> <method>
@@ -114,6 +114,7 @@ $method = $argv[4] ?? '';
 $line = (int) ($argv[5] ?? 0);
 $narrowParam = ($argv[6] ?? '') === '' ? null : $argv[6];
 $narrowType = ($argv[7] ?? '') === '' ? null : $argv[7];
+$narrowToEvery = ($argv[8] ?? '') === 'every';
 
 // trace-qb-bounds leads with the two descent bounds, the way refine-pair does, so its action arrives
 // two positions further along.
@@ -291,6 +292,7 @@ $result = match ($mode) {
         $line,
         $narrowParam,
         $narrowType,
+        $narrowToEvery,
     ))->toArray(),
     // Two callables through one engine (shared per-callee memo) under the tiny bounds: the determinism
     // guard for the refiner's "only serve a memo entry a caller could have earned" rule.

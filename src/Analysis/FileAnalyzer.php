@@ -10,6 +10,7 @@ use Docuccino\Inference\PhpStan\Runtime\RuntimeAdapter;
 use PhpParser\Node;
 use PHPStan\Analyser\Scope;
 use PHPStan\Node\ClosureReturnStatementsNode;
+use PHPStan\Node\InArrowFunctionNode;
 use PHPStan\Node\MethodReturnStatementsNode;
 use PHPStan\Reflection\ParameterReflection;
 use PHPStan\Type\ObjectType;
@@ -24,6 +25,7 @@ use Throwable;
  * @phpstan-type FileHarvest array{
  *     methods: array<string, MethodReturnStatementsNode>,
  *     closures: array<int, ClosureReturnStatementsNode>,
+ *     arrows: array<int, array{Node\Expr\ArrowFunction, Scope}>,
  *     arrays: array<string, array<string, Node\Expr\Array_>>,
  *     locals: array<string, array<string, array{Node\Expr, Scope}|null>>,
  *     calls: array<int, Scope>,
@@ -91,7 +93,7 @@ final class FileAnalyzer
      * The file's closures by START OFFSET, which is what a caller holding the `Closure` node asks with.
      * Keyed by offset rather than by line for the reason {@see scopeAtCall()} is: an offset is unique per
      * node and survives a re-parse, and two closures written on one line are two bodies a line-keyed map
-     * answers the last of for both. {@see closureAtLine()} is the ask a caller with only a line makes.
+     * answers the last of for both. {@see callableAtLine()} is the ask a caller with only a line makes.
      *
      * @return array<int, ClosureReturnStatementsNode>
      */
@@ -101,25 +103,28 @@ final class FileAnalyzer
     }
 
     /**
-     * The closure starting at `$line`, for the caller that has no offset to ask with: an
-     * exception-handler render callback, which `ReflectionFunction` gives us as file+line and nothing
-     * else. Null where the line carries more than one, which reflection cannot tell apart — answering
-     * either would publish one callback's response as the other's.
+     * The closure or arrow function starting at `$line`, for the caller that has no offset to ask with: an
+     * exception-handler callback, which `ReflectionFunction` gives us as file+line and nothing else. Null
+     * where the line carries more than one of either, which reflection cannot tell apart — answering either
+     * would publish one callback's response as the other's.
      */
-    public function closureAtLine(string $file, int $line): ?ClosureReturnStatementsNode
+    public function callableAtLine(string $file, int $line): ?CallableBody
     {
-        $found = null;
-        foreach ($this->closures($file) as $closure) {
-            if ($closure->getClosureExpr()->getStartLine() !== $line) {
-                continue;
+        $harvest = $this->harvest($file);
+
+        $found = [];
+        foreach ($harvest['closures'] as $closure) {
+            if ($closure->getClosureExpr()->getStartLine() === $line) {
+                $found[] = CallableBody::ofClosure($closure);
             }
-            if ($found !== null) {
-                return null;
+        }
+        foreach ($harvest['arrows'] as [$arrow, $scope]) {
+            if ($arrow->getStartLine() === $line) {
+                $found[] = CallableBody::ofArrow($arrow, $scope);
             }
-            $found = $closure;
         }
 
-        return $found;
+        return count($found) === 1 ? $found[0] : null;
     }
 
     /**
@@ -208,6 +213,8 @@ final class FileAnalyzer
         $methods = [];
         /** @var array<int, ClosureReturnStatementsNode> $closures by start offset */
         $closures = [];
+        /** @var array<int, array{Node\Expr\ArrowFunction, Scope}> $arrows by start offset, with the scope inside */
+        $arrows = [];
         /** @var array<string, array<string, Node\Expr\Array_>> $arrays */
         $arrays = [];
         /** @var array<string, array<string, array{Node\Expr, Scope}|null>> $locals */
@@ -217,7 +224,7 @@ final class FileAnalyzer
         /** @var array<string, true> $opaque scopes where a write named no single local */
         $opaque = [];
 
-        $this->walks->walk($file, function (Node $node, Scope $scope) use (&$methods, &$closures, &$arrays, &$locals, &$calls, &$opaque): void {
+        $this->walks->walk($file, function (Node $node, Scope $scope) use (&$methods, &$closures, &$arrows, &$arrays, &$locals, &$calls, &$opaque): void {
             // Watching for these virtual nodes is the sanctioned way to pair returns with refined scope.
             // Collected first and outside the guard below, so that a reader wanting only a method body — the
             // throw analyzer, the tracer descending into a callee — never pays for the write half's failures.
@@ -231,6 +238,13 @@ final class FileAnalyzer
                 && $node->getClosureExpr()->getStartFilePos() >= 0
             ) {
                 $closures[$node->getClosureExpr()->getStartFilePos()] = $node;
+            }
+
+            // An arrow function has no return-statements node of its own: its body is one expression, typed
+            // in the scope PHPStan hands this callback for the node that stands for its inside.
+            // @phpstan-ignore phpstanApi.instanceofAssumption
+            if ($node instanceof InArrowFunctionNode && $node->getOriginalNode()->getStartFilePos() >= 0) {
+                $arrows[$node->getOriginalNode()->getStartFilePos()] = [$node->getOriginalNode(), $scope];
             }
 
             // The two call forms whose arguments a status read folds ({@see scopeAtCall()}), paired with the
@@ -292,6 +306,7 @@ final class FileAnalyzer
         return $this->cache[$normalised] = [
             'methods' => $methods,
             'closures' => $closures,
+            'arrows' => $arrows,
             'arrays' => $arrays,
             'locals' => $locals,
             'calls' => $calls,

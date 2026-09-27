@@ -259,8 +259,9 @@ final class FixtureRunner
         int $line = 0,
         string $param = '',
         string $narrowType = '',
+        bool $every = false,
     ): array {
-        return self::invoke('analyze-callable', self::path($relPath), $class, $method, (string) $line, $param, $narrowType);
+        return self::invoke('analyze-callable', self::path($relPath), $class, $method, (string) $line, $param, $narrowType, $every ? 'every' : '');
     }
 
     /**
