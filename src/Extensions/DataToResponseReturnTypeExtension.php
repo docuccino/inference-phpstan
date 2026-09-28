@@ -23,8 +23,9 @@ use PHPStan\Type\Type;
  * says "this response carries that object", the adapter says what the object looks like.
  *
  * No status is attached, deliberately. `calculateResponseStatus()` is request-dependent (spatie's own
- * default reads the HTTP verb), so there is nothing statically foldable to attach, and the pipeline's
- * fallback — the thrown exception's status hint — is the real answer on the error path.
+ * default reads the HTTP verb), so there is nothing statically foldable to attach: a success response
+ * with no status argument is placed as the bare object would be, and on the error path the thrown
+ * exception's status hint is the real answer.
  *
  * Targets the CONTRACT, not `Data`: every `Data`, `Resource` and collectable implements it, and an
  * extension aimed at one concrete class would silently miss the others.

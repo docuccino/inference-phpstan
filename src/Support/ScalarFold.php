@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Docuccino\Inference\PhpStan\Support;
 
 use Docuccino\Core\Inference\DType\LiteralT;
+use Docuccino\Core\Inference\DType\UnionT;
 use Docuccino\Inference\PhpStan\Trace\TypeScopeImpl;
 use PHPStan\Type\Type;
 
@@ -40,5 +41,63 @@ final class ScalarFold
         }
 
         return null;
+    }
+
+    /**
+     * Every int a type can be, when it is nothing but constant ints the code wrote — a literal, or a union
+     * of them (`$ok ? 200 : 503`, a `match` whose arms are codes) — ascending, once each; null for anything
+     * else. One literal answers exactly as {@see of()} does, so a reader moving from one to the other reads
+     * the same grammar. An inferred range (`int<200, 299>`) is not a constant and is refused: it names no
+     * status anyone wrote, and expanding it would publish codes the application never mentions.
+     *
+     * No cap of its own: the count is the number of constants written in the expression, and each is a
+     * status the server can send.
+     *
+     * @return non-empty-list<int>|null
+     */
+    public static function ints(Type $type): ?array
+    {
+        if (! $type->isConstantScalarValue()->yes()) {
+            return null;
+        }
+
+        $ints = [];
+        foreach ($type->getConstantScalarValues() as $value) {
+            if (! is_int($value)) {
+                return null;
+            }
+            $ints[$value] = $value;
+        }
+        if ($ints === []) {
+            return null;
+        }
+
+        ksort($ints);
+
+        return array_values($ints);
+    }
+
+    /**
+     * The status a type folds to, carried as {@see status()} carries it — every constant code the type can
+     * be, as one literal or a union of them; null for no type, or one that is not all constant codes.
+     */
+    public static function statusOf(?Type $type): LiteralT|UnionT|null
+    {
+        $ints = $type === null ? null : self::ints($type);
+
+        return $ints === null ? null : self::status($ints);
+    }
+
+    /**
+     * The status a set of folded codes is carried as: the literal itself, or the union of one literal
+     * per code — which is what an adapter fans out to one response each.
+     *
+     * @param  non-empty-list<int>  $ints
+     */
+    public static function status(array $ints): LiteralT|UnionT
+    {
+        $union = UnionT::of(array_map(static fn (int $code): LiteralT => new LiteralT($code), $ints));
+
+        return $union instanceof UnionT ? $union : new LiteralT($ints[0]);
     }
 }

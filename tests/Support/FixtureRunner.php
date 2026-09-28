@@ -213,6 +213,17 @@ final class FixtureRunner
     }
 
     /**
+     * Run the request-header producer over an action on the real engine: the header parameters it
+     * publishes (`required`, `type`) by name, and the basenames of the files it made the route depend on.
+     *
+     * @return array<string, mixed>
+     */
+    public static function requestHeaders(string $controllerRelPath, string $class, string $method, string $formRequest = ''): array
+    {
+        return self::invoke('request-headers', self::path($controllerRelPath), $class, $method, $formRequest);
+    }
+
+    /**
      * Trace a controller with the CreatedResourceVisitor: returns whether the action returns a resource
      * wrapped directly around a `Model::create(...)` — i.e. a 201.
      *
@@ -260,8 +271,11 @@ final class FixtureRunner
         string $param = '',
         string $narrowType = '',
         bool $every = false,
+        bool $returnsExceptions = false,
     ): array {
-        return self::invoke('analyze-callable', self::path($relPath), $class, $method, (string) $line, $param, $narrowType, $every ? 'every' : '');
+        $mode = $returnsExceptions ? 'exceptions' : ($every ? 'every' : '');
+
+        return self::invoke('analyze-callable', self::path($relPath), $class, $method, (string) $line, $param, $narrowType, $mode);
     }
 
     /**

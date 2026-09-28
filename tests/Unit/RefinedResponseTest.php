@@ -7,6 +7,7 @@ use Docuccino\Core\Inference\DType\ArrayShapeField;
 use Docuccino\Core\Inference\DType\ArrayShapeT;
 use Docuccino\Core\Inference\DType\ClassT;
 use Docuccino\Core\Inference\DType\LiteralT;
+use Docuccino\Core\Inference\DType\PayloadStatusT;
 use Docuccino\Core\Inference\DType\ScalarT;
 use Docuccino\Core\Inference\DType\StatusMarkerT;
 use Docuccino\Core\Inference\DType\UnknownT;
@@ -349,4 +350,37 @@ it('recognises the bare response class names it should try to enrich', function 
         ->and(ResponseShapeRefiner::isResponseFqcn('Illuminate\\Http\\Response'))->toBeTrue()
         ->and(ResponseShapeRefiner::isResponseFqcn('Symfony\\Component\\HttpFoundation\\Response'))->toBeTrue()
         ->and(ResponseShapeRefiner::isResponseFqcn('App\\Models\\User'))->toBeFalse();
+});
+
+it('leaves the status of a self-rendering payload to the payload until something states one', function (RefinedResponse $r, array $expected): void {
+    // A PayloadStatusT is the claim "place it as the bare object": a resource's created-model 201 and a
+    // Data class's calculateResponseStatus() still apply. The status is KNOWN — it is the payload's — so a
+    // media type stamped on it later changes nothing about it, and an UnknownT would claim less than is
+    // known. A stated status (the chain's setStatusCode) is the one the server sends.
+    expect($r->toClassT(ResponseShapeRefiner::CANONICAL_RESPONSE)?->typeArgs)->toEqual($expected);
+})->with(function (): array {
+    $resource = new ClassT('App\\Http\\Resources\\WidgetResource');
+
+    return [
+        'rendered' => [RefinedResponse::renderedBy($resource), [$resource, new PayloadStatusT]],
+        'rendered, then stamped' => [RefinedResponse::renderedBy($resource)->withBoundStatus(new LiteralT(201)), [$resource, new LiteralT(201)]],
+        'rendered, then relabelled' => [RefinedResponse::renderedBy($resource)->withContentType('application/vnd.api+json'), [$resource, new PayloadStatusT, new LiteralT('application/vnd.api+json')]],
+        'a payload whose status did not fold' => [new RefinedResponse($resource), [$resource, new UnknownT('status not folded')]],
+    ];
+});
+
+it('claims no status where the code replaced one it could not read', function (): void {
+    // `->setStatusCode($request->integer('code'))` over `response()->json($b)`: the receiver's 200 is gone,
+    // and nothing is put in its place. That is worth publishing even over a receiver nothing else was read
+    // from — the bare type would bring back the framework's 200.
+    $read = (new RefinedResponse(new ArrayShapeT([]), new LiteralT(200)))->withUnreadStatus();
+    $bare = (new RefinedResponse)->withUnreadStatus();
+
+    expect($read->toClassT(ResponseShapeRefiner::CANONICAL_RESPONSE)?->typeArgs[1])->toEqual(new UnknownT('status not folded'))
+        ->and($bare->isDocumentable())->toBeTrue()
+        ->and($bare->toClassT(ResponseShapeRefiner::CANONICAL_RESPONSE)?->typeArgs)->toEqual([new UnknownT('payload not folded'), new UnknownT('status not folded')])
+        // A later link stating a code settles it again.
+        ->and($read->withBoundStatus(new LiteralT(503))->statusUnread)->toBeFalse()
+        // The payload's own status cannot stand either: the code replaced it.
+        ->and(RefinedResponse::renderedBy(new ClassT('App\\Http\\Resources\\WidgetResource'))->withUnreadStatus()->toClassT(ResponseShapeRefiner::CANONICAL_RESPONSE)?->typeArgs)->toHaveCount(2);
 });

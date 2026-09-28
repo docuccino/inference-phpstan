@@ -7,6 +7,7 @@ use Docuccino\Core\Inference\DType\ArrayShapeT;
 use Docuccino\Core\Inference\DType\ClassT;
 use Docuccino\Core\Inference\DType\LiteralT;
 use Docuccino\Core\Inference\DType\StatusMarkerT;
+use Docuccino\Core\Inference\DType\UnknownT;
 use Docuccino\Inference\PhpStan\Tests\Support\FixtureRunner;
 
 /**
@@ -731,15 +732,21 @@ it('peels a chain off a constructed response without spending descent budget on 
     ]);
 })->group('fixture');
 
-it('declines the chain rather than guessing a status it cannot fold', function (): void {
-    // A relayed status is whatever the upstream answered. The document has no way to say "unknown status",
-    // so this degrades to the framework default — but it degrades from the code, not from a folded value
-    // this build invented for it.
+it('reads a status it cannot fold as unknown, never as the one the body-builder defaulted to', function (): void {
+    // A relayed status is whatever the upstream answered. The `200` `response()->json()` carried was
+    // replaced by it, so it cannot stand; the body still can, because a status link cannot have touched it.
+    // Unknown is a real answer downstream — the body is published under `default`, "any status".
+    $type = ActionAnalysis::fromArray(FixtureRunner::analyze(
+        'app/Http/Controllers/WebhookReceiptController.php',
+        'App\\Http\\Controllers\\WebhookReceiptController',
+        'relay',
+    ))->returns[0]->type;
+
     expect(fluentShape('relay'))->toBe([
-        'status' => 200,
+        'status' => null,
         'contentType' => null,
         'keys' => ['relayed'],
-    ]);
+    ])->and($type instanceof ClassT ? $type->typeArgs[1] ?? null : null)->toBeInstanceOf(UnknownT::class);
 })->group('fixture');
 
 it('refuses a whole chain when a link may have rewritten the body', function (): void {

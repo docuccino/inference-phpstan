@@ -106,7 +106,44 @@ final class ThrowAnalyzer
 
         $raw = $this->analyzeMethod($node, $selfLabel, 0, [], []);
 
-        return $this->dedupe($raw);
+        return $this->deduped($raw);
+    }
+
+    /**
+     * The exceptions a RETURNED expression builds, each at the status a `throw` of that same expression would
+     * state — how a callable that answers with an exception for the framework to render (an exception map's
+     * translation) is read. One grammar for a construction whether it is thrown or handed back: the status
+     * read is {@see statusForType()} over the expression wrapped as the `throw` it stands for, so a local
+     * assigned once, a static factory on the class and a pinned status all read here as they read at a throw.
+     *
+     * Only classes a handler could be handed count: an instantiable `Throwable`. A return typed as an
+     * interface or an abstract base names no class the response could be read from, and answers nothing.
+     * Accumulates across calls, like {@see analyze()} within one body, so {@see diagnostics()} and
+     * {@see visitedFiles()} cover every return read.
+     *
+     * @return list<ThrownException>
+     */
+    public function returned(Node\Expr $expr, Scope $scope, string $selfLabel): array
+    {
+        $frame = $this->frame($selfLabel, $scope, $expr);
+        $thrown = new Node\Expr\Throw_($expr, $expr->getAttributes());
+
+        $results = [];
+        foreach ($scope->getType($expr)->getObjectClassNames() as $class) {
+            if (! $this->reflectionProvider->hasClass($class)) {
+                continue;
+            }
+
+            $reflection = $this->reflectionProvider->getClass($class);
+            if ($reflection->isInterface() || $reflection->isAbstract() || ! $reflection->implementsInterface('Throwable')) {
+                continue;
+            }
+
+            $status = $this->statusForType($reflection->getName(), null, $thrown, $scope, $frame)['status'];
+            $results[] = new ThrownException($reflection->getName(), $status, [$frame], ThrowConfidence::Certain, ThrowDisposition::Signal);
+        }
+
+        return $results;
     }
 
     /**
@@ -466,10 +503,13 @@ final class ThrowAnalyzer
     }
 
     /**
+     * One throw per identity, the most confident kept, in status-then-class order — for {@see analyze()} and
+     * for throws gathered by {@see returned()}.
+     *
      * @param  list<ThrownException>  $raw
      * @return list<ThrownException>
      */
-    private function dedupe(array $raw): array
+    public function deduped(array $raw): array
     {
         $byIdentity = [];
         foreach ($raw as $throw) {

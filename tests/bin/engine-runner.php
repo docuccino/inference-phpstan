@@ -18,7 +18,7 @@ declare(strict_types=1);
  *   php engine-runner.php analyze-repeat           <controllerFile> <class> <method> <otherMethod>
  *   php engine-runner.php analyze-many              <controllerFile> <class> <method,method,…>
  *   php engine-runner.php analyze-many-narrow       <controllerFile> <class> <method,method,…>
- *   php engine-runner.php analyze-callable          <file> <class> <method> <line> <narrowParam> <narrowType> [every]
+ *   php engine-runner.php analyze-callable          <file> <class> <method> <line> <narrowParam> <narrowType> [every|exceptions]
  *   php engine-runner.php refine-pair               <fileBudget> <traceDepth> <file1> <class1> <method1> <file2> <class2> <method2>
  *   php engine-runner.php class-metadata            <ignored>        <class>
  *   php engine-runner.php trace-qb                  <controllerFile> <class> <method>
@@ -33,6 +33,7 @@ declare(strict_types=1);
  *   php engine-runner.php data-response-status      <dataFile>       <class[,class…]> <ignored>
  *   php engine-runner.php trace-file-responses      <controllerFile> <class> <method>
  *   php engine-runner.php trace-closure             <file> <ignored> <ignored> <line>
+ *   php engine-runner.php request-headers           <controllerFile> <class> <method> <formRequest>
  *
  * Dispatch stays a `match ($mode)` rather than a mode => factory table — each arm is a thin
  * visitor probe and a test-only harness doesn't warrant the indirection. Revisit if the mode
@@ -42,6 +43,7 @@ declare(strict_types=1);
  * it is ignored by the caller.
  */
 
+use Docuccino\Core\Draft\OperationDraft;
 use Docuccino\Core\Extensions\Context\AttributeSet;
 use Docuccino\Core\Extensions\Context\DocumentConfig;
 use Docuccino\Core\Extensions\Context\RouteContext;
@@ -62,6 +64,7 @@ use Docuccino\Inference\PhpStan\Tests\Support\QueryBuilderProbe;
 use Docuccino\Laravel\Engine\AnalysisScopes;
 use Docuccino\Laravel\Extensions\FileResponseCall;
 use Docuccino\Laravel\Extensions\FileResponseVisitor;
+use Docuccino\Laravel\Extensions\RequestHeadersExtension;
 use Docuccino\Laravel\Integrations\ApiResources\CreatedResourceVisitor;
 use Docuccino\Laravel\Integrations\FormRequest\InlineRulesVisitor;
 use Docuccino\Laravel\Integrations\FormRequest\RulesMethodVisitor;
@@ -115,6 +118,7 @@ $line = (int) ($argv[5] ?? 0);
 $narrowParam = ($argv[6] ?? '') === '' ? null : $argv[6];
 $narrowType = ($argv[7] ?? '') === '' ? null : $argv[7];
 $narrowToEvery = ($argv[8] ?? '') === 'every';
+$returnsExceptions = ($argv[8] ?? '') === 'exceptions';
 
 // trace-qb-bounds leads with the two descent bounds, the way refine-pair does, so its action arrives
 // two positions further along.
@@ -293,6 +297,7 @@ $result = match ($mode) {
         $narrowParam,
         $narrowType,
         $narrowToEvery,
+        $returnsExceptions,
     ))->toArray(),
     // Two callables through one engine (shared per-callee memo) under the tiny bounds: the determinism
     // guard for the refiner's "only serve a memo entry a caller could have earned" rule.
@@ -526,6 +531,32 @@ $result = match ($mode) {
             'disposition' => $call->disposition,
             'filename' => $call->filename,
         ], $visitor->calls)];
+    })(),
+    'request-headers' => (static function () use ($engine, $ref, $argv): array {
+        // The whole producer over the real engine: the action's trace descending into the FormRequest
+        // method it calls, and the framework-run FormRequest methods traced as roots of their own.
+        $context = new RouteContext(
+            route: new RouteDescriptor(['POST'], '/api/orders'),
+            actionRef: $ref,
+            attributes: new AttributeSet,
+            engine: $engine,
+            document: new DocumentConfig('default', []),
+            formRequestClass: ($argv[5] ?? '') === '' ? null : $argv[5],
+        );
+        $operation = new OperationDraft;
+        (new RequestHeadersExtension)->handle($operation, $context);
+
+        $headers = [];
+        foreach ($operation->parameterKeys() as $key) {
+            $name = substr($key, strlen('header:'));
+            $parameter = $operation->parameter('header', $name);
+            $headers[$name] = [
+                'required' => $parameter->resolvedField('required'),
+                'type' => $parameter->schema()->resolvedField('type'),
+            ];
+        }
+
+        return ['headers' => $headers, 'files' => array_map('basename', $context->dependencyFiles())];
     })(),
     'trace-created-resource' => (static function () use ($engine, $ref): array {
         // CreatedResourceVisitor recognises a resource wrapping a real Model::create() — the 201 status

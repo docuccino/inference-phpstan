@@ -4,7 +4,8 @@ declare(strict_types=1);
 
 namespace Docuccino\Inference\PhpStan\Extensions;
 
-use Docuccino\Core\Inference\ArgumentSlots;
+use Docuccino\Inference\PhpStan\Support\ResponseFactoryCall;
+use PhpParser\Node\Expr;
 use PhpParser\Node\Expr\MethodCall;
 use PHPStan\Analyser\Scope;
 use PHPStan\Reflection\MethodReflection;
@@ -50,7 +51,7 @@ final class ResponseJsonReturnTypeExtension implements DynamicMethodReturnTypeEx
 
     public function isMethodSupported(MethodReflection $methodReflection): bool
     {
-        return $methodReflection->getName() === 'json' || $methodReflection->getName() === 'noContent';
+        return $methodReflection->getName() === ResponseFactoryCall::JSON || $methodReflection->getName() === ResponseFactoryCall::NO_CONTENT;
     }
 
     public function getTypeFromMethodCall(
@@ -58,41 +59,21 @@ final class ResponseJsonReturnTypeExtension implements DynamicMethodReturnTypeEx
         MethodCall $methodCall,
         Scope $scope,
     ): ?Type {
-        // A first-class callable is a callable, not a call: it has a placeholder where its arguments go,
-        // and `getArgs()` only ASSERTS that — with `zend.assertions=-1` the placeholder would reach the
-        // reads below and be handed to the scope as an argument expression.
-        if ($methodCall->isFirstClassCallable()) {
+        $call = ResponseFactoryCall::arguments($methodCall);
+        if ($call === null) {
             return null;
-        }
-
-        $slots = ArgumentSlots::of($methodCall->getArgs());
-
-        if ($methodReflection->getName() === 'noContent') {
-            return $this->noContent($slots, $scope);
         }
 
         // No payload argument → fall back to the declared return type. An unreadable spread answers the
         // same, for a stronger reason: the payload is somewhere in there, and typing the spread expression
-        // would document the ARGUMENT LIST as the response body.
-        $payload = $slots->at(0) ?? $slots->at('data');
-        if ($payload === null) {
+        // would document the ARGUMENT LIST as the response body. A void payload marks "no response body":
+        // `noContent()` writes an empty body whatever status it carries.
+        if ($call['method'] === ResponseFactoryCall::JSON && $call['body'] === null) {
             return null;
         }
+        $payload = $call['body'] === null ? new VoidType : $scope->getType($call['body']);
 
-        return new GenericObjectType(self::JSON_RESPONSE, [
-            $scope->getType($payload),
-            $this->status($slots, $scope, 1, new ConstantIntegerType(200)),
-        ]);
-    }
-
-    private function noContent(ArgumentSlots $slots, Scope $scope): Type
-    {
-        // A void payload marks "no response body"; the pipeline emits an empty response. `noContent()`
-        // writes an empty body whatever status it carries, so only the status widens here.
-        return new GenericObjectType(self::JSON_RESPONSE, [
-            new VoidType,
-            $this->status($slots, $scope, 0, new ConstantIntegerType(204)),
-        ]);
+        return new GenericObjectType(self::JSON_RESPONSE, [$payload, $this->status($call, $scope)]);
     }
 
     /**
@@ -101,15 +82,14 @@ final class ResponseJsonReturnTypeExtension implements DynamicMethodReturnTypeEx
      * is only true of a call that provably passed no status — read out of a spread it would be a status
      * this endpoint never sends.
      *
-     * @param  int  $position  where this method's signature takes the status
+     * @param  array{status: Expr|null, defaultStatus: int|null}  $call
      */
-    private function status(ArgumentSlots $slots, Scope $scope, int $position, ConstantIntegerType $default): Type
+    private function status(array $call, Scope $scope): Type
     {
-        $written = $slots->at($position) ?? $slots->at('status');
-        if ($written !== null) {
-            return $scope->getType($written);
+        if ($call['status'] !== null) {
+            return $scope->getType($call['status']);
         }
 
-        return $slots->knows($position) ? $default : new IntegerType;
+        return $call['defaultStatus'] === null ? new IntegerType : new ConstantIntegerType($call['defaultStatus']);
     }
 }

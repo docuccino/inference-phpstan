@@ -11,7 +11,10 @@ namespace Illuminate\Http;
  * `TStatus` carries the constant-folded response status when it is statically
  * known (`response()->json($x, 201)` → `JsonResponse<TPayload, 201>`); it
  * defaults to `200` at the call site. The pipeline unwraps these parameters,
- * mapping the payload shape under the folded status.
+ * mapping the payload shape under the folded status. A `PayloadStatusT` status
+ * (written by the refiner, never by PHPStan) is an object the framework renders
+ * by its own rules (a resource's `->response()`), so its status is the
+ * payload's to decide, exactly as for returning the object bare.
  *
  * A THIRD parameter `TContentType` is populated only by ResponseShapeRefiner
  * (helper-indirection recovery) when a helper set an explicit `Content-Type`

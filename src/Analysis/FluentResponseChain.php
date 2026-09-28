@@ -7,6 +7,7 @@ namespace Docuccino\Inference\PhpStan\Analysis;
 use Docuccino\Core\Inference\ArgumentSlots;
 use Docuccino\Core\Inference\DType\ClassT;
 use Docuccino\Core\Inference\DType\LiteralT;
+use Docuccino\Core\Inference\DType\UnionT;
 use Docuccino\Inference\PhpStan\Support\ContentTypeHeader;
 use Docuccino\Inference\PhpStan\Support\ScalarFold;
 use Docuccino\Inference\PhpStan\Translation\TypeTranslator;
@@ -26,9 +27,9 @@ use PHPStan\Type\StaticType;
  * it can never unwrap a shape it cannot vouch for: a call whose RECEIVER is one of the response classes is
  * a MUTATOR of that response, and it is peeled only when it is one of the three links below and the
  * INSTALLED framework declares it as one that hands the same object back ({@see linkParameters()}). A
- * mutator failing either test — `->setData($other)`, a status this build cannot fold — declines the WHOLE
- * chain rather than passing the receiver's shape through something that may have rewritten it. A call whose
- * receiver is not a response is a PRODUCER: that is the base, and the refiner takes it from there.
+ * mutator failing either test — `->setData($other)` — declines the WHOLE chain rather than passing the
+ * receiver's shape through something that may have rewritten it. A call whose receiver is not a response
+ * is a PRODUCER: that is the base, and the refiner takes it from there.
  *
  * `withStatus()` is deliberately absent: it is PSR-7's setter, and no class in
  * {@see ResponseShapeRefiner::isResponseFqcn()} declares it, so reading it would be a name that can never
@@ -36,13 +37,15 @@ use PHPStan\Type\StaticType;
  * `(new StreamedResponse(…))->setStatusCode(202)` out of here, since the refiner emits everything it
  * recovers as a `JsonResponse` and a streamed body is not one.
  *
- * A header link is the one place the two facts part company: a `->header($name, $v)` this cannot read
- * cannot have touched the STATUS, so refusing the whole chain over it would leave the receiver's status
- * standing where the chain plainly restated it. Such a link reports its media type as UNKNOWN instead,
- * which drops whatever the receiver carried rather than publishing a type the header may have replaced.
+ * A link that cannot be read is reported UNKNOWN in the one fact it could have set, never refused: a
+ * `->header($name, $v)` this cannot read cannot have touched the STATUS, and a `->setStatusCode($code)` it
+ * cannot read cannot have touched the BODY. Refusing the chain over either would leave the receiver's own
+ * status standing where the code plainly restated it — the `JsonResponse<…, 200>` of `response()->json()`
+ * published for a status the endpoint may never send. A status that folds to several constants
+ * (`$ok ? 200 : 503`) is read as all of them ({@see ScalarFold::ints()}).
  *
- * @phpstan-type PeeledChain array{receiver: Node\Expr, status: LiteralT|null, contentType: string|null, contentTypeUnknown: bool}
- * @phpstan-type ChainLink array{status: LiteralT|null, contentType: string|null, contentTypeUnknown: bool}
+ * @phpstan-type PeeledChain array{receiver: Node\Expr, status: LiteralT|UnionT|null, statusUnknown: bool, contentType: string|null, contentTypeUnknown: bool}
+ * @phpstan-type ChainLink array{status: LiteralT|UnionT|null, statusUnknown: bool, contentType: string|null, contentTypeUnknown: bool}
  *
  * @internal
  */
@@ -74,6 +77,7 @@ final class FluentResponseChain
     public function peel(Node\Expr $expr, Scope $scope): ?array
     {
         $status = null;
+        $statusUnknown = false;
         $contentType = null;
         $unknown = false;
         $current = $expr;
@@ -88,9 +92,12 @@ final class FluentResponseChain
                 return null; // a mutator this cannot read: the chain declines rather than guessing
             }
 
-            $status ??= $link['status'];
-            // Whichever of the two a link settles, it settles for the chain: an inner header cannot
-            // undo an outer one, and neither can it undo an outer one this could not read.
+            // Whichever fact a link settles, it settles for the chain: an inner link cannot undo an outer
+            // one, and neither can it undo an outer one this could not read.
+            if ($status === null && ! $statusUnknown) {
+                $status = $link['status'];
+                $statusUnknown = $link['statusUnknown'];
+            }
             if ($contentType === null && ! $unknown) {
                 $contentType = $link['contentType'];
                 $unknown = $link['contentTypeUnknown'];
@@ -100,7 +107,7 @@ final class FluentResponseChain
         }
 
         return $peeled
-            ? ['receiver' => $current, 'status' => $status, 'contentType' => $contentType, 'contentTypeUnknown' => $unknown]
+            ? ['receiver' => $current, 'status' => $status, 'statusUnknown' => $statusUnknown, 'contentType' => $contentType, 'contentTypeUnknown' => $unknown]
             : null;
     }
 
@@ -177,25 +184,18 @@ final class FluentResponseChain
     }
 
     /**
-     * `setStatusCode(202)`. A status this build cannot fold to an int is the one thing worth refusing the
-     * whole chain over: the code plainly states a status, so passing the receiver's through would publish
-     * one the endpoint may never send.
+     * `setStatusCode(202)`, or `setStatusCode($ok ? 200 : 503)` as both codes. A status this build cannot
+     * fold is still a status the code states, so it is reported unknown: passing the receiver's through
+     * would publish one the endpoint may never send.
      *
-     * @return ChainLink|false
+     * @return ChainLink
      */
-    private function readStatus(ArgumentSlots $args, Scope $scope): array|false
+    private function readStatus(ArgumentSlots $args, Scope $scope): array
     {
         $code = $args->at(0);
-        if ($code === null) {
-            return false; // absent or opaque — either way, unreadable
-        }
+        $status = ScalarFold::statusOf($code === null ? null : $scope->getType($code));
 
-        $folded = ScalarFold::of($scope->getType($code));
-        if ($folded === null || ! is_int($folded[0])) {
-            return false;
-        }
-
-        return ['status' => new LiteralT($folded[0]), 'contentType' => null, 'contentTypeUnknown' => false];
+        return ['status' => $status, 'statusUnknown' => $status === null, 'contentType' => null, 'contentTypeUnknown' => false];
     }
 
     /**
@@ -214,7 +214,7 @@ final class FluentResponseChain
             return self::unknownMediaType();
         }
         if (! ContentTypeHeader::names($folded[0])) {
-            return ['status' => null, 'contentType' => null, 'contentTypeUnknown' => false];
+            return ['status' => null, 'statusUnknown' => false, 'contentType' => null, 'contentTypeUnknown' => false];
         }
 
         $replace = $args->at(2);
@@ -226,7 +226,7 @@ final class FluentResponseChain
         $media = ScalarFold::of($scope->getType($value));
 
         return $media !== null && is_string($media[0])
-            ? ['status' => null, 'contentType' => $media[0], 'contentTypeUnknown' => false]
+            ? ['status' => null, 'statusUnknown' => false, 'contentType' => $media[0], 'contentTypeUnknown' => false]
             : self::unknownMediaType();
     }
 
@@ -246,7 +246,7 @@ final class FluentResponseChain
 
         $media = ContentTypeHeader::inArray($headers, $scope);
 
-        return ['status' => null, 'contentType' => $media, 'contentTypeUnknown' => false];
+        return ['status' => null, 'statusUnknown' => false, 'contentType' => $media, 'contentTypeUnknown' => false];
     }
 
     /**
@@ -257,6 +257,6 @@ final class FluentResponseChain
      */
     private static function unknownMediaType(): array
     {
-        return ['status' => null, 'contentType' => null, 'contentTypeUnknown' => true];
+        return ['status' => null, 'statusUnknown' => false, 'contentType' => null, 'contentTypeUnknown' => true];
     }
 }

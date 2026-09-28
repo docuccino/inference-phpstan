@@ -10,8 +10,11 @@ use Docuccino\Core\Inference\DType\ArrayShapeT;
 use Docuccino\Core\Inference\DType\ClassT;
 use Docuccino\Core\Inference\DType\DType;
 use Docuccino\Core\Inference\DType\LiteralT;
+use Docuccino\Core\Inference\DType\PayloadStatusT;
 use Docuccino\Core\Inference\DType\StatusMarkerT;
+use Docuccino\Core\Inference\DType\UnionT;
 use Docuccino\Core\Inference\DType\UnknownT;
+use Docuccino\Inference\PhpStan\Support\ScalarFold;
 
 /**
  * A response shape {@see ResponseShapeRefiner} recovered from a return PHPStan had erased to a bare
@@ -50,13 +53,15 @@ final readonly class RefinedResponse
      */
     public function __construct(
         public ?DType $payload = null,
-        public ?LiteralT $status = null,
+        public LiteralT|UnionT|null $status = null,
         public ?ParamAccessor $statusSource = null,
         public ?string $contentType = null,
         public bool $delegates = false,
         public array $payloadParamProvenance = [],
         public ?ArrayShapeT $payloadMembers = null,
         public ?ComponentDeclaration $component = null,
+        public bool $statusOfPayload = false,
+        public bool $statusUnread = false,
     ) {}
 
     /**
@@ -69,7 +74,19 @@ final readonly class RefinedResponse
      */
     public function withComponent(ComponentDeclaration $component): self
     {
-        return new self($this->payload, $this->status, $this->statusSource, $this->contentType, $this->delegates, $this->payloadParamProvenance, $this->payloadMembers, $component);
+        return new self($this->payload, $this->status, $this->statusSource, $this->contentType, $this->delegates, $this->payloadParamProvenance, $this->payloadMembers, $component, $this->statusOfPayload, $this->statusUnread);
+    }
+
+    /**
+     * An object the framework renders by its own rules — a resource through its `toResponse()`. The status
+     * is the object's to decide exactly as it is for the bare object (a resource's 201 for a model it just
+     * created), so none is claimed here: {@see $statusOfPayload} emits a {@see PayloadStatusT} status, which
+     * the adapter reads as "place it as the payload would be placed", and a chain's `->setStatusCode()` still
+     * overrides it.
+     */
+    public static function renderedBy(DType $payload): self
+    {
+        return new self($payload, statusOfPayload: true);
     }
 
     /** A `return null`/void return: the framework handles it, so there's no response to document. */
@@ -78,10 +95,13 @@ final readonly class RefinedResponse
         return new self(delegates: true);
     }
 
-    /** An everything-null shape isn't worth substituting for the bare type. */
+    /**
+     * An everything-null shape isn't worth substituting for the bare type. An unread status is worth it
+     * alone: the bare type would publish the framework's 200 where the code replaced it.
+     */
     public function isDocumentable(): bool
     {
-        return $this->payload !== null || $this->status !== null || $this->contentType !== null;
+        return $this->payload !== null || $this->status !== null || $this->contentType !== null || $this->statusUnread;
     }
 
     /**
@@ -91,13 +111,26 @@ final readonly class RefinedResponse
      */
     public function withContentType(?string $contentType): self
     {
-        return new self($this->payload, $this->status, $this->statusSource, $contentType, $this->delegates, $this->payloadParamProvenance, $this->payloadMembers, $this->component);
+        return new self($this->payload, $this->status, $this->statusSource, $contentType, $this->delegates, $this->payloadParamProvenance, $this->payloadMembers, $this->component, $this->statusOfPayload, $this->statusUnread);
     }
 
-    /** Clears {@see $statusSource} so the bound shape reads as resolved. */
-    public function withBoundStatus(LiteralT $status): self
+    /**
+     * Clears {@see $statusSource} so the bound shape reads as resolved. A union is every code the status
+     * can take — each one a response the server can send ({@see ScalarFold::status()}).
+     */
+    public function withBoundStatus(LiteralT|UnionT $status): self
     {
-        return new self($this->payload, $status, null, $this->contentType, $this->delegates, $this->payloadParamProvenance, $this->payloadMembers, $this->component);
+        return new self($this->payload, $status, null, $this->contentType, $this->delegates, $this->payloadParamProvenance, $this->payloadMembers, $this->component, $this->statusOfPayload);
+    }
+
+    /**
+     * A status the code states but this cannot read (`->setStatusCode($request->integer('code'))`): it
+     * replaces whatever the receiver carried, so neither that status nor the payload's own can stand, and
+     * none is invented in their place.
+     */
+    public function withUnreadStatus(): self
+    {
+        return new self($this->payload, null, null, $this->contentType, $this->delegates, $this->payloadParamProvenance, $this->payloadMembers, $this->component, statusUnread: true);
     }
 
     /**
@@ -106,7 +139,7 @@ final readonly class RefinedResponse
      */
     public function withStatusSource(?ParamAccessor $statusSource): self
     {
-        return new self($this->payload, null, $statusSource, $this->contentType, $this->delegates, $this->payloadParamProvenance, $this->payloadMembers, $this->component);
+        return new self($this->payload, null, $statusSource, $this->contentType, $this->delegates, $this->payloadParamProvenance, $this->payloadMembers, $this->component, $this->statusOfPayload, $this->statusUnread);
     }
 
     /**
@@ -114,7 +147,7 @@ final readonly class RefinedResponse
      */
     public function withPayload(?DType $payload, array $payloadParamProvenance): self
     {
-        return new self($payload, $this->status, $this->statusSource, $this->contentType, $this->delegates, $payloadParamProvenance, $this->payloadMembers, $this->component);
+        return new self($payload, $this->status, $this->statusSource, $this->contentType, $this->delegates, $payloadParamProvenance, $this->payloadMembers, $this->component, $this->statusOfPayload, $this->statusUnread);
     }
 
     /**
@@ -125,7 +158,7 @@ final readonly class RefinedResponse
      */
     public function withPayloadMembers(ArrayShapeT $payloadMembers, array $payloadParamProvenance): self
     {
-        return new self($this->payload, $this->status, $this->statusSource, $this->contentType, $this->delegates, $payloadParamProvenance, $payloadMembers, $this->component);
+        return new self($this->payload, $this->status, $this->statusSource, $this->contentType, $this->delegates, $payloadParamProvenance, $payloadMembers, $this->component, $this->statusOfPayload, $this->statusUnread);
     }
 
     /**
@@ -197,7 +230,7 @@ final readonly class RefinedResponse
      *
      * @param  array<string, ParamAccessor>  $payloadParamProvenance  member key → accessor
      */
-    public static function fromConstructor(?DType $payload, ?LiteralT $status, ?ParamAccessor $statusSource, ?string $contentType, array $payloadParamProvenance): self
+    public static function fromConstructor(?DType $payload, LiteralT|UnionT|null $status, ?ParamAccessor $statusSource, ?string $contentType, array $payloadParamProvenance): self
     {
         if ($statusSource !== null && $payload instanceof ArrayShapeT) {
             foreach ($payloadParamProvenance as $key => $accessor) {
@@ -247,9 +280,11 @@ final readonly class RefinedResponse
             return null;
         }
 
+        // The payload deciding its own status is a status that is KNOWN — the payload's — so it says so
+        // rather than leaving the slot unknown ({@see PayloadStatusT}).
         $args = [
             $this->payload ?? new UnknownT('payload not folded'),
-            $this->status ?? new UnknownT('status not folded'),
+            $this->status ?? ($this->statusOfPayload && $this->payload !== null ? new PayloadStatusT : new UnknownT('status not folded')),
         ];
         if ($this->contentType !== null) {
             $args[] = new LiteralT($this->contentType);
