@@ -7,6 +7,12 @@ User-facing changes to `docuccino/inference-phpstan` — features, fixes, perfor
 taken from the commit messages scoped `inference-phpstan`. Entries begin after v0.1.2; older history is in
 the [repository](https://github.com/docuccino/docuccino) git log.
 
+## v0.20.3
+
+### Features
+
+- read an exception mapper's returns as the exceptions they build ([#554](https://github.com/docuccino/docuccino/pull/554))
+
 ## v0.17.0
 
 ### Bug fixes
