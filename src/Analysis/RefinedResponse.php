@@ -213,13 +213,10 @@ final readonly class RefinedResponse
         }
 
         return $this->withPayloadMembers(
-            new ArrayShapeT(
-                array_values(array_filter(
-                    $this->payloadMembers->fields,
-                    static fn (ArrayShapeField $field): bool => (string) $field->key !== $key,
-                )),
-                $this->payloadMembers->isList,
-            ),
+            $this->payloadMembers->withFields(array_values(array_filter(
+                $this->payloadMembers->fields,
+                static fn (ArrayShapeField $field): bool => (string) $field->key !== $key,
+            ))),
             $provenance,
         );
     }
@@ -254,15 +251,12 @@ final readonly class RefinedResponse
     /** One key's field marked as one the body always carries; type, order and every other field untouched. */
     private static function settleField(ArrayShapeT $shape, string $key): ArrayShapeT
     {
-        return new ArrayShapeT(
-            array_map(
-                static fn (ArrayShapeField $field): ArrayShapeField => (string) $field->key === $key
-                    ? new ArrayShapeField($field->key, $field->type)
-                    : $field,
-                $shape->fields,
-            ),
-            $shape->isList,
-        );
+        return $shape->withFields(array_map(
+            static fn (ArrayShapeField $field): ArrayShapeField => (string) $field->key === $key
+                ? new ArrayShapeField($field->key, $field->type)
+                : $field,
+            $shape->fields,
+        ));
     }
 
     /**

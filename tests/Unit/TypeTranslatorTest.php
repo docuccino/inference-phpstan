@@ -4,11 +4,13 @@ declare(strict_types=1);
 
 namespace Docuccino\Inference\PhpStan\Tests\Unit;
 
+use Docuccino\Core\Inference\DType\ArrayShapeField;
 use Docuccino\Core\Inference\DType\ArrayShapeT;
 use Docuccino\Core\Inference\DType\CallableT;
 use Docuccino\Core\Inference\DType\ClassT;
 use Docuccino\Core\Inference\DType\DType;
 use Docuccino\Core\Inference\DType\EnumT;
+use Docuccino\Core\Inference\DType\IntersectionT;
 use Docuccino\Core\Inference\DType\ListT;
 use Docuccino\Core\Inference\DType\LiteralT;
 use Docuccino\Core\Inference\DType\MapT;
@@ -28,6 +30,7 @@ use PHPStan\Type\Accessory\NonEmptyArrayType;
 use PHPStan\Type\ArrayType;
 use PHPStan\Type\BooleanType;
 use PHPStan\Type\CallableType;
+use PHPStan\Type\ClosureType;
 use PHPStan\Type\Constant\ConstantArrayTypeBuilder;
 use PHPStan\Type\Constant\ConstantBooleanType;
 use PHPStan\Type\Constant\ConstantIntegerType;
@@ -42,6 +45,7 @@ use PHPStan\Type\IntersectionType;
 use PHPStan\Type\MixedType;
 use PHPStan\Type\NeverType;
 use PHPStan\Type\NullType;
+use PHPStan\Type\ObjectShapeType;
 use PHPStan\Type\ObjectType;
 use PHPStan\Type\StringType;
 use PHPStan\Type\Type;
@@ -240,4 +244,40 @@ it('degrades an intersection of nothing but accessory types', function (): void 
     $accessories = new IntersectionType([new AccessoryNonEmptyStringType, new AccessoryLiteralStringType]);
 
     expect(translate($accessories))->toBeInstanceOf(UnknownT::class);
+});
+
+it('translates an object shape as the object of its members json_encode writes', function (Type $type, DType $expected): void {
+    // The shape's properties are the members the object is sent with, and one set on a single branch may
+    // be absent. The `object{…}&stdClass` PHPStan types `(object) [...]` as needs a reflection provider to
+    // build, so the fixture group proves that half through the real engine.
+    expect(translate($type)->toArray())->toBe($expected->toArray());
+})->with(function (): array {
+    return [
+        'empty' => [new ObjectShapeType([], []), new ArrayShapeT([], isObject: true)],
+        'keyed' => [new ObjectShapeType(['self' => new StringType], []), new ArrayShapeT([new ArrayShapeField('self', ScalarT::string())], isObject: true)],
+        'a key set on one branch' => [
+            new ObjectShapeType(['a' => new IntegerType, 'b' => new StringType], ['b']),
+            new ArrayShapeT([new ArrayShapeField('a', ScalarT::int()), new ArrayShapeField('b', ScalarT::string(), optional: true)], isObject: true),
+        ],
+        // `(object) ['x', 'y']` is `{"0": "x", "1": "y"}` — an object, never a list.
+        'positional keys' => [
+            new ObjectShapeType([0 => new StringType, 1 => new StringType], []),
+            new ArrayShapeT([new ArrayShapeField('0', ScalarT::string()), new ArrayShapeField('1', ScalarT::string())], isObject: true),
+        ],
+        'a shape in a shape' => [
+            new ObjectShapeType(['a' => new ObjectShapeType([], [])], []),
+            new ArrayShapeT([new ArrayShapeField('a', new ArrayShapeT([], isObject: true))], isObject: true),
+        ],
+    ];
+});
+
+it('keeps a class beside an object shape unless it is stdClass', function (): void {
+    // Only stdClass declares nothing a shape could lack; any other class is a member of its own.
+    $type = translate(new IntersectionType([new ObjectShapeType(['id' => new IntegerType], []), new ClosureType]));
+
+    expect($type)->toBeInstanceOf(IntersectionT::class)
+        ->and($type->toArray())->toBe(IntersectionT::of([
+            new ArrayShapeT([new ArrayShapeField('id', ScalarT::int())], isObject: true),
+            new ClassT('Closure'),
+        ])->toArray());
 });

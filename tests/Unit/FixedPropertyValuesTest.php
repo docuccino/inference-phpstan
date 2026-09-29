@@ -8,6 +8,7 @@ use Docuccino\Core\Inference\DType\EnumT;
 use Docuccino\Core\Inference\DType\LiteralT;
 use Docuccino\Core\Inference\DType\ScalarT;
 use Docuccino\Inference\PhpStan\Metadata\ClassMetadataFactory;
+use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Tagged\AttributedMessage;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Tagged\ChannelKind;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Tagged\ChosenMessage;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Tagged\ClonedMessage;
@@ -47,6 +48,8 @@ it('types a property the class fixes as the one value every instance holds', fun
     'an int literal' => [PushMessage::class, 'version', new LiteralT(2)],
     // A copy without properties carries the value over as it was.
     'a class that clones itself plainly' => [CopiedMessage::class, 'channel', new LiteralT('copy')],
+    // Reflection reports the constructor at its `function` line, the parser at its attribute's.
+    'a constructor with an attribute above it' => [AttributedMessage::class, 'channel', new LiteralT('attributed')],
 ]);
 
 it('keeps the declared type wherever an instance could hold another value', function (string $class, string $property, DType $declared): void {

@@ -27,9 +27,11 @@ use PHPStan\Type\Generic\GenericObjectType;
 use PHPStan\Type\Generic\TemplateType;
 use PHPStan\Type\IntersectionType;
 use PHPStan\Type\NeverType;
+use PHPStan\Type\ObjectShapeType;
 use PHPStan\Type\Type;
 use PHPStan\Type\UnionType;
 use PHPStan\Type\VerbosityLevel;
+use stdClass;
 use Throwable;
 
 /**
@@ -74,6 +76,11 @@ final class TypeTranslator
         $constantArrays = $type->getConstantArrays();
         if (count($constantArrays) === 1) {
             return $this->translateConstantArray($constantArrays[0], $budget);
+        }
+
+        // @phpstan-ignore phpstanApi.instanceofType (only the shape itself exposes its property list)
+        if ($type instanceof ObjectShapeType) {
+            return $this->translateObjectShape($type, $budget);
         }
 
         if ($type instanceof UnionType) {
@@ -171,6 +178,23 @@ final class TypeTranslator
         return new ArrayShapeT($fields, $type->isList()->yes());
     }
 
+    /** `object{a: int, b?: string}`, what `(object) [...]` is typed as: its properties are the JSON object's members. */
+    private function translateObjectShape(ObjectShapeType $type, TranslationBudget $budget): ArrayShapeT
+    {
+        $optional = array_map(strval(...), $type->getOptionalProperties());
+
+        $fields = [];
+        foreach ($type->getProperties() as $name => $propertyType) {
+            $fields[] = new ArrayShapeField(
+                (string) $name,
+                $this->translate($propertyType, $budget->descend()),
+                in_array((string) $name, $optional, true),
+            );
+        }
+
+        return new ArrayShapeT($fields, isObject: true);
+    }
+
     private function translateIntersection(IntersectionType $type, TranslationBudget $budget): DType
     {
         // A non-constant `list<V>` arrives as `ArrayType(int, V)` intersected with the list accessory, and
@@ -181,12 +205,23 @@ final class TypeTranslator
             return new ListT($this->translate($type->getIterableValueType(), $budget->descend()));
         }
 
+        // `(object) [...]` is typed `object{…}&stdClass`. stdClass declares no property, so beside a shape it
+        // says nothing the shape does not — and kept, it would publish as a second, bare `allOf` member.
+        $shaped = array_filter(
+            $type->getTypes(),
+            // @phpstan-ignore phpstanApi.instanceofType (only the shape itself exposes its property list)
+            static fn (Type $member): bool => $member instanceof ObjectShapeType,
+        ) !== [];
+
         // Accessory types (non-empty-string, has-offset, …) refine but aren't documentable shapes, so drop
         // them; a single survivor collapses to itself.
         $survivors = [];
         foreach ($type->getTypes() as $member) {
             // @phpstan-ignore phpstanApi.interface (accessory detection has no BC-stable accessor)
             if ($member instanceof AccessoryType) {
+                continue;
+            }
+            if ($shaped && $member->getObjectClassNames() === [stdClass::class]) {
                 continue;
             }
             $survivors[] = $this->translate($member, $budget->descend());

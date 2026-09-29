@@ -7,7 +7,9 @@ namespace Docuccino\Inference\PhpStan\Trace;
 use PhpParser\Node;
 use PHPStan\Analyser\Scope;
 use PHPStan\Reflection\ClassReflection;
+use PHPStan\Reflection\ExtendedMethodReflection;
 use PHPStan\Reflection\ReflectionProvider;
+use PHPStan\Type\Type;
 use ReflectionException;
 
 /**
@@ -46,21 +48,11 @@ final class CalleeResolver
     /** Null for the vendor-terminal cases above; the first resolvable receiver candidate wins. */
     public function resolve(Node $node, Scope $scope): ?Callee
     {
-        if ($node instanceof Node\Expr\MethodCall) {
-            if (! $node->name instanceof Node\Identifier) {
-                return null;
-            }
-            $method = $node->name->toString();
-            $classNames = $scope->getType($node->var)->getObjectClassNames();
-        } elseif ($node instanceof Node\Expr\StaticCall) {
-            if (! $node->name instanceof Node\Identifier || ! $node->class instanceof Node\Name) {
-                return null;
-            }
-            $method = $node->name->toString();
-            $classNames = [$scope->resolveName($node->class)];
-        } else {
+        $receivers = self::receivers($node, $scope);
+        if ($receivers === null) {
             return null;
         }
+        [$method, $classNames] = $receivers;
 
         // `getObjectClassNames()` preserves member order, so "first resolvable wins" is deterministic
         // across runs even for a union receiver.
@@ -72,7 +64,7 @@ final class CalleeResolver
             if (! $classReflection->hasMethod($method)) {
                 continue;
             }
-            $declaring = $classReflection->getMethod($method, $scope)->getDeclaringClass();
+            $declaring = self::dispatched($classReflection, $method, $scope)->getDeclaringClass();
             $file = $declaring->getFileName();
             if ($file === null) {
                 return null; // PHP-internal / stub-only ⇒ vendor terminal
@@ -82,6 +74,88 @@ final class CalleeResolver
         }
 
         return null; // magic / forwarded / unresolvable ⇒ vendor terminal
+    }
+
+    /**
+     * The real method PHP runs for this call where the analyser read the call off something else. A
+     * `@method` tag naming a method the class really has — inherited or its own — is read as a magic
+     * method, and borrows `__call()`'s or `__callStatic()`'s `@throws`; but PHP forwards only a call it
+     * cannot dispatch, so an accessible real method is what runs and what the call can throw. Null where
+     * the analyser's reading already throws what that method does, or where no such method is reachable.
+     */
+    public function shadowedMethod(Node $node, Scope $scope): ?ExtendedMethodReflection
+    {
+        $receivers = self::receivers($node, $scope);
+        if ($receivers === null) {
+            return null;
+        }
+        [$method, $classNames] = $receivers;
+
+        foreach ($classNames as $class) {
+            if (! $this->reflectionProvider->hasClass($class)) {
+                continue;
+            }
+            $classReflection = $this->reflectionProvider->getClass($class);
+            if (! $classReflection->hasMethod($method)) {
+                continue;
+            }
+
+            $dispatched = self::dispatched($classReflection, $method, $scope);
+            $read = $classReflection->getMethod($method, $scope);
+
+            return self::sameThrows($read->getThrowType(), $dispatched->getThrowType()) ? null : $dispatched;
+        }
+
+        return null;
+    }
+
+    /**
+     * The method name a call names and the classes it may be called on, or null for anything but a
+     * method or static call with a literal name.
+     *
+     * @return array{string, list<string>}|null
+     */
+    private static function receivers(Node $node, Scope $scope): ?array
+    {
+        if ($node instanceof Node\Expr\MethodCall) {
+            if (! $node->name instanceof Node\Identifier) {
+                return null;
+            }
+
+            return [$node->name->toString(), $scope->getType($node->var)->getObjectClassNames()];
+        }
+
+        if ($node instanceof Node\Expr\StaticCall) {
+            if (! $node->name instanceof Node\Identifier || ! $node->class instanceof Node\Name) {
+                return null;
+            }
+
+            return [$node->name->toString(), [$scope->resolveName($node->class)]];
+        }
+
+        return null;
+    }
+
+    /**
+     * The method a call on this class reaches: its real one wherever the calling scope may call it, since
+     * PHP hands `__call()`/`__callStatic()` only a call it cannot dispatch; otherwise whatever the
+     * analyser resolves — a `@method` tag, a mixin, an extension's method.
+     */
+    private static function dispatched(ClassReflection $class, string $method, Scope $scope): ExtendedMethodReflection
+    {
+        if ($class->hasNativeMethod($method)) {
+            $native = $class->getNativeMethod($method);
+            if ($scope->canCallMethod($native)) {
+                return $native;
+            }
+        }
+
+        return $class->getMethod($method, $scope);
+    }
+
+    private static function sameThrows(?Type $read, ?Type $dispatched): bool
+    {
+        return $read === null ? $dispatched === null : ($dispatched !== null && $read->equals($dispatched));
     }
 
     /**

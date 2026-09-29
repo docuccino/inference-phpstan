@@ -7,6 +7,8 @@ namespace Docuccino\Inference\PhpStan\Runtime\V2_2;
 use Docuccino\Core\Support\GeneratedDirectory;
 use Docuccino\Inference\PhpStan\Extensions\DataToResponseReturnTypeExtension;
 use Docuccino\Inference\PhpStan\Extensions\DataTransformReturnTypeExtension;
+use Docuccino\Inference\PhpStan\Extensions\ResourceCollectionReturnTypeExtension;
+use Docuccino\Inference\PhpStan\Extensions\ResourceCollectionTransformReturnTypeExtension;
 use Docuccino\Inference\PhpStan\Extensions\ResponseJsonReturnTypeExtension;
 use Docuccino\Inference\PhpStan\Runtime\BootFailedException;
 use Docuccino\Inference\PhpStan\Runtime\RuntimeAdapter as RuntimeAdapterContract;
@@ -250,15 +252,17 @@ final class RuntimeAdapter implements RuntimeAdapterContract
         // here is the whole wiring.
         $services = '';
         foreach ([
-            ResponseJsonReturnTypeExtension::class,
-            DataToResponseReturnTypeExtension::class,
-            DataTransformReturnTypeExtension::class,
-        ] as $extensionClass) {
+            ResponseJsonReturnTypeExtension::class => 'dynamicMethodReturnTypeExtension',
+            DataToResponseReturnTypeExtension::class => 'dynamicMethodReturnTypeExtension',
+            DataTransformReturnTypeExtension::class => 'dynamicMethodReturnTypeExtension',
+            ResourceCollectionTransformReturnTypeExtension::class => 'dynamicMethodReturnTypeExtension',
+            ResourceCollectionReturnTypeExtension::class => 'dynamicStaticMethodReturnTypeExtension',
+        ] as $extensionClass => $tag) {
             $services .= <<<NEON
                     -
                         class: {$extensionClass}
                         tags:
-                            - phpstan.broker.dynamicMethodReturnTypeExtension
+                            - phpstan.broker.{$tag}
 
                 NEON;
         }

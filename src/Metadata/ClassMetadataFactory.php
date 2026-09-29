@@ -27,7 +27,8 @@ use ReflectionProperty;
  * `@property`/`@property-read` tags count as extra properties, typed through the shared
  * {@see TypeStringParser}: that ide-helper convention is what gives an Eloquent model's magic attributes
  * (which declare no PHP property at all) a typed column universe. A native public property wins over a
- * same-named tag. A property its class fixes to one value is typed as that literal. Memoised per class per
+ * same-named tag. A property its class fixes to one value is typed as that literal, and one its constructor
+ * may leave unassigned says so ({@see ConstructorInitialisation}). Memoised per class per
  * run, and total — an unresolvable class yields empty but well-formed metadata.
  *
  * @internal
@@ -48,6 +49,8 @@ final class ClassMetadataFactory
         private readonly NativeTypeMapper $typeMapper = new NativeTypeMapper,
         private readonly TypeStringParser $typeStrings = new TypeStringParser,
         private readonly FixedPropertyValues $fixedValues = new FixedPropertyValues,
+        // Absent, every property's initialisation goes unanswered, which the schema reads as "not proved".
+        private readonly ?ConstructorInitialisation $initialisation = null,
     ) {}
 
     public function forClass(ClassRef $class): ClassMetadata
@@ -92,6 +95,7 @@ final class ClassMetadataFactory
                 // An inherited property is declared elsewhere, and pointing at the subject's file would
                 // send a reader to a line that says something else entirely.
                 location: self::locate($property->getDeclaringClass()),
+                initialised: $this->initialisation?->of($reflection, $property),
             );
             $seen[$property->getName()] = true;
         }

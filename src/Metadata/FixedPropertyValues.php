@@ -12,6 +12,7 @@ use Docuccino\Core\Inference\DType\LiteralT;
 use Docuccino\Core\Inference\DType\ScalarT;
 use Docuccino\Core\Inference\DType\UnionT;
 use Docuccino\Core\Inference\DType\UnknownT;
+use Docuccino\Inference\PhpStan\Support\MethodDeclaration;
 use PhpParser\Node;
 use PhpParser\NodeFinder;
 use PhpParser\NodeTraverser;
@@ -59,7 +60,7 @@ final class FixedPropertyValues
         }
 
         $file = $constructor->getFileName();
-        $method = $file === false ? null : $this->constructorAt($file, $constructor->getStartLine());
+        $method = $file === false ? null : MethodDeclaration::in($this->statements($file), $constructor);
         if ($method === null) {
             return null;
         }
@@ -222,19 +223,6 @@ final class FixedPropertyValues
         }
 
         return false;
-    }
-
-    /** The `__construct` declared at this line of the file, or null. */
-    private function constructorAt(string $file, int|false $line): ?Node\Stmt\ClassMethod
-    {
-        $found = (new NodeFinder)->findFirst(
-            $this->statements($file),
-            static fn (Node $node): bool => $node instanceof Node\Stmt\ClassMethod
-                && $node->name->toLowerString() === '__construct'
-                && $node->getStartLine() === $line,
-        );
-
-        return $found instanceof Node\Stmt\ClassMethod ? $found : null;
     }
 
     /** @return list<Node\Stmt> */

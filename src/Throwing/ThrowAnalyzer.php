@@ -23,7 +23,9 @@ use PHPStan\Node\MethodReturnStatementsNode;
 use PHPStan\Node\ReturnStatementsNode;
 use PHPStan\Reflection\ReflectionProvider;
 use PHPStan\Type\Constant\ConstantIntegerType;
+use PHPStan\Type\ObjectType;
 use PHPStan\Type\Type;
+use Throwable;
 
 /**
  * The 3-layer exception-flow engine (docs/design/inference-embedding.md §6):
@@ -197,6 +199,19 @@ final class ThrowAnalyzer
             // and because the callee's own answer says nothing about what the closure it runs throws.
             foreach ($this->applyClosures($node, $scope, $selfLabel, $depth, $visited, $priorChain, $frame) as $result) {
                 $results[] = $result;
+            }
+
+            // A call read off a `@method` tag naming a real method carries the magic method's throws, and
+            // PHP runs the real one ({@see CalleeResolver::shadowedMethod()}), so the point is re-read as
+            // what the analyser would have made of that method: its `@throws`, or an undeclared call.
+            $shadowed = $this->calleeResolver->shadowedMethod($node, $scope);
+            if ($shadowed !== null) {
+                $declared = $shadowed->getThrowType();
+                if ($declared !== null && $declared->isVoid()->yes()) {
+                    continue;
+                }
+                $explicit = $declared !== null;
+                $type = $declared ?? new ObjectType(Throwable::class);
             }
 
             // Layer 2: KnownThrowers registry, keyed on the callee name — for callees we cannot read.

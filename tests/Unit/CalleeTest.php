@@ -5,8 +5,11 @@ declare(strict_types=1);
 use Docuccino\Inference\PhpStan\Tests\Support\TraitUsingRenderer;
 use Docuccino\Inference\PhpStan\Trace\Callee;
 use Docuccino\Inference\PhpStan\Trace\CalleeResolver;
+use PhpParser\Node;
+use PHPStan\Analyser\Scope;
 use PHPStan\Reflection\ClassReflection;
 use PHPStan\Reflection\ReflectionProvider;
+use PHPStan\Type\ObjectType;
 
 /**
  * The resolved call target, whose {@see Callee::key()} is what the descent memoises and cycle-guards on.
@@ -92,3 +95,26 @@ it('locates a declaration through the analyser, never from a class NAME', functi
         // rather than passing on a shape it no longer finds.
         ->and($code)->toContain('getNativeReflection()->getMethod(');
 });
+
+it('finds no shadowed method for a call it cannot name, or on a class the analyser does not know', function (Node\Expr $call): void {
+    // The mechanics only: which calls name a method and a receiver at all. Whether a `@method` tag over a
+    // real method is re-read as that method needs the analyser's class reflection, and the fixture group's
+    // `@method` rows (ResourceCollectionOverrideTest) are that half.
+    $provider = $this->createStub(ReflectionProvider::class);
+    $provider->method('hasClass')->willReturn(false);
+    $scope = $this->createStub(Scope::class);
+    $scope->method('getType')->willReturn(new ObjectType('App\\Nowhere\\Receiver'));
+    $scope->method('resolveName')->willReturn('App\\Nowhere\\Receiver');
+
+    $resolver = new CalleeResolver($provider);
+
+    expect($resolver->shadowedMethod($call, $scope))->toBeNull()
+        ->and($resolver->resolve($call, $scope))->toBeNull();
+})->with([
+    'a method call on an unknown class' => [new Node\Expr\MethodCall(new Node\Expr\Variable('receiver'), new Node\Identifier('user'))],
+    'a static call on an unknown class' => [new Node\Expr\StaticCall(new Node\Name('Receiver'), new Node\Identifier('collection'))],
+    'a method call by a variable name' => [new Node\Expr\MethodCall(new Node\Expr\Variable('receiver'), new Node\Expr\Variable('name'))],
+    'a static call by a variable name' => [new Node\Expr\StaticCall(new Node\Name('Receiver'), new Node\Expr\Variable('name'))],
+    'a static call on a class chosen at runtime' => [new Node\Expr\StaticCall(new Node\Expr\Variable('class'), new Node\Identifier('collection'))],
+    'a function call' => [new Node\Expr\FuncCall(new Node\Name('collect'))],
+]);

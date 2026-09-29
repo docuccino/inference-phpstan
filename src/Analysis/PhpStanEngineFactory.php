@@ -7,6 +7,7 @@ namespace Docuccino\Inference\PhpStan\Analysis;
 use Docuccino\Core\Inference\NullTypeEngine;
 use Docuccino\Core\Inference\TypeEngine;
 use Docuccino\Inference\PhpStan\Metadata\ClassMetadataFactory;
+use Docuccino\Inference\PhpStan\Metadata\ConstructorInitialisation;
 use Docuccino\Inference\PhpStan\Runtime\BootFailedException;
 use Docuccino\Inference\PhpStan\Runtime\FileWalks;
 use Docuccino\Inference\PhpStan\Runtime\RuntimeAdapterFactory;
@@ -64,7 +65,7 @@ final class PhpStanEngineFactory
             translator: $translator,
             fileAnalyzer: $fileAnalyzer,
             projectFilter: $projectFilter,
-            classMetadataFactory: new ClassMetadataFactory,
+            classMetadataFactory: new ClassMetadataFactory(initialisation: new ConstructorInitialisation($fileAnalyzer)),
             appFilter: $appFilter,
             declaredFilter: $declaredFilter,
             walks: $walks,
