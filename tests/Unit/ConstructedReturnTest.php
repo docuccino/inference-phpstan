@@ -28,9 +28,19 @@ it('reads the one class a body constructs on every path', function (string $clas
     'a method with an attribute above it' => [BuildsOne::class, 'attributed', ArrayObject::class],
     // PHP reports a trait's method as the using class's; the trait's body is the one read.
     'a trait\'s method' => [BuildsOne::class, 'fromTrait', SplStack::class],
+    // An alias exists only in the `use` clause; the trait writes the method under its own name.
+    'a trait\'s method imported under an alias' => [BuildsOne::class, 'builtFromTrait', SplStack::class],
     // Same file, same method name, another class.
     'a same-named method of another class in the file' => [BuildsOther::class, 'one', ArrayIterator::class],
 ]);
+
+it('reads a method an anonymous class declares, told apart from its same-named neighbour', function (): void {
+    // An anonymous class has no name to look the method up under, so it is found by where it is written.
+    [$first, $second] = BuildsOther::anonymous();
+
+    expect((new ConstructedReturn)->of(new ReflectionMethod($first, 'one')))->toBe(SplDoublyLinkedList::class)
+        ->and((new ConstructedReturn)->of(new ReflectionMethod($second, 'one')))->toBe(SplMinHeap::class);
+});
 
 it('gives no answer where no one class is constructed on every path', function (string $method): void {
     expect((new ConstructedReturn)->of(new ReflectionMethod(BuildsOne::class, $method)))->toBeNull();

@@ -4,10 +4,13 @@ declare(strict_types=1);
 
 namespace Docuccino\Inference\PhpStan\Analysis;
 
+use Docuccino\Core\Inference\DeclarationLine;
 use Docuccino\Core\Inference\LocalWrites;
 use Docuccino\Inference\PhpStan\Runtime\FileWalks;
 use Docuccino\Inference\PhpStan\Runtime\RuntimeAdapter;
 use PhpParser\Node;
+use PhpParser\NodeFinder;
+use PhpParser\ParserFactory;
 use PHPStan\Analyser\Scope;
 use PHPStan\Node\ClosureReturnStatementsNode;
 use PHPStan\Node\InArrowFunctionNode;
@@ -37,6 +40,9 @@ final class FileAnalyzer
 {
     /** @var array<string, FileHarvest> */
     private array $cache = [];
+
+    /** @var array<string, array<int, list<int>>> by normalised file, {@see closureLines()} */
+    private array $declared = [];
 
     public function __construct(
         private readonly RuntimeAdapter $adapter,
@@ -103,28 +109,70 @@ final class FileAnalyzer
     }
 
     /**
-     * The closure or arrow function starting at `$line`, for the caller that has no offset to ask with: an
-     * exception-handler callback, which `ReflectionFunction` gives us as file+line and nothing else. Null
-     * where the line carries more than one of either, which reflection cannot tell apart — answering either
-     * would publish one callback's response as the other's.
+     * The closure or arrow function declared at `$line`, for the caller that has no offset to ask with: an
+     * exception-handler callback, which `ReflectionFunction` gives us as file+line and nothing else. Null where the line declares none, or more than one — see {@see closureAt()}.
      */
     public function callableAtLine(string $file, int $line): ?CallableBody
     {
+        $offset = $this->closureAt($file, $line);
+        if ($offset === null) {
+            return null;
+        }
+
         $harvest = $this->harvest($file);
-
-        $found = [];
-        foreach ($harvest['closures'] as $closure) {
-            if ($closure->getClosureExpr()->getStartLine() === $line) {
-                $found[] = CallableBody::ofClosure($closure);
-            }
+        if (isset($harvest['closures'][$offset])) {
+            return CallableBody::ofClosure($harvest['closures'][$offset]);
         }
-        foreach ($harvest['arrows'] as [$arrow, $scope]) {
-            if ($arrow->getStartLine() === $line) {
-                $found[] = CallableBody::ofArrow($arrow, $scope);
-            }
+        if (isset($harvest['arrows'][$offset])) {
+            [$arrow, $scope] = $harvest['arrows'][$offset];
+
+            return CallableBody::ofArrow($arrow, $scope);
         }
 
-        return count($found) === 1 ? $found[0] : null;
+        return null;
+    }
+
+    /**
+     * The start offset of the one closure or arrow function whose keyword `ReflectionFunction` places on
+     * `$line` ({@see DeclarationLine}), or null where the file declares none there or several — reflection
+     * cannot tell two apart, and answering either would publish one closure's response as the other's.
+     */
+    public function closureAt(string $file, int $line): ?int
+    {
+        $normalised = $this->adapter->normalize($file);
+        $lines = $this->declared[$normalised] ??= self::closureLines($file);
+        $offsets = $lines[$line] ?? [];
+
+        return count($offsets) === 1 ? $offsets[0] : null;
+    }
+
+    /**
+     * @return array<int, list<int>> keyword line → the start offset of every closure declared there
+     */
+    private static function closureLines(string $file): array
+    {
+        try {
+            $source = is_file($file) ? file_get_contents($file) : false;
+            $statements = $source === false ? null : (new ParserFactory)->createForHostVersion()->parse($source);
+        } catch (Throwable) {
+            return [];
+        }
+        if ($source === false || $statements === null) {
+            return [];
+        }
+
+        $lines = [];
+        foreach ((new NodeFinder)->find($statements, static fn (Node $node): bool => $node instanceof Node\Expr\Closure || $node instanceof Node\Expr\ArrowFunction) as $closure) {
+            if (! $closure instanceof Node\FunctionLike) {
+                continue;
+            }
+            $line = DeclarationLine::of($closure, $source);
+            if ($line !== null) {
+                $lines[$line][] = $closure->getStartFilePos();
+            }
+        }
+
+        return $lines;
     }
 
     /**

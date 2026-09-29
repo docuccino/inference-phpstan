@@ -148,8 +148,8 @@ final class PhpStanTypeEngine implements TypeEngine
      * a closure route carries no class, so every closure in one routes file collapses onto
      * `routes/api.php::{closure}` there. What the answer can depend on is the file, the declaring class and
      * the method — {@see FileAnalyzer::method()} reads exactly those — plus the line, which is not there
-     * merely to be reported: {@see traceClosure()} SELECTS which closure it walks by
-     * `getStartLine() === $action->line`, so two refs differing only in line name two different bodies
+     * merely to be reported: {@see traceClosure()} SELECTS which closure it walks by the line its
+     * keyword is written on, so two refs differing only in line name two different bodies
      * and get two different answers. Two refs equal on all four are indistinguishable to this engine,
      * which is what lets one answer serve both.
      */
@@ -776,10 +776,11 @@ final class PhpStanTypeEngine implements TypeEngine
 
     /**
      * Hand a closure's return expressions to the visitor with the flow-refined scope at each return, so it
-     * folds them as it would inside a method walk. The closure is located by start line, and both shapes
-     * are handled: a full closure (`ClosureReturnStatementsNode`, where `isAlwaysTerminating()` tells a
-     * fall-through body apart so a limiter that doesn't always return stays unrecovered) and an arrow
-     * function (`InArrowFunctionNode`, one implicit return).
+     * folds them as it would inside a method walk. The closure is the one declared at the ref's line
+     * ({@see FileAnalyzer::closureAt()}), and both shapes are handled: a full closure
+     * (`ClosureReturnStatementsNode`, where `isAlwaysTerminating()` tells a fall-through body apart so a
+     * limiter that doesn't always return stays unrecovered) and an arrow function (`InArrowFunctionNode`,
+     * one implicit return).
      *
      * The visitor runs inside the pass, on the RAW live scope — `$statement->getScope()` for a full closure,
      * the callback scope itself for an arrow function — because a return's flow-refined scope is what folds
@@ -794,11 +795,16 @@ final class PhpStanTypeEngine implements TypeEngine
      */
     private function traceClosure(ActionRef $action, TraceVisitor $visitor): void
     {
+        $offset = $this->fileAnalyzer->closureAt($action->file, $action->line);
+        if ($offset === null) {
+            return;
+        }
+
         try {
-            $this->adapter->processFile($action->file, function (Node $node, Scope $scope) use ($action, $visitor): void {
+            $this->adapter->processFile($action->file, function (Node $node, Scope $scope) use ($offset, $visitor): void {
                 // @phpstan-ignore phpstanApi.instanceofAssumption
                 if ($node instanceof ClosureReturnStatementsNode
-                    && $node->getClosureExpr()->getStartLine() === $action->line
+                    && $node->getClosureExpr()->getStartFilePos() === $offset
                 ) {
                     if (! $node->getStatementResult()->isAlwaysTerminating()) {
                         return; // can fall through ⇒ conditional; nothing safe to fold
@@ -815,7 +821,7 @@ final class PhpStanTypeEngine implements TypeEngine
 
                 // @phpstan-ignore phpstanApi.instanceofAssumption
                 if ($node instanceof InArrowFunctionNode
-                    && $node->getOriginalNode()->getStartLine() === $action->line
+                    && $node->getOriginalNode()->getStartFilePos() === $offset
                 ) {
                     $visitor->enterNode($node->getOriginalNode()->expr, new TypeScopeImpl($scope, $this->translator));
                 }

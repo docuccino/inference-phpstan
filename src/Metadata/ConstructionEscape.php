@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Docuccino\Inference\PhpStan\Metadata;
 
-use Docuccino\Inference\PhpStan\Support\MethodDeclaration;
+use Docuccino\Core\Inference\MethodDeclaration;
 use PhpParser\Node;
 use PhpParser\Node\Expr;
 use PhpParser\Node\Identifier;

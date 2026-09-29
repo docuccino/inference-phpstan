@@ -12,7 +12,7 @@ use Docuccino\Core\Inference\DType\LiteralT;
 use Docuccino\Core\Inference\DType\ScalarT;
 use Docuccino\Core\Inference\DType\UnionT;
 use Docuccino\Core\Inference\DType\UnknownT;
-use Docuccino\Inference\PhpStan\Support\MethodDeclaration;
+use Docuccino\Core\Inference\MethodDeclaration;
 use PhpParser\Node;
 use PhpParser\NodeFinder;
 use PhpParser\NodeTraverser;

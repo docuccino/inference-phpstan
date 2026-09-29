@@ -14,7 +14,9 @@ use SplObjectStorage;
  */
 abstract class BuildsOne
 {
-    use BuildsFromTrait;
+    use BuildsFromTrait {
+        fromTrait as builtFromTrait;
+    }
 
     public function one(): object
     {
@@ -98,5 +100,32 @@ final class BuildsOther
     public function one(): object
     {
         return new \ArrayIterator;
+    }
+
+    /**
+     * Anonymous classes declaring the same method, one with an attribute above it: what tells them apart is
+     * where each `function` keyword is written.
+     *
+     * @return list<object>
+     */
+    public static function anonymous(): array
+    {
+        return [
+            new class
+            {
+                public function one(): object
+                {
+                    return new \SplDoublyLinkedList;
+                }
+            },
+            new class
+            {
+                #[\Deprecated]
+                public function one(): object
+                {
+                    return new \SplMinHeap;
+                }
+            },
+        ];
     }
 }

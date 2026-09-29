@@ -57,6 +57,16 @@ function fileAnalyzerFailingScope(Stub&Scope $scope, string $function): Scope
     return $scope;
 }
 
+/** A source file of the test's own, named for it alone and removed when the process ends. */
+function fileAnalyzerScratch(string $source): string
+{
+    $file = sys_get_temp_dir().'/docuccino-closure-lines-'.getmypid().'-'.md5($source).'.php';
+    file_put_contents($file, $source);
+    register_shutdown_function(static fn () => @unlink($file));
+
+    return $file;
+}
+
 it('harvests methods, closures and assignments off one pass per normalised file', function (): void {
     $adapter = new ScriptedRuntimeAdapter;
     $analyzer = fileAnalyzerOn($adapter);
@@ -121,4 +131,40 @@ it('resolves no callee for a call that passes no plain variable', function (): v
     ]);
 
     expect($analyzer->localAssignments('/x.php')['render']['body'] ?? null)->not->toBeNull();
+});
+
+it('finds a closure at the line reflection gives it, and none where a line declares two', function (): void {
+    // Reflection places a closure on its keyword, the parser on its attribute or `static`: the offset
+    // answered is where the parser starts the ONE closure whose keyword is on the line asked about.
+    $source = <<<'PHP'
+        <?php
+        return [
+            'attributed' => #[\Deprecated]
+                function () {},
+            'static' => static
+                fn () => 1,
+            'nested' => fn () => fn () => 2,
+        ];
+        PHP;
+    $file = fileAnalyzerScratch($source);
+    /** @var array<string, Closure> $closures */
+    $closures = require $file;
+    $line = static fn (string $key): int => (int) (new ReflectionFunction($closures[$key]))->getStartLine();
+    $analyzer = fileAnalyzerOn(new ScriptedRuntimeAdapter);
+
+    expect($analyzer->closureAt($file, $line('attributed')))->toBe(strpos($source, '#[\Deprecated]'))
+        ->and($analyzer->closureAt($file, $line('static')))->toBe(strpos($source, "static\n"))
+        ->and($analyzer->closureAt($file, $line('nested')))->toBeNull()
+        ->and($analyzer->closureAt($file, 1))->toBeNull()
+        // Found in the source, but the pass harvested no body for it: nothing to answer with.
+        ->and($analyzer->callableAtLine($file, $line('static')))->toBeNull()
+        ->and($analyzer->callableAtLine($file, $line('nested')))->toBeNull();
+});
+
+it('finds no closure in a file it cannot read or parse', function (): void {
+    $broken = fileAnalyzerScratch('<?php $f = function () {');
+    $analyzer = fileAnalyzerOn(new ScriptedRuntimeAdapter);
+
+    expect($analyzer->closureAt($broken, 1))->toBeNull()
+        ->and($analyzer->closureAt($broken.'.missing', 1))->toBeNull();
 });
