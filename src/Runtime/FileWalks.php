@@ -38,6 +38,21 @@ final class FileWalks
     private const MEMORY_MAX_DIGITS = 18;
 
     /**
+     * What one recorded node retains at most, in bytes. The default budget divides the ceiling by it; most
+     * nodes cost far less, because the scope a recording holds is usually held by a harvest as well.
+     */
+    private const NODE_BYTES = 1_700;
+
+    /** The share of the memory ceiling the recordings may retain between them. */
+    private const RECORDED_SHARE = 0.3;
+
+    /** The least a default budget allows, however small the ceiling. */
+    private const MIN_NODE_BUDGET = 100_000;
+
+    /** The limit a process with no ceiling is sized as: the 2G a build is advised to run under. */
+    private const UNLIMITED_AS = 2_147_483_648;
+
+    /**
      * Recorded walks by normalised file, each stamped with the analysed-file-set size it was made at.
      *
      * @var array<string, array{nodes: RecordedWalk, analysed: int}>
@@ -60,19 +75,35 @@ final class FileWalks
     /** Memory usage a recording stops at, or null when the process has no readable ceiling. */
     private readonly ?int $memoryCeiling;
 
+    /** Total recorded nodes to retain — a ceiling on this layer's memory. */
+    private readonly int $nodeBudget;
+
     /**
-     * @param  int  $nodeBudget  total recorded nodes to retain — a ceiling on this layer's memory, sized well
-     *                           above what a large application walks (docs/design/inference-embedding.md §2);
-     *                           overridable so the mechanics are testable at a budget of a few nodes
+     * @param  int|null  $nodeBudget  total recorded nodes to retain; null sizes it to the memory ceiling
+     *                                ({@see budgetFor()}). Overridable so the mechanics are testable at a
+     *                                budget of a few nodes
      * @param  int|null  $memoryCeiling  bytes usage may reach before recording is abandoned; null reads the
      *                                   process's own `memory_limit`
      */
     public function __construct(
         private readonly RuntimeAdapter $adapter,
-        private readonly int $nodeBudget = 100_000,
+        ?int $nodeBudget = null,
         ?int $memoryCeiling = null,
     ) {
         $this->memoryCeiling = $memoryCeiling ?? self::ceilingFromIni();
+        $this->nodeBudget = $nodeBudget ?? self::budgetFor($this->memoryCeiling);
+    }
+
+    /**
+     * The node budget a ceiling affords: a fixed share of it at the most a node retains, never below
+     * {@see MIN_NODE_BUDGET}. It grows with the ceiling because every file walked again after a clear is a
+     * whole live pass (docs/design/inference-embedding.md §2).
+     */
+    public static function budgetFor(?int $memoryCeiling): int
+    {
+        $ceiling = $memoryCeiling ?? (int) (self::UNLIMITED_AS * self::MEMORY_HEADROOM);
+
+        return max(self::MIN_NODE_BUDGET, (int) ($ceiling * self::RECORDED_SHARE / self::NODE_BYTES));
     }
 
     /**

@@ -293,6 +293,29 @@ it('derives its default ceiling from the process memory_limit', function (): voi
     expect($derived)->toBe($inForce);
 });
 
+it('sizes its default node budget to the memory ceiling it runs under', function (?int $ceiling, int $budget): void {
+    // The rule, stated apart from the code: the nodes that fit in 30% of the ceiling at 1,700 bytes each,
+    // never fewer than 100,000, and a process with no ceiling sized as one given 2G. A fixed count made a
+    // 2G process clear its recordings as early as a 256M one, and every file walked after a clear is a
+    // whole live pass again.
+    expect(FileWalks::budgetFor($ceiling))->toBe($budget);
+})->with([
+    // Ceilings as the parse above derives them: 70% of each memory_limit.
+    'no ceiling, sized as 2G' => [null, 265_277],
+    '2G' => [1_503_238_553, 265_277],
+    '1G' => [751_619_276, 132_638],
+    '8G' => [6_012_954_214, 1_061_109],
+    '512M, at the floor' => [375_809_638, 100_000],
+    '128M, at the floor' => [93_952_409, 100_000],
+]);
+
+it('takes its default node budget from the ceiling it was given', function (): void {
+    $budget = new ReflectionProperty(FileWalks::class, 'nodeBudget');
+
+    expect($budget->getValue(new FileWalks(new ScriptedRuntimeAdapter, memoryCeiling: 1_503_238_553)))->toBe(265_277)
+        ->and($budget->getValue(new FileWalks(new ScriptedRuntimeAdapter, nodeBudget: 3, memoryCeiling: 1_503_238_553)))->toBe(3);
+});
+
 it('never hands a fresh scope a dead scope stabilisation', function (): void {
     // The livePass() WeakMap, against the spl_object_id-keyed array it could have been. PHPStan drops scopes
     // as it walks and PHP recycles object handles, so a later scope really can arrive on a dead one's id;

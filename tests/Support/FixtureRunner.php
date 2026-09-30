@@ -62,6 +62,19 @@ final class FixtureRunner
     }
 
     /**
+     * Every public action of the named controllers, asked of forked copies of ONE booted engine three ways:
+     * `forward` (all, in order), `reversed` (all, backwards) and `alone` (each controller in a fork of its
+     * own). Each way maps `Class::method` to the serialized analysis — what a build's workers depend on
+     * being the same whichever units a worker claims, and in whatever order.
+     *
+     * @return array<string, mixed>
+     */
+    public static function analyzeForked(string ...$classes): array
+    {
+        return self::invoke('analyze-forked', '', implode(',', $classes), '');
+    }
+
+    /**
      * As {@see analyzeMany()}, but with descent pinned back to `app/` — an install that wrote
      * `engine.project_paths` itself and so descends less far than the roots it declares. The only
      * population left that a narrowed-scope notice can come from.

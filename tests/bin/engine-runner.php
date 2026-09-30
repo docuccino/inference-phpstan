@@ -18,6 +18,7 @@ declare(strict_types=1);
  *   php engine-runner.php analyze-repeat           <controllerFile> <class> <method> <otherMethod>
  *   php engine-runner.php analyze-many              <controllerFile> <class> <method,method,…>
  *   php engine-runner.php analyze-many-narrow       <controllerFile> <class> <method,method,…>
+ *   php engine-runner.php analyze-forked            <ignored>        <class[,class…]> <ignored>
  *   php engine-runner.php analyze-callable          <file> <class> <method> <line> <narrowParam> <narrowType> [every|exceptions]
  *   php engine-runner.php refine-pair               <fileBudget> <traceDepth> <file1> <class1> <method1> <file2> <class2> <method2>
  *   php engine-runner.php class-metadata            <ignored>        <class>
@@ -52,6 +53,7 @@ use Docuccino\Core\Extensions\Schema\EnumReflection;
 use Docuccino\Core\Inference\ActionRef;
 use Docuccino\Core\Inference\CallableRef;
 use Docuccino\Core\Inference\ClassRef;
+use Docuccino\Core\Support\AtomicFile;
 use Docuccino\Inference\PhpStan\Analysis\EngineConfig;
 use Docuccino\Inference\PhpStan\Analysis\PhpStanEngineFactory;
 use Docuccino\Inference\PhpStan\Analysis\PhpStanTypeEngineBuilder;
@@ -263,6 +265,65 @@ $result = match ($mode) {
         }
 
         return $out;
+    })(),
+    // A cold build's workers are forked copies of one booted engine, each asking whatever units it claims in
+    // whatever order it claims them. So every public action of the named controllers is analysed and traced
+    // three ways, each in a fork of this engine: all of them in order, all of them in reverse, and each
+    // controller in a fork of its own — a worker that only ever got that one unit. Every answer goes back, per
+    // way, for the caller to hold equal. The trace is the Query-Builder probe's, which a recorded walk of the
+    // file answers after the analysis made it. A fork ends with SIGKILL, as a worker does: grpc hangs a child
+    // that reaches module shutdown.
+    'analyze-forked' => (static function () use ($engine, $class, $tmp): array {
+        $units = [];
+        foreach (explode(',', $class) as $fqcn) {
+            $reflection = new ReflectionClass($fqcn);
+            foreach ($reflection->getMethods(ReflectionMethod::IS_PUBLIC) as $action) {
+                if ($action->getDeclaringClass()->getName() === $fqcn && ! $action->isStatic() && ! str_starts_with($action->getName(), '__')) {
+                    $units[$fqcn][] = new ActionRef((string) $reflection->getFileName(), $fqcn, $action->getName());
+                }
+            }
+        }
+
+        $every = array_merge(...array_values($units));
+        $ways = ['forward' => [$every], 'reversed' => [array_reverse($every)], 'alone' => array_values($units)];
+
+        $forks = [];
+        foreach ($ways as $way => $batches) {
+            foreach ($batches as $index => $batch) {
+                $pid = pcntl_fork();
+                if ($pid === 0) {
+                    $answers = [];
+                    foreach ($batch as $action) {
+                        $analysis = $engine->analyzeAction($action)->toArray();
+                        $probe = new QueryBuilderProbe;
+                        $report = $engine->trace($action, $probe);
+                        $answers[$action->class.'::'.$action->method] = [
+                            'analysis' => $analysis,
+                            'trace' => [$probe->allowedFilters, $probe->allowedSorts, $probe->defaultSort, $probe->terminals, $report->dependencyFiles],
+                        ];
+                    }
+                    AtomicFile::write($tmp.'/'.$way.'-'.$index.'.json', json_encode($answers, JSON_THROW_ON_ERROR));
+                    posix_kill(posix_getpid(), SIGKILL);
+                }
+                $forks[] = $pid;
+            }
+        }
+
+        foreach ($forks as $pid) {
+            pcntl_waitpid($pid, $status);
+        }
+
+        $answered = [];
+        foreach ($ways as $way => $batches) {
+            $answered[$way] = [];
+            foreach (array_keys($batches) as $index) {
+                $answers = json_decode((string) @file_get_contents($tmp.'/'.$way.'-'.$index.'.json'), true);
+                $answered[$way] += is_array($answers) ? $answers : [];
+            }
+            ksort($answered[$way]);
+        }
+
+        return $answered;
     })(),
     'analyze-repeat' => (static function () use ($engine, $ref, $file, $class, $argv): array {
         $other = new ActionRef($file, $class === '' ? null : $class, (string) ($argv[5] ?? ''));
