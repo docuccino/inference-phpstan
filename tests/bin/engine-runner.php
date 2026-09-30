@@ -403,7 +403,7 @@ $result = match ($mode) {
                 'columnKind' => $column?->kind,
                 'enum' => $column?->enum,
                 'values' => $column?->enum !== null ? EnumReflection::values($column->enum) : [],
-                'descriptions' => $column?->enum !== null ? EnumReflection::descriptions($column->enum) : [],
+                'descriptions' => $column?->enum !== null ? EnumReflection::descriptions($column->enum)[0] : [],
                 'dependencyBasenames' => array_map('basename', $column?->dependencyFiles ?? []),
                 'scalarSchema' => $column?->scalarSchema,
             ];
