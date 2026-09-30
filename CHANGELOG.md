@@ -7,6 +7,17 @@ User-facing changes to `docuccino/inference-phpstan` — features, fixes, perfor
 taken from the commit messages scoped `inference-phpstan`. Entries begin after v0.1.2; older history is in
 the [repository](https://github.com/docuccino/docuccino) git log.
 
+## v0.20.4
+
+### Bug fixes
+
+- locate closures and methods where reflection places them, not at the parser start line ([#584](https://github.com/docuccino/docuccino/pull/584))
+- publish an (object) cast as the object it sends ([#575](https://github.com/docuccino/docuccino/pull/575))
+
+### Performance
+
+- size the walk-recording budget to the memory ceiling ([#599](https://github.com/docuccino/docuccino/pull/599))
+
 ## v0.20.3
 
 ### Features
