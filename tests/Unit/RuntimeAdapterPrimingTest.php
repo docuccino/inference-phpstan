@@ -10,9 +10,10 @@ use PHPStan\Parser\PathRoutingParser;
 
 /**
  * In-process cover for the adapter's priming. Booting the real container is the fixture suite's job;
- * both PHPStan services take part only through `setAnalysedFiles()`, which in each is a plain
- * `$this->analysedFiles = array_fill_keys($files, true)`, so a constructor-less instance is a faithful
- * stand-in and the set each ends up holding is the whole observable behaviour.
+ * both PHPStan services take part only through `setAnalysedFiles()`, which stores the set it is given —
+ * as `array_fill_keys($files, true)` through 2.2, and from 2.3 `NodeScopeResolver` keys it by
+ * `FileHelper::normalizePath()` first. So a constructor-less instance is a faithful stand-in once it holds
+ * the FileHelper its version reads, and the set each ends up holding is the whole observable behaviour.
  */
 
 /**
@@ -32,8 +33,18 @@ function primingAdapterUnderTest(): array
     $parser = (new ReflectionClass(PathRoutingParser::class))->newInstanceWithoutConstructor();
     $resolver = (new ReflectionClass(NodeScopeResolver::class))->newInstanceWithoutConstructor();
 
-    foreach (['fileHelper' => new FileHelper('/app'), 'pathRoutingParser' => $parser, 'nodeScopeResolver' => $resolver] as $property => $service) {
+    $fileHelper = new FileHelper('/app');
+
+    foreach (['fileHelper' => $fileHelper, 'pathRoutingParser' => $parser, 'nodeScopeResolver' => $resolver] as $property => $service) {
         (new ReflectionProperty($adapter, $property))->setValue($adapter, $service);
+    }
+
+    // Whichever service's `setAnalysedFiles()` normalises through a FileHelper in the installed PHPStan
+    // (NodeScopeResolver from 2.3) gets the one the container would have injected.
+    foreach ([$parser, $resolver] as $service) {
+        if (property_exists($service, 'fileHelper')) {
+            (new ReflectionProperty($service, 'fileHelper'))->setValue($service, $fileHelper);
+        }
     }
 
     return [$adapter, $parser, $resolver];
