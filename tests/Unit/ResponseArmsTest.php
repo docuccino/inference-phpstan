@@ -2,10 +2,14 @@
 
 declare(strict_types=1);
 
+use Docuccino\Core\Inference\DType\ArrayShapeField;
 use Docuccino\Core\Inference\DType\ArrayShapeT;
 use Docuccino\Core\Inference\DType\ClassT;
 use Docuccino\Core\Inference\DType\LiteralT;
 use Docuccino\Core\Inference\DType\PayloadStatusT;
+use Docuccino\Core\Inference\DType\ScalarT;
+use Docuccino\Core\Inference\DType\StatusMarkerT;
+use Docuccino\Core\Inference\DType\StatusTextMarkerT;
 use Docuccino\Core\Inference\DType\UnknownT;
 use Docuccino\Core\Inference\DType\VoidT;
 use Docuccino\Inference\PhpStan\Analysis\RefinedResponse;
@@ -119,3 +123,21 @@ it('publishes a return site once per arm, and as the resolved type when nothing 
         // Nothing documentable in the arm keeps what the analyser resolved.
         ->and(ResponseArms::sites([new RefinedResponse], $resolved, $json)[0]['type'])->toBe($resolved);
 });
+
+it('takes the status echoes out of a body whose status a chain restates, and only then', function (array $chain, bool $echoes): void {
+    // `new JsonResponse(['status' => $code, …], $code)->setStatusCode(500)` sends 500 beside a body that says
+    // `$code`: the member no longer echoes the status it is sent with.
+    $echoing = new RefinedResponse(new ArrayShapeT([
+        new ArrayShapeField('status', new StatusMarkerT),
+        new ArrayShapeField('title', new StatusTextMarkerT(ScalarT::string())),
+    ]));
+
+    $laid = ResponseArms::laid($echoing, $chain);
+    $types = array_map(static fn (ArrayShapeField $field): string => $field->type->kind(), $laid?->payload instanceof ArrayShapeT ? $laid->payload->fields : []);
+
+    expect($types)->toBe($echoes ? [StatusMarkerT::KIND, StatusTextMarkerT::KIND] : [ScalarT::KIND, ScalarT::KIND]);
+})->with([
+    'a status stated' => [armChain(500), false],
+    'a status stated and unread' => [armChain(statusUnknown: true), false],
+    'a header only' => [armChain(contentType: 'application/problem+json'), true],
+]);

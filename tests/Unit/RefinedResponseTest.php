@@ -10,6 +10,7 @@ use Docuccino\Core\Inference\DType\LiteralT;
 use Docuccino\Core\Inference\DType\PayloadStatusT;
 use Docuccino\Core\Inference\DType\ScalarT;
 use Docuccino\Core\Inference\DType\StatusMarkerT;
+use Docuccino\Core\Inference\DType\StatusTextMarkerT;
 use Docuccino\Core\Inference\DType\UnknownT;
 use Docuccino\Inference\PhpStan\Analysis\AccessorKind;
 use Docuccino\Inference\PhpStan\Analysis\ParamAccessor;
@@ -383,4 +384,56 @@ it('claims no status where the code replaced one it could not read', function ()
         ->and($read->withBoundStatus(new LiteralT(503))->statusUnread)->toBeFalse()
         // The payload's own status cannot stand either: the code replaced it.
         ->and(RefinedResponse::renderedBy(new ClassT('App\\Http\\Resources\\WidgetResource'))->withUnreadStatus()->toClassT(ResponseShapeRefiner::CANONICAL_RESPONSE)?->typeArgs)->toHaveCount(2);
+});
+
+it('marks a table read at the status accessor as its reason phrase, and leaves one at any other key as read', function (): void {
+    $source = new ParamAccessor('response', AccessorKind::Method, 'getStatusCode');
+    $payload = new ArrayShapeT([
+        new ArrayShapeField('title', ScalarT::string()),
+        new ArrayShapeField('reason', ScalarT::string()),
+        new ArrayShapeField('status', ScalarT::int()),
+    ]);
+
+    $refined = RefinedResponse::fromConstructor(
+        $payload,
+        null,
+        $source,
+        null,
+        ['status' => $source],
+        [
+            'title' => [$source, new LiteralT('Error')],
+            'reason' => [new ParamAccessor('e', AccessorKind::Method, 'getCode'), null],
+        ],
+    );
+
+    expect(memberType($refined, 'title'))->toEqual(new StatusTextMarkerT(ScalarT::string(), new LiteralT('Error')))
+        ->and(memberType($refined, 'reason'))->toEqual(ScalarT::string())
+        ->and(memberType($refined, 'status'))->toEqual(new StatusMarkerT);
+
+    // With no status accessor there is nothing for either to echo.
+    $unsourced = RefinedResponse::fromConstructor($payload, new LiteralT(404), null, null, ['status' => $source], ['title' => [$source, null]]);
+    expect(memberType($unsourced, 'title'))->toEqual(ScalarT::string())
+        ->and(memberType($unsourced, 'status'))->toEqual(ScalarT::int());
+});
+
+it('widens every echo once something after the body restates the status', function (): void {
+    $refined = new RefinedResponse(
+        new ArrayShapeT([
+            new ArrayShapeField('title', new StatusTextMarkerT(ScalarT::string(), new LiteralT('Error'))),
+            new ArrayShapeField('status', new StatusMarkerT),
+            new ArrayShapeField('type', new LiteralT('about:blank')),
+        ]),
+        payloadMembers: new ArrayShapeT([
+            new ArrayShapeField('title', new StatusTextMarkerT(ScalarT::string())),
+            new ArrayShapeField('detail', new LiteralT('gone')),
+        ]),
+    );
+
+    $widened = $refined->withoutStatusEchoes();
+
+    expect(memberType($widened, 'title'))->toEqual(ScalarT::string())
+        ->and(memberType($widened, 'status'))->toEqual(ScalarT::int())
+        ->and(memberType($widened, 'type'))->toEqual(new LiteralT('about:blank'))
+        ->and($widened->payloadMembers?->fields[0]->type)->toBeInstanceOf(UnknownT::class)
+        ->and($widened->payloadMembers?->fields[1]->type)->toEqual(new LiteralT('gone'));
 });

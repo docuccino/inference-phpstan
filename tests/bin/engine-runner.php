@@ -19,7 +19,7 @@ declare(strict_types=1);
  *   php engine-runner.php analyze-many              <controllerFile> <class> <method,method,…>
  *   php engine-runner.php analyze-many-narrow       <controllerFile> <class> <method,method,…>
  *   php engine-runner.php analyze-forked            <ignored>        <class[,class…]> <ignored>
- *   php engine-runner.php analyze-callable          <file> <class> <method> <line> <narrowParam> <narrowType> [every|exceptions]
+ *   php engine-runner.php analyze-callable          <file> <class> <method> <line> <narrowParam|$this->property> <narrowType> [every|exceptions]
  *   php engine-runner.php refine-pair               <fileBudget> <traceDepth> <file1> <class1> <method1> <file2> <class2> <method2>
  *   php engine-runner.php class-metadata            <ignored>        <class>
  *   php engine-runner.php trace-qb                  <controllerFile> <class> <method>
@@ -31,6 +31,7 @@ declare(strict_types=1);
  *   php engine-runner.php trace-json-api-paginate   <controllerFile> <class> <method>
  *   php engine-runner.php trace-pagination-terminal <controllerFile> <class> <method>
  *   php engine-runner.php trace-created-resource    <controllerFile> <class> <method>
+ *   php engine-runner.php trace-wrapped-collection  <controllerFile> <class> <method> <collectionFqcn>
  *   php engine-runner.php data-response-status      <dataFile>       <class[,class…]> <ignored>
  *   php engine-runner.php trace-file-responses      <controllerFile> <class> <method>
  *   php engine-runner.php trace-closure             <file> <ignored> <ignored> <line>
@@ -68,6 +69,7 @@ use Docuccino\Laravel\Extensions\FileResponseCall;
 use Docuccino\Laravel\Extensions\FileResponseVisitor;
 use Docuccino\Laravel\Extensions\RequestHeadersExtension;
 use Docuccino\Laravel\Integrations\ApiResources\CreatedResourceVisitor;
+use Docuccino\Laravel\Integrations\ApiResources\WrappedCollectionVisitor;
 use Docuccino\Laravel\Integrations\FormRequest\InlineRulesVisitor;
 use Docuccino\Laravel\Integrations\FormRequest\RulesMethodVisitor;
 use Docuccino\Laravel\Integrations\QueryBuilder\FilterColumn;
@@ -118,6 +120,9 @@ $class = $argv[3] ?? '';
 $method = $argv[4] ?? '';
 $line = (int) ($argv[5] ?? 0);
 $narrowParam = ($argv[6] ?? '') === '' ? null : $argv[6];
+// `$this->name` narrows that property of the analysed object rather than a parameter.
+$narrowProperty = $narrowParam !== null && str_starts_with($narrowParam, '$this->') ? substr($narrowParam, 7) : null;
+$narrowParam = $narrowProperty === null ? $narrowParam : null;
 $narrowType = ($argv[7] ?? '') === '' ? null : $argv[7];
 $narrowToEvery = ($argv[8] ?? '') === 'every';
 $returnsExceptions = ($argv[8] ?? '') === 'exceptions';
@@ -359,6 +364,7 @@ $result = match ($mode) {
         $narrowType,
         $narrowToEvery,
         $returnsExceptions,
+        $narrowProperty,
     ))->toArray(),
     // Two callables through one engine (shared per-callee memo) under the tiny bounds: the determinism
     // guard for the refiner's "only serve a memo entry a caller could have earned" rule.
@@ -626,6 +632,14 @@ $result = match ($mode) {
         $engine->trace($ref, $visitor);
 
         return ['created' => $visitor->created];
+    })(),
+    'trace-wrapped-collection' => (static function () use ($engine, $ref, $argv): array {
+        // WrappedCollectionVisitor types what each construction of the collection is handed — the proof a
+        // list is sent unpaginated.
+        $visitor = new WrappedCollectionVisitor($argv[5] ?? '');
+        $engine->trace($ref, $visitor);
+
+        return ['plain' => $visitor->wrapsPlainList()];
     })(),
     'data-response-status' => (static function () use ($engine, $class): array {
         // The whole adapter-side resolver over the real engine, once per route and per Data class: a

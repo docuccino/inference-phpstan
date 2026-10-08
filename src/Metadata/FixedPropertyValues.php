@@ -12,12 +12,9 @@ use Docuccino\Core\Inference\DType\LiteralT;
 use Docuccino\Core\Inference\DType\ScalarT;
 use Docuccino\Core\Inference\DType\UnionT;
 use Docuccino\Core\Inference\DType\UnknownT;
-use Docuccino\Core\Inference\MethodDeclaration;
+use Docuccino\Inference\PhpStan\Support\ParsedFiles;
 use PhpParser\Node;
 use PhpParser\NodeFinder;
-use PhpParser\NodeTraverser;
-use PhpParser\NodeVisitor\NameResolver;
-use PhpParser\ParserFactory;
 use ReflectionClass;
 use ReflectionClassConstant;
 use ReflectionProperty;
@@ -25,16 +22,15 @@ use Throwable;
 
 /**
  * The value a property holds on every instance of its class, where PHP guarantees the class fixes it: a
- * readonly property a final class's own constructor assigns once, from a literal, and that nothing its
- * hierarchy declares can re-initialise on a copy. Rule, and what a source read cannot see, in full:
- * `docs/design/uir-and-extensions.md` §Discriminated unions.
+ * readonly property a final class's constructor assigns once, from a literal — itself or through the
+ * `parent::__construct()` it always runs — and that nothing its hierarchy declares can re-initialise on a
+ * copy. Rule, and what a source read cannot see, in full: `docs/design/uir-and-extensions.md` §Discriminated unions.
  *
  * @internal
  */
 final class FixedPropertyValues
 {
-    /** @var array<string, list<Node\Stmt>> file → its name-resolved statements */
-    private array $files = [];
+    public function __construct(private readonly ParsedFiles $files = new ParsedFiles) {}
 
     /**
      * The fixed value as a literal, with the files it was copied out of beyond the class's own
@@ -50,18 +46,10 @@ final class FixedPropertyValues
         if (! $class->isFinal()
             || ! $property->isReadOnly()
             || $property->isPromoted()
-            || $property->getDeclaringClass()->getName() !== $class->getName()
             || $constructor === null
-            || $constructor->getDeclaringClass()->getName() !== $class->getName()
             || $class->hasMethod('__clone')
             || self::publicSet($property)
         ) {
-            return null;
-        }
-
-        $file = $constructor->getFileName();
-        $method = $file === false ? null : MethodDeclaration::in($this->statements($file), $constructor);
-        if ($method === null) {
             return null;
         }
 
@@ -69,8 +57,8 @@ final class FixedPropertyValues
             return null;
         }
 
-        $expr = self::assignedAtTop($method->stmts ?? [], $property->getName());
-        $folded = $expr === null ? null : self::fold($expr, $class);
+        $assigned = $this->assignedBy($constructor->getDeclaringClass(), $property);
+        $folded = $assigned === null ? null : self::fold($assigned['expr'], $assigned['scope'], $class);
         if ($folded === null || ! self::satisfies($declared, $folded['value'], $folded['enum'])) {
             return null;
         }
@@ -79,28 +67,32 @@ final class FixedPropertyValues
     }
 
     /**
-     * What a top-level `$this->name = …;` assigns, when no statement before it could leave the
-     * constructor first.
+     * What the constructor `$declaring` writes assigns the property on every path that completes it: a
+     * top-level `$this->name = …;` it reaches ({@see ReachedStatements}), or else what the parent constructor
+     * it reaches first assigns. Readonly makes whichever runs first the value, since any later write throws.
+     * With the class the line sits in, which `self::` binds to.
      *
-     * @param  array<Node\Stmt>  $statements
+     * @param  ReflectionClass<object>  $declaring
+     * @return array{expr: Node\Expr, scope: ReflectionClass<object>}|null
      */
-    private static function assignedAtTop(array $statements, string $name): ?Node\Expr
+    private function assignedBy(ReflectionClass $declaring, ReflectionProperty $property): ?array
     {
-        $finder = new NodeFinder;
-        foreach ($statements as $statement) {
-            if ($statement instanceof Node\Stmt\Expression
-                && $statement->expr instanceof Node\Expr\Assign
-                && $statement->expr->var instanceof Node\Expr\PropertyFetch
-                && $statement->expr->var->var instanceof Node\Expr\Variable
-                && $statement->expr->var->var->name === 'this'
-                && $statement->expr->var->name instanceof Node\Identifier
-                && $statement->expr->var->name->toString() === $name
-            ) {
-                return $statement->expr->expr;
+        $owner = $property->getDeclaringClass()->getName();
+        $constructor = $declaring->getConstructor();
+        if (($owner !== $declaring->getName() && ! $declaring->isSubclassOf($owner)) || $constructor === null) {
+            return null;
+        }
+
+        foreach (ReachedStatements::of($this->files->body($constructor) ?? []) as $statement) {
+            $expr = ReachedStatements::assignment($statement, $property->getName());
+            if ($expr !== null) {
+                return ['expr' => $expr, 'scope' => $declaring];
             }
 
-            if ($finder->findFirst($statement, static fn (Node $node): bool => $node instanceof Node\Stmt\Return_ || $node instanceof Node\Stmt\Goto_) !== null) {
-                return null;
+            if (ReachedStatements::parentConstruct($statement) !== null) {
+                $parent = ReachedStatements::parentConstructorClass($declaring);
+
+                return $parent === null ? null : $this->assignedBy($parent, $property);
             }
         }
 
@@ -108,10 +100,13 @@ final class FixedPropertyValues
     }
 
     /**
-     * @param  ReflectionClass<object>  $class
+     * A string or int written as a literal or a class constant, with the files a constant was copied out of.
+     *
+     * @param  ReflectionClass<object>  $scope  the class whose constructor the expression is written in
+     * @param  ReflectionClass<object>  $class  the class being described
      * @return array{value: string|int, enum: ?string, files: list<string>}|null
      */
-    private static function fold(Node\Expr $expr, ReflectionClass $class): ?array
+    public static function fold(Node\Expr $expr, ReflectionClass $scope, ReflectionClass $class): ?array
     {
         if ($expr instanceof Node\Scalar\String_) {
             return ['value' => $expr->value, 'enum' => null, 'files' => []];
@@ -125,8 +120,12 @@ final class FixedPropertyValues
             return null;
         }
 
-        // `static` is `self` here: the class is final.
-        $owner = in_array($expr->class->toLowerString(), ['self', 'static'], true) ? $class->getName() : $expr->class->toString();
+        // `self` binds to the class the line is written in, `static` to the class being built.
+        $owner = match ($expr->class->toLowerString()) {
+            'self' => $scope->getName(),
+            'static' => $class->getName(),
+            default => $expr->class->toString(),
+        };
         if (! class_exists($owner) && ! interface_exists($owner)) {
             return null;
         }
@@ -197,7 +196,7 @@ final class FixedPropertyValues
             $file = $scope->getFileName();
             $name = $scope->getName();
             $node = $file === false ? null : (new NodeFinder)->findFirst(
-                $this->statements($file),
+                $this->files->statements($file),
                 static fn (Node $node): bool => $node instanceof Node\Stmt\ClassLike && $node->namespacedName?->toString() === $name,
             );
             if (! $node instanceof Node\Stmt\ClassLike) {
@@ -223,31 +222,5 @@ final class FixedPropertyValues
         }
 
         return false;
-    }
-
-    /** @return list<Node\Stmt> */
-    private function statements(string $file): array
-    {
-        if (isset($this->files[$file])) {
-            return $this->files[$file];
-        }
-
-        try {
-            $code = is_file($file) ? file_get_contents($file) : false;
-            $statements = $code === false ? null : (new ParserFactory)->createForHostVersion()->parse($code);
-        } catch (Throwable) {
-            $statements = null;
-        }
-
-        if ($statements === null) {
-            return $this->files[$file] = [];
-        }
-
-        $traverser = new NodeTraverser(new NameResolver);
-
-        return $this->files[$file] = array_values(array_filter(
-            $traverser->traverse($statements),
-            static fn (Node $node): bool => $node instanceof Node\Stmt,
-        ));
     }
 }

@@ -4,13 +4,9 @@ declare(strict_types=1);
 
 namespace Docuccino\Inference\PhpStan\Extensions;
 
-use Docuccino\Core\Inference\MethodDeclaration;
+use Docuccino\Inference\PhpStan\Support\ParsedFiles;
 use PhpParser\Node;
-use PhpParser\NodeTraverser;
-use PhpParser\NodeVisitor\NameResolver;
-use PhpParser\ParserFactory;
 use ReflectionMethod;
-use Throwable;
 
 /**
  * The one class a method's body constructs on every path, where each `return` is a `new` of it by name.
@@ -21,23 +17,17 @@ use Throwable;
  */
 final class ConstructedReturn
 {
-    /** @var array<string, list<Node>> file → its name-resolved statements */
-    private array $files = [];
+    public function __construct(private readonly ParsedFiles $files = new ParsedFiles) {}
 
     public function of(ReflectionMethod $method): ?string
     {
-        $file = $method->getFileName();
-        if (! is_string($file)) {
-            return null;
-        }
-
-        $body = MethodDeclaration::in($this->statements($file), $method);
-        if ($body === null || $body->stmts === null) {
+        $body = $this->files->body($method);
+        if ($body === null) {
             return null;
         }
 
         $built = [];
-        foreach (self::returns($body->stmts) as $return) {
+        foreach (self::returns($body) as $return) {
             $class = $return->expr instanceof Node\Expr\New_ ? $return->expr->class : null;
             if (! $class instanceof Node\Name\FullyQualified) {
                 return null;
@@ -82,22 +72,5 @@ final class ConstructedReturn
         }
 
         return is_array($value) ? array_values(array_filter($value, static fn (mixed $node): bool => $node instanceof Node)) : [];
-    }
-
-    /** @return list<Node> */
-    private function statements(string $file): array
-    {
-        if (isset($this->files[$file])) {
-            return $this->files[$file];
-        }
-
-        try {
-            $code = is_file($file) ? file_get_contents($file) : false;
-            $statements = $code === false ? null : (new ParserFactory)->createForHostVersion()->parse($code);
-        } catch (Throwable) {
-            $statements = null;
-        }
-
-        return $this->files[$file] = $statements === null ? [] : array_values((new NodeTraverser(new NameResolver))->traverse($statements));
     }
 }

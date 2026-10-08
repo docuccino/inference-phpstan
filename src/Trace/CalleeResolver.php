@@ -8,6 +8,7 @@ use PhpParser\Node;
 use PHPStan\Analyser\Scope;
 use PHPStan\Reflection\ClassReflection;
 use PHPStan\Reflection\ExtendedMethodReflection;
+use PHPStan\Reflection\FunctionReflection;
 use PHPStan\Reflection\ReflectionProvider;
 use PHPStan\Type\Type;
 use ReflectionException;
@@ -104,6 +105,36 @@ final class CalleeResolver
             $read = $classReflection->getMethod($method, $scope);
 
             return self::sameThrows($read->getThrowType(), $dispatched->getThrowType()) ? null : $dispatched;
+        }
+
+        return null;
+    }
+
+    /**
+     * The function or method a call reaches — the method PHP dispatches to, as {@see resolve()} reads it —
+     * or null where it does not resolve.
+     */
+    public function reached(Node $node, Scope $scope): FunctionReflection|ExtendedMethodReflection|null
+    {
+        if ($node instanceof Node\Expr\FuncCall) {
+            return $node->name instanceof Node\Name && $this->reflectionProvider->hasFunction($node->name, $scope)
+                ? $this->reflectionProvider->getFunction($node->name, $scope)
+                : null;
+        }
+
+        $receivers = self::receivers($node, $scope);
+        if ($receivers === null) {
+            return null;
+        }
+        [$method, $classNames] = $receivers;
+
+        foreach ($classNames as $class) {
+            if ($this->reflectionProvider->hasClass($class)) {
+                $classReflection = $this->reflectionProvider->getClass($class);
+                if ($classReflection->hasMethod($method)) {
+                    return self::dispatched($classReflection, $method, $scope);
+                }
+            }
         }
 
         return null;

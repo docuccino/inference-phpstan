@@ -1,0 +1,166 @@
+{
+    "ApiProblem": {
+        "type": "object",
+        "properties": {
+            "instance": {
+                "type": "string"
+            },
+            "type": {
+                "type": "string"
+            },
+            "title": {
+                "type": "string"
+            },
+            "status": {
+                "type": "integer"
+            },
+            "detail": {
+                "type": "string",
+                "description": "Only sent when the response said more than its status text."
+            }
+        },
+        "required": [
+            "instance",
+            "type",
+            "title",
+            "status"
+        ]
+    },
+    "DeferredProblem": {
+        "type": "object",
+        "properties": {
+            "type": {
+                "type": "string"
+            },
+            "title": {
+                "type": "string"
+            },
+            "status": {
+                "type": "integer"
+            },
+            "detail": {
+                "type": "string",
+                "description": "Only sent when the response said more than its status text."
+            }
+        },
+        "required": [
+            "type",
+            "title",
+            "status",
+            "detail"
+        ]
+    },
+    "ExplainedProblem": {
+        "type": "object",
+        "properties": {
+            "type": {
+                "type": "string",
+                "const": "about:blank"
+            },
+            "title": {
+                "type": "string"
+            },
+            "status": {
+                "type": "integer"
+            },
+            "detail": {
+                "type": "string",
+                "description": "Only sent when the response said more than its status text."
+            }
+        },
+        "required": [
+            "type",
+            "title",
+            "status",
+            "detail"
+        ]
+    },
+    "FlatProblem": {
+        "type": "object",
+        "properties": {
+            "type": {
+                "type": "string",
+                "const": "about:blank"
+            },
+            "title": {
+                "type": "string"
+            },
+            "status": {
+                "type": "integer"
+            },
+            "detail": {
+                "type": "string",
+                "description": "Only sent when the response said more than its status text."
+            },
+            "instance": {
+                "type": "string"
+            }
+        },
+        "required": [
+            "type",
+            "title",
+            "status",
+            "instance"
+        ]
+    },
+    "InstanceProblem": {
+        "type": "object",
+        "properties": {
+            "instance": {
+                "type": "string"
+            },
+            "type": {
+                "type": "string",
+                "const": "about:blank"
+            },
+            "title": {
+                "type": "string"
+            },
+            "status": {
+                "type": "integer"
+            },
+            "detail": {
+                "type": "string",
+                "description": "Only sent when the response said more than its status text."
+            }
+        },
+        "required": [
+            "instance",
+            "type",
+            "title",
+            "status"
+        ]
+    },
+    "TracedProblem": {
+        "type": "object",
+        "properties": {
+            "traceId": {
+                "type": "string"
+            },
+            "instance": {
+                "type": "string"
+            },
+            "type": {
+                "type": "string",
+                "const": "about:blank"
+            },
+            "title": {
+                "type": "string"
+            },
+            "status": {
+                "type": "integer"
+            },
+            "detail": {
+                "type": "string",
+                "description": "Only sent when the response said more than its status text."
+            }
+        },
+        "required": [
+            "traceId",
+            "instance",
+            "type",
+            "title",
+            "status"
+        ]
+    }
+}

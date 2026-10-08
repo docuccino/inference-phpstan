@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use Docuccino\Core\Inference\CallCondition;
+use Docuccino\Core\Inference\TypeCondition;
 use Docuccino\Inference\PhpStan\Analysis\ParameterUse;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -235,10 +236,12 @@ it('states what a scope proves about each call as the one constant it answers', 
     $scope = $this->createStub(Scope::class);
     $scope->method('getType')->willReturn($type);
 
-    $conditions = ParameterUse::conditionsAt($scope, $calls);
+    $conditions = ParameterUse::conditionsAt($scope, $calls, ['request']);
 
     expect(array_map(static fn (CallCondition $c): array => $c->toArray(), $conditions))
-        ->toBe($value === null ? [] : [['parameter' => 'request', 'method' => 'is', 'arguments' => ['api/*'], 'value' => $value]]);
+        ->toBe($value === null ? [] : [['parameter' => 'request', 'method' => 'is', 'arguments' => ['api/*'], 'value' => $value]])
+        // Rebound before the return, the scope's answer is about whatever it was rebound to.
+        ->and(ParameterUse::conditionsAt($scope, $calls, ['response']))->toBe([]);
 })->with([
     'proven true' => [new ConstantBooleanType(true), true],
     'proven false' => [new ConstantBooleanType(false), false],
@@ -246,4 +249,103 @@ it('states what a scope proves about each call as the one constant it answers', 
     'not proven' => [new BooleanType, null],
     'one of two' => [new UnionType([new ConstantIntegerType(419), new ConstantIntegerType(503)]), null],
     'a null, which states nothing' => [new NullType, null],
+]);
+
+it('collects the instanceof tests of a parameter against a named class, once each, in source order', function (): void {
+    [, $parameters, $body] = parameterUseBody(<<<'PHP'
+        if (! $response instanceof \Illuminate\Http\JsonResponse) { return $response; }
+        if ($e instanceof \RuntimeException || ! ($response instanceof \Illuminate\Http\JsonResponse)) { return $response; }
+        if ($local instanceof \Illuminate\Http\RedirectResponse) { return $response; }
+        if ($response instanceof $class) { return $response; }
+        if ($response->headers instanceof \Countable) { return $response; }
+        return $response instanceof \Illuminate\Http\RedirectResponse ? $response : back();
+    PHP);
+
+    $tests = array_map(
+        static fn (Node\Expr\Instanceof_ $test): string => ($test->expr instanceof Node\Expr\Variable && is_string($test->expr->name) ? $test->expr->name : '?')
+            .' instanceof '.($test->class instanceof Node\Name ? $test->class->toString() : '?'),
+        ParameterUse::typeTests($parameters, $body),
+    );
+
+    // Not a local, not a class held in a variable, not a value reached through the parameter.
+    expect($tests)->toBe([
+        'response instanceof Illuminate\\Http\\JsonResponse',
+        'e instanceof RuntimeException',
+        'response instanceof Illuminate\\Http\\RedirectResponse',
+    ]);
+});
+
+it('states what a scope proves about each instanceof test as the one boolean it answers', function (Type $type, ?bool $value): void {
+    [, $parameters, $body] = parameterUseBody('if (! $response instanceof JsonResponse) { return $response; } return $response;');
+    $tests = ParameterUse::typeTests($parameters, $body);
+
+    $scope = $this->createStub(Scope::class);
+    $scope->method('getType')->willReturn($type);
+    $scope->method('resolveName')->willReturn(JsonResponse::class);
+
+    expect(array_map(static fn (TypeCondition $c): array => $c->toArray(), ParameterUse::typeConditionsAt($scope, $tests, ['response'])))
+        ->toBe($value === null ? [] : [['parameter' => 'response', 'class' => JsonResponse::class, 'value' => $value]])
+        // Rebound before the return, the scope's answer is about whatever it was rebound to.
+        ->and(ParameterUse::typeConditionsAt($scope, $tests, ['e']))->toBe([]);
+})->with([
+    'proven an instance' => [new ConstantBooleanType(true), true],
+    'proven not one' => [new ConstantBooleanType(false), false],
+    'not proven' => [new BooleanType, null],
+]);
+
+it('holds a parameter as handed only where nothing that can run first could bind its name to another value', function (string $code, bool $held): void {
+    $parsed = (new ParserFactory)->createForNewestSupportedVersion()->parse('<?php $f = function ($response, $e) {'.$code.'};') ?? [];
+    $closure = (new NodeFinder)->findFirstInstanceOf($parsed, Node\Expr\Closure::class);
+    assert($closure instanceof Node\Expr\Closure);
+    $returns = (new NodeFinder)->findInstanceOf($closure->stmts, Node\Stmt\Return_::class);
+
+    expect(ParameterUse::heldAt($returns[count($returns) - 1], ['response', 'e'], array_values($closure->stmts)))
+        ->toBe($held ? ['response', 'e'] : ['e']);
+})->with([
+    'never written' => ['if ($response instanceof JsonResponse) { return back(); } return $response;', true],
+    'rebuilt into the same name' => ['if ($response instanceof JsonResponse) { $response = response(\'\', 404); } return $response;', false],
+    'rebuilt in a branch the return is not in' => ['if ($response instanceof JsonResponse) { $response = response(\'\', 404); return $response; } else { return back(); }', true],
+    'rebuilt after the return' => ['if ($e) { return back(); } $response = response(\'\'); return $response;', false],
+    'unset' => ['unset($response); return back();', false],
+    'a foreach binding' => ['foreach ($e as $response) {} return back();', false],
+    'destructured into' => ['[$response] = $e; return back();', false],
+    'a catch binding' => ['try { return back(); } catch (\\Throwable $response) {} return back();', false],
+    // A reference taken may write it later.
+    'captured by reference' => ['$f = function () use (&$response) {}; return back();', false],
+    'a reference in an array' => ['$all = [&$response]; return back();', false],
+    // Evaluated as part of the return, so after the scope the return is read in.
+    'an argument to the return itself' => ['return Problem::from($response, $e);', true],
+    // A callee taking it by reference is not seen, which would read every `report($e)` as a rebinding.
+    'an argument before the return' => ['report($response); return back();', true],
+    'captured by value' => ['$f = function () use ($response) {}; return back();', true],
+    'an array item by value' => ['$all = [$response]; return back();', true],
+    // A call on it is the scope's to forget; the name still holds the object it was handed.
+    'written through a call' => ['$response->setStatusCode(500); return back();', true],
+    'written through a property' => ['$response->headers = null; return back();', true],
+]);
+
+it('holds a property of $this as handed only where nothing that can run first assigns it', function (string $code, bool $held): void {
+    $parsed = (new ParserFactory)->createForNewestSupportedVersion()->parse('<?php $f = function () {'.$code.'};') ?? [];
+    $closure = (new NodeFinder)->findFirstInstanceOf($parsed, Node\Expr\Closure::class);
+    assert($closure instanceof Node\Expr\Closure);
+    $returns = (new NodeFinder)->findInstanceOf($closure->stmts, Node\Stmt\Return_::class);
+
+    expect(ParameterUse::propertyHeldAt($returns[count($returns) - 1], 'resource', array_values($closure->stmts)))->toBe($held);
+})->with([
+    'never written' => ['if ($this->resource instanceof Paginator) { return []; } return [\'meta\' => 1];', true],
+    'assigned' => ['$this->resource = collect(); return [];', false],
+    'assigned in a branch first' => ['if ($x) { $this->resource = collect(); } return [];', false],
+    'assigned in a branch the return is not in' => ['if ($x) { $this->resource = collect(); return []; } else { return [1]; }', true],
+    'assigned after the return' => ['if ($x) { return [1]; } $this->resource = collect(); return [];', false],
+    'compounded' => ['$this->resource .= \'x\'; return [];', false],
+    'unset' => ['unset($this->resource); return [];', false],
+    'destructured into' => ['[$this->resource] = $pair; return [];', false],
+    'a reference taken to it' => ['$held = &$this->resource; return [];', false],
+    'a reference in an array' => ['$all = [&$this->resource]; return [];', false],
+    'a foreach binding' => ['foreach ($pages as $this->resource) {} return [];', false],
+    'bound by reference to another' => ['$this->resource = &$other; return [];', false],
+    'another property' => ['$this->other = collect(); return [];', true],
+    'the same name on another object' => ['$that->resource = collect(); return [];', true],
+    'written through it' => ['$this->resource->items = []; return [];', true],
+    'read' => ['$items = $this->resource->all(); return [];', true],
 ]);

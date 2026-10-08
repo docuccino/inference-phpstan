@@ -42,4 +42,9 @@ final class EscapeProbe extends EscapeParent
     {
         $this->{$key} = 'x';
     }
+
+    private function retract(): void
+    {
+        unset($this->title);
+    }
 }

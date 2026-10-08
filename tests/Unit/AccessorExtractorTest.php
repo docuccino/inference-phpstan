@@ -157,3 +157,32 @@ function caseConstResolvedToSelf(string $case): Node\Expr\ClassConstFetch
 {
     return new Node\Expr\ClassConstFetch(new Node\Name('self'), new Node\Identifier($case));
 }
+
+it('reads a local through the one expression it was assigned, one hop', function (string $local, ?ParamAccessor $expected): void {
+    // `$status = $response->getStatusCode()` names the same read the status argument makes inline; a local
+    // assigned from another local, or written in any way that leaves no one expression, reads nothing.
+    $assigned = [
+        'status' => aeCall('response', 'getStatusCode'),
+        'alias' => aeVar('status'),
+        'code' => aeVar('response'),
+    ];
+    $locals = static fn (string $name): ?Node\Expr => $assigned[$name] ?? null;
+
+    expect(AccessorExtractor::fromExpr(aeVar($local), ['response'], $locals))->toEqual($expected)
+        // Without the locals, a local is no read of a parameter at all.
+        ->and(AccessorExtractor::fromExpr(aeVar($local), ['response']))->toBeNull();
+})->with([
+    'an accessor' => ['status', new ParamAccessor('response', AccessorKind::Method, 'getStatusCode')],
+    'the parameter itself' => ['code', ParamAccessor::identity('response')],
+    'another local' => ['alias', null],
+    'a local with no one expression' => ['unknown', null],
+]);
+
+it('reads a body member through a local the same way', function (): void {
+    $array = new Node\Expr\Array_([
+        new Node\ArrayItem(aeVar('status'), new Node\Scalar\String_('status')),
+    ]);
+
+    expect(AccessorExtractor::provenanceFromArray($array, ['response'], static fn (string $name): ?Node\Expr => $name === 'status' ? aeCall('response', 'getStatusCode') : null))
+        ->toEqual(['status' => new ParamAccessor('response', AccessorKind::Method, 'getStatusCode')]);
+});

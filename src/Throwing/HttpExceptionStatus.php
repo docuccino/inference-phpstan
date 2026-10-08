@@ -59,10 +59,12 @@ use ReflectionParameter;
  * Priming is also why the reads below cost the replay layer nothing, which is worth recording so it is not
  * re-litigated: the adapter primes the application's whole PSR-4 tree at boot, so every one of its
  * exception classes is already in the analysed set and reading one cannot grow it. Measured over one build
- * of the fixture app's 57 throw actions, the analysed-file count is the same whether the reads are scoped
- * to the application or to the descend paths — so no recording is ever discarded, and the modular root is
- * no different because being primed is the whole of what makes that true. What the wider scope costs is
- * one more live file walk, for an exception class nothing else opened.
+ * of the fixture app's throw corpus when it held 58 (it holds 94 throw actions now, and every one added
+ * since depends only on files those already did, but for the nine helper rows, not re-measured), the
+ * analysed-file count is the same whether the reads are scoped to the application or to the descend
+ * paths — so no recording is ever discarded, and the modular root is no different because being primed
+ * is the whole of what makes that true. What the wider scope costs is one more live file walk, for an
+ * exception class nothing else opened.
  *
  * @phpstan-type StatusPin array{status: int|null, parameter: int|null, files: list<string>}
  * @phpstan-type AgreedRead array{status: int|null, files: list<string>}

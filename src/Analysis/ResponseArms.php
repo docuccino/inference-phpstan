@@ -26,8 +26,9 @@ final class ResponseArms
 {
     /**
      * A shape with a fluent chain's statements laid over it. A status stated on the wire beats whatever the
-     * receiver carried — it is the last thing that ran. A receiver that recovers nothing still leaves a chain
-     * worth reporting, but a shape saying nothing at all is not a response.
+     * receiver carried — it is the last thing that ran — and so does it beat what the body echoed of the
+     * old one ({@see RefinedResponse::withoutStatusEchoes()}). A receiver that recovers nothing still leaves
+     * a chain worth reporting, but a shape saying nothing at all is not a response.
      *
      * @param  Chain  $chain
      */
@@ -35,6 +36,9 @@ final class ResponseArms
     {
         if ($chain['contentType'] !== null || $chain['contentTypeUnknown']) {
             $refined = $refined->withContentType($chain['contentType']);
+        }
+        if ($chain['status'] !== null || $chain['statusUnknown']) {
+            $refined = $refined->withoutStatusEchoes();
         }
         if ($chain['status'] !== null) {
             $refined = $refined->withBoundStatus($chain['status']);

@@ -4,10 +4,14 @@ declare(strict_types=1);
 
 use Docuccino\Core\Inference\ActionAnalysis;
 use Docuccino\Core\Inference\CallCondition;
+use Docuccino\Core\Inference\DType\ArrayShapeT;
 use Docuccino\Core\Inference\DType\ClassT;
+use Docuccino\Core\Inference\DType\DType;
 use Docuccino\Core\Inference\DType\LiteralT;
 use Docuccino\Core\Inference\DType\NullT;
+use Docuccino\Core\Inference\DType\StatusTextMarkerT;
 use Docuccino\Core\Inference\ReturnSite;
+use Docuccino\Core\Inference\TypeCondition;
 use Docuccino\Inference\PhpStan\Tests\Support\FixtureRunner;
 
 /**
@@ -139,6 +143,43 @@ it('reads a pass-through that only adds a header as unchanged, and one that rety
     'handed to a helper that rewrites it' => ['decoratedInPlace', null],
 ])->group('fixture');
 
+it('proves the class a guard on the rendered response tests, however the guard is spelled', function (string $method, string $class, bool $rewriteFirst, string $echoed): void {
+    $facts = array_map(static fn (ReturnSite $site): array => [
+        'type' => $site->type instanceof ClassT ? $site->type->fqcn : $site->type->kind(),
+        'echoes' => $site->returnsParameter,
+        'typeConditions' => array_map(static fn (TypeCondition $c): array => $c->toArray(), $site->typeConditions),
+    ], respondReturns($method, 'Illuminate\\Auth\\AuthenticationException'));
+
+    $test = static fn (bool $holds): array => [['parameter' => 'response', 'class' => $class, 'value' => $holds]];
+    $rewrite = ['type' => 'Illuminate\\Http\\JsonResponse', 'echoes' => null, 'typeConditions' => $test($class === 'Illuminate\\Http\\JsonResponse')];
+    $echo = ['type' => $echoed, 'echoes' => 'response', 'typeConditions' => $test($class !== 'Illuminate\\Http\\JsonResponse')];
+
+    // Source order: the early return's pass-through comes first, a ternary's and a turned-around guard's last.
+    expect($facts)->toBe($rewriteFirst ? [$rewrite, $echo] : [$echo, $rewrite]);
+})->with([
+    'a negated guard returning early' => ['jsonGuarded', 'Illuminate\\Http\\JsonResponse', false, 'Symfony\\Component\\HttpFoundation\\Response'],
+    'the guard turned around' => ['jsonGuardedReversed', 'Illuminate\\Http\\JsonResponse', true, 'Symfony\\Component\\HttpFoundation\\Response'],
+    'the guard as a ternary' => ['jsonGuardedTernary', 'Illuminate\\Http\\JsonResponse', true, 'Symfony\\Component\\HttpFoundation\\Response'],
+    // Handed back where it IS the class tested, so its type is that class.
+    'a parenthesised negation of another class' => ['redirectGuarded', 'Illuminate\\Http\\RedirectResponse', true, 'Illuminate\\Http\\RedirectResponse'],
+])->group('fixture');
+
+it('records no class fact about a response the callback rebinds before it returns', function (): void {
+    $sites = respondReturns('jsonRebound', 'Illuminate\\Auth\\AuthenticationException');
+
+    // At the return the variable holds the rebuilt response or the one it was handed, and the guard reads
+    // the first as not a JsonResponse: a fact about the variable, not about what the callback was handed.
+    expect($sites)->toHaveCount(1)
+        ->and($sites[0]->returnsParameter)->toBeNull()
+        ->and($sites[0]->typeConditions)->toBe([]);
+})->group('fixture');
+
+it('records no class fact where the callback tests none', function (string $method): void {
+    foreach (respondReturns($method, 'Illuminate\\Auth\\AuthenticationException') as $site) {
+        expect($site->typeConditions)->toBe([]);
+    }
+})->with(['pathGated', 'earlyReturn', 'everywhere'])->group('fixture');
+
 it('reads the response a catch hands back after a helper that threw as not the one it was handed', function (): void {
     $facts = array_map(respondFacts(...), respondReturns('reshapedElseHandedBack', 'Illuminate\\Auth\\AuthenticationException'));
 
@@ -183,3 +224,124 @@ it('reads each branch of a ternary render callback as the answer for the types t
     'the tested type' => ['App\\Exceptions\\OrderConflictException', 'Illuminate\\Http\\JsonResponse'],
     'any other type, handed back to the framework' => ['App\\Exceptions\\OutOfStockException', NullT::class],
 ])->group('fixture');
+
+it('reads a return reached after the exception is swapped as reachable by every type, the swapped one too', function (string $thrown, bool $every): void {
+    $analysis = ActionAnalysis::fromArray(FixtureRunner::analyzeCallable(
+        'app/Exceptions/RenderCallbacks.php',
+        '',
+        '',
+        line: exceptionsFixtureLine('RenderCallbacks.php', 'function conflictRebound(') + 2,
+        param: 'e',
+        narrowType: $thrown,
+        every: $every,
+    ));
+
+    // At the return the variable holds the generic error or an exception that is not a conflict. Read as
+    // the type the callback was handed, that made the one return unreachable for the very type it swaps.
+    expect($analysis->returns)->toHaveCount(1)
+        ->and(($analysis->returns[0]->type instanceof ClassT ? ($analysis->returns[0]->type->typeArgs[1] ?? null) : null)?->toArray())
+        ->toBe(['kind' => 'literal', 'base' => 'int', 'value' => 409]);
+})->with([
+    'the type it swaps' => ['App\\Exceptions\\OrderConflictException'],
+    'any other type' => ['App\\Exceptions\\OutOfStockException'],
+])->with([
+    'the one answer chosen' => [false],
+    'every answer reached' => [true],
+])->group('fixture');
+
+/** The kind of each member of a body as the engine recovered it, with the `??` a reason phrase carries. */
+function echoedMembers(DType $body): array
+{
+    $members = [];
+    foreach ($body instanceof ArrayShapeT ? $body->fields : [] as $field) {
+        $members[(string) $field->key] = $field->type instanceof StatusTextMarkerT
+            ? [$field->type->kind(), $field->type->type->kind(), $field->type->fallback?->value]
+            : $field->type->kind();
+    }
+
+    return $members;
+}
+
+it('reads a member as the reason phrase of the status the response is sent with, however the key reaches it', function (string $method, array $expected): void {
+    $sites = array_values(array_filter(
+        respondReturns($method, 'Illuminate\\Validation\\ValidationException'),
+        static fn (ReturnSite $site): bool => $site->type instanceof ClassT && $site->type->fqcn === 'Illuminate\\Http\\JsonResponse',
+    ));
+    expect($sites)->toHaveCount(1);
+
+    $type = $sites[0]->type;
+    expect($type)->toBeInstanceOf(ClassT::class)
+        ->and(echoedMembers($type->typeArgs[0]))->toBe($expected);
+})->with([
+    // Through the helper, where the status is named in a local before both the body and the response read it.
+    'a local both read' => ['everywhere', ['type' => 'literal', 'title' => ['statusText', 'scalar', 'Error'], 'status' => 'statusMarker', 'errors' => 'list']],
+    'read inline, through a class inheriting the table' => ['statusTextInline', ['title' => ['statusText', 'scalar', null], 'status' => 'statusMarker']],
+    // The phrase of a code nothing says is the one sent: the member is the string it was read as.
+    'a key that is not the status' => ['statusTextOtherKey', ['title' => 'scalar', 'status' => 'statusMarker']],
+    // `->setStatusCode(500)` replaced the status both members read.
+    'a status restated after the body' => ['statusTextRestated', ['title' => 'scalar', 'status' => 'scalar']],
+])->group('fixture');
+
+it('reads the members an object body built in place echoes of the status it is sent with', function (): void {
+    $analysis = ActionAnalysis::fromArray(FixtureRunner::analyzeCallable(
+        'app/Exceptions/RespondCallbacks.php',
+        '',
+        '',
+        line: exceptionsFixtureLine('RespondCallbacks.php', 'public function problemObject(') + 2,
+        param: 'e',
+        narrowType: 'Symfony\\Component\\HttpKernel\\Exception\\NotFoundHttpException',
+        every: true,
+    ));
+    $sites = array_values(array_filter(
+        $analysis->returns,
+        static fn (ReturnSite $site): bool => $site->type instanceof ClassT && $site->type->fqcn === 'Illuminate\\Http\\JsonResponse',
+    ));
+    expect($sites)->toHaveCount(1);
+
+    $type = $sites[0]->type;
+    expect($type)->toBeInstanceOf(ClassT::class)
+        ->and($type->typeArgs[0] ?? null)->toEqual(new ClassT('App\\Problems\\HttpProblem'))
+        ->and($type->typeArgs[2] ?? null)->toEqual(new LiteralT('application/problem+json'))
+        ->and(echoedMembers($type->typeArgs[3] ?? new ArrayShapeT([])))->toBe(['status' => 'statusMarker', 'title' => ['statusText', 'scalar', 'Error']])
+        // What the members were read out of keys the fragment: the class's constructor.
+        ->and(array_map(basename(...), $analysis->dependencyFiles))->toContain('HttpProblem.php');
+})->group('fixture');
+
+// A value named before the response's status is replaced is the old status, not the one sent: no member of
+// the body may echo the status it goes out with, however it was named.
+it('reads no echo of the status sent off a value named before that status was replaced', function (string $method, int $slot, array $expected): void {
+    $sites = array_values(array_filter(
+        respondReturns($method),
+        static fn (ReturnSite $site): bool => $site->type instanceof ClassT && $site->type->fqcn === 'Illuminate\\Http\\JsonResponse',
+    ));
+    expect($sites)->toHaveCount(1);
+
+    $type = $sites[0]->type;
+    expect($type)->toBeInstanceOf(ClassT::class)
+        ->and(echoedMembers($type->typeArgs[$slot] ?? new ArrayShapeT([])))->toBe($expected);
+})->with([
+    'a local the body reads' => ['statusTextStale', 0, ['title' => 'scalar', 'status' => 'scalar']],
+    'a body built in a local' => ['statusStaleBody', 0, ['status' => 'scalar']],
+    'an object built in a local' => ['problemStale', 3, []],
+])->group('fixture');
+
+it('keys a phrase read through an application class by that class, whose hierarchy decides it is the table', function (): void {
+    $analysis = ActionAnalysis::fromArray(FixtureRunner::analyzeCallable(
+        'app/Exceptions/RespondCallbacks.php',
+        '',
+        '',
+        line: exceptionsFixtureLine('RespondCallbacks.php', 'public function statusTextThroughApp(') + 2,
+        every: true,
+    ));
+    $sites = array_values(array_filter(
+        $analysis->returns,
+        static fn (ReturnSite $site): bool => $site->type instanceof ClassT && $site->type->fqcn === 'Illuminate\\Http\\JsonResponse',
+    ));
+    expect($sites)->toHaveCount(1);
+
+    $type = $sites[0]->type;
+    expect($type)->toBeInstanceOf(ClassT::class)
+        ->and(echoedMembers($type->typeArgs[0]))->toBe(['title' => ['statusText', 'scalar', 'Error']])
+        // Redeclaring `$statusTexts` there would make it another table: a warm build must notice.
+        ->and(array_map(basename(...), $analysis->dependencyFiles))->toContain('ApiResponse.php');
+})->group('fixture');

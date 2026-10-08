@@ -31,9 +31,14 @@ final class AccessorExtractor
      * A first-class callable (`$param->method(...)`) is a closure, not a read of the parameter, so it
      * declines — and asking it for its arguments would assert, since it has none.
      *
+     * A local that is not a parameter reads through what it was assigned, where `$local` names one
+     * expression for it (`$status = $response->getStatusCode()`): one hop, never through a second local, the
+     * reading {@see ResponseShapeRefiner::refineLocal()} takes of a response named before it goes out.
+     *
      * @param  list<string>  $paramNames
+     * @param  (Closure(string): ?Node\Expr)|null  $local  the one expression a local was assigned, or null
      */
-    public static function fromExpr(Node\Expr $expr, array $paramNames): ?ParamAccessor
+    public static function fromExpr(Node\Expr $expr, array $paramNames, ?Closure $local = null): ?ParamAccessor
     {
         while ($expr instanceof Node\Expr\BinaryOp\Coalesce) {
             $expr = $expr->left;
@@ -41,6 +46,13 @@ final class AccessorExtractor
 
         if ($expr instanceof Node\Expr\Variable && is_string($expr->name) && in_array($expr->name, $paramNames, true)) {
             return ParamAccessor::identity($expr->name);
+        }
+
+        if ($expr instanceof Node\Expr\Variable && is_string($expr->name) && $local !== null) {
+            $assigned = $local($expr->name);
+
+            // Read without the locals, so a local assigned from another local reads nothing.
+            return $assigned === null ? null : self::fromExpr($assigned, $paramNames);
         }
 
         if ($expr instanceof Node\Expr\PropertyFetch
@@ -78,16 +90,17 @@ final class AccessorExtractor
      * Scope-free.
      *
      * @param  list<string>  $paramNames
+     * @param  (Closure(string): ?Node\Expr)|null  $local  as {@see fromExpr()} reads it
      * @return array<string, ParamAccessor>
      */
-    public static function provenanceFromArray(Node\Expr\Array_ $array, array $paramNames): array
+    public static function provenanceFromArray(Node\Expr\Array_ $array, array $paramNames, ?Closure $local = null): array
     {
         $provenance = [];
         foreach ($array->items as $item) {
             if (! $item->key instanceof Node\Scalar\String_) {
                 continue;
             }
-            $accessor = self::fromExpr($item->value, $paramNames);
+            $accessor = self::fromExpr($item->value, $paramNames, $local);
             if ($accessor !== null) {
                 $provenance[$item->key->value] = $accessor;
             }

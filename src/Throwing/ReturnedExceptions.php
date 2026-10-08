@@ -33,7 +33,7 @@ final class ReturnedExceptions
             $built = $site->returnsParameter === null ? $read($index) : null;
 
             $marked[] = $built === []
-                ? new ReturnSite(new UnknownT('names no exception class'), $site->location, $site->component, $site->returnsParameter, $site->conditions)
+                ? new ReturnSite(new UnknownT('names no exception class'), $site->location, $site->component, $site->returnsParameter, $site->conditions, $site->typeConditions)
                 : $site;
 
             foreach ($built ?? [] as $throw) {

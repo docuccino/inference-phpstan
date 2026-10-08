@@ -6,6 +6,7 @@ use Docuccino\Inference\PhpStan\Analysis\FileAnalyzer;
 use Docuccino\Inference\PhpStan\Runtime\FileWalks;
 use Docuccino\Inference\PhpStan\Tests\Support\ScriptedRuntimeAdapter;
 use PhpParser\Node;
+use PhpParser\NodeFinder;
 use PhpParser\ParserFactory;
 use PHPStan\Analyser\Scope;
 use PHPStan\ShouldNotHappenException;
@@ -168,3 +169,29 @@ it('finds no closure in a file it cannot read or parse', function (): void {
     expect($analyzer->closureAt($broken, 1))->toBeNull()
         ->and($analyzer->closureAt($broken.'.missing', 1))->toBeNull();
 });
+
+it('holds a read only while nothing after it may have changed what it gives', function (string $code, string $read, string $variable, bool $member, bool $holds): void {
+    $source = '<?php '.$code.';';
+    $statements = (new ParserFactory)->createForNewestSupportedVersion()->parse($source) ?? [];
+    $scope = fileAnalyzerFailingScope($this->createStub(Scope::class), 'render');
+    $analyzer = fileAnalyzerOverNodes(array_map(
+        static fn (Node $node): array => [$node, $scope],
+        (new NodeFinder)->find($statements, static fn (Node $node): bool => true),
+    ));
+    $after = (int) strpos($source, $read) + strlen($read) - 1;
+
+    expect($analyzer->readHolds('/x.php', 'render', $after, $variable, $member))->toBe($holds);
+})->with([
+    'the same member read again' => ['$s = $r->getStatusCode(); $t = $r->getStatusCode()', '$r->getStatusCode()', 'r', true, true],
+    'other members read after it' => ['$s = $p->status(); $t = $p->title(); $u = $p?->value', '$p->status()', 'p', true, true],
+    'a change made before the read' => ['$r->setStatusCode(503); $s = $r->getStatusCode()', '$r->getStatusCode()', 'r', true, true],
+    'a call with arguments after it' => ['$s = $r->getStatusCode(); $r->setStatusCode(503)', '$r->getStatusCode()', 'r', true, false],
+    'a nullsafe call with arguments after it' => ['$s = $r->getStatusCode(); $r?->setStatusCode(503)', '$r->getStatusCode()', 'r', true, false],
+    'the object handed on after it' => ['$s = $r->getStatusCode(); handle($r)', '$r->getStatusCode()', 'r', true, false],
+    'the property written after it' => ['$s = $r->status; $r->status = 503', '$r->status', 'r', true, false],
+    'the property incremented after it' => ['$s = $r->status; $r->status++', '$r->status', 'r', true, false],
+    'unset after it' => ['$s = $r->status; unset($r->status)', '$r->status', 'r', true, false],
+    'the variable read again, or handed on' => ['$s = $code; $t = $code; handle($code)', '$s = $code', 'code', false, true],
+    'the variable written after it' => ['$s = $code; $code = 503', '$s = $code', 'code', false, false],
+    'an offset of it written after it' => ['$s = $code; $code[0] = 5', '$s = $code', 'code', false, false],
+]);

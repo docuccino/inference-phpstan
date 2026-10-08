@@ -47,6 +47,17 @@ it('depends on the file the declaring callee builds the exception in', function 
     'a guard outside it' => ['modularDeclaredStatus', 'LedgerReviewQuery.php', 'LedgerRejectedException.php'],
 ])->group('fixture');
 
+it('depends on the callee whose catch around a closure decided what it publishes', function (string $method, string $callee): void {
+    // The callee's catch around the place it runs the closure takes what the closure throws, so editing that
+    // catch — narrowing it, adding a rethrow — changes what this route publishes. The installed framework's
+    // own helpers file is no different: a `composer update` that changed rescue() would change the answer.
+    expect(throwDependencyNames($method))->toContain($callee);
+})->with([
+    'a helper method' => ['swallowedByHelper', 'Attempts.php'],
+    'a helper function' => ['swallowedByHelperFunction', 'helpers.php'],
+    'the framework\'s rescue()' => ['rescuedClosure', 'helpers.php'],
+])->group('fixture');
+
 it('depends on the file a status constant a DEFAULT names is declared in', function (): void {
     // The private constructor's default is what every instance of this class carries, and the number is
     // written in another file: reflection names the constant off the declaration rather than evaluating
@@ -111,3 +122,16 @@ it('invalidates a cached fragment when a file the status was read from is edited
     // publishes, so editing the guard has to make the entry stale.
     'the guard whose `@throws` surfaced the exception' => ['manifestStatusDeclaredByCallee', 'app/Services/ManifestDeclaredQuery.php'],
 ])->group('fixture');
+
+it('invalidates a cached fragment when the helper a closure is relayed through is edited', function (): void {
+    // The helper hands the work on, so no catch of its own is weighed and the closure's throws are kept. That
+    // answer was decided by the helper's file as much as a catch would have been: edit it to run the work
+    // under `try { $work(); } catch (\Exception) {}` and a cold build takes both — so a warm one must not
+    // serve the fragment that kept them.
+    $analysis = throwsAnalysis('relayedByHelperFunction');
+    /** @var list<string> $dependencies */
+    $dependencies = $analysis['dependencyFiles'];
+
+    expect(signalThrows('relayedByHelperFunction'))->toBe(['OutOfStockException@500', 'RuntimeException@500'])
+        ->and(fragmentAcrossDependencyEdit($dependencies, 'app/Support/helpers.php'))->toBe(['warm' => true, 'staleAfterEdit' => true]);
+})->group('fixture');

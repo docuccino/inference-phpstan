@@ -250,3 +250,132 @@ it('reads the ancestor re-tagging premise off PHP itself', function (): void {
 
     expect((new $class)->with(['channel' => 'push'])->channel)->toBe('push');
 });
+
+it('pins a value a final class\'s constructor reaches through its parent\'s', function (string $source, string $value): void {
+    // The constructor a final class runs is known, and so is the `parent::__construct()` it runs on every
+    // completing path; readonly makes that constructor's assignment the value. Each row is held to what an
+    // instance actually holds, read off PHP rather than off the reader under test.
+    $class = retaggedClass($source);
+
+    expect(fixedPropertyType($class, 'channel'))->toEqual(new LiteralT($value))
+        ->and((new $class)->channel)->toBe($value);
+})->with([
+    'a parent constructor run first' => [<<<'PHP'
+        class Base
+        {
+            public readonly string $channel;
+
+            public function __construct() { $this->channel = 'email'; }
+        }
+
+        final class Retagged extends Base
+        {
+            public readonly int $attempts;
+
+            public function __construct() { parent::__construct(); $this->attempts = 1; }
+        }
+        PHP, 'email'],
+    'a constructor inherited' => [<<<'PHP'
+        class Base
+        {
+            public readonly string $channel;
+
+            public function __construct() { $this->channel = 'email'; }
+        }
+
+        final class Retagged extends Base {}
+        PHP, 'email'],
+    'a grandparent\'s constructor' => [<<<'PHP'
+        class Base
+        {
+            public readonly string $channel;
+
+            public function __construct() { $this->channel = 'email'; }
+        }
+
+        class Middle extends Base
+        {
+            public function __construct() { parent::__construct(); }
+        }
+
+        final class Retagged extends Middle
+        {
+            public function __construct() { $prefix = 'x'; parent::__construct(); }
+        }
+        PHP, 'email'],
+    // `self::` binds to the class the line is written in, `static::` to the class being built.
+    'self:: in the parent' => [<<<'PHP'
+        class Base
+        {
+            public const CHANNEL = 'email';
+
+            public readonly string $channel;
+
+            public function __construct() { $this->channel = self::CHANNEL; }
+        }
+
+        final class Retagged extends Base
+        {
+            public const CHANNEL = 'push';
+        }
+        PHP, 'email'],
+    'static:: in the parent' => [<<<'PHP'
+        class Base
+        {
+            public const CHANNEL = 'email';
+
+            public readonly string $channel;
+
+            public function __construct() { $this->channel = static::CHANNEL; }
+        }
+
+        final class Retagged extends Base
+        {
+            public const CHANNEL = 'push';
+        }
+        PHP, 'push'],
+]);
+
+it('keeps the declared type where the parent\'s constructor may not run', function (string $source): void {
+    expect(fixedPropertyType(retaggedClass($source), 'channel'))->toEqual(ScalarT::string());
+})->with([
+    'run in a branch' => [<<<'PHP'
+        class Base
+        {
+            public readonly string $channel;
+
+            public function __construct() { $this->channel = 'email'; }
+        }
+
+        final class Retagged extends Base
+        {
+            public function __construct(bool $ready = true) { if ($ready) { parent::__construct(); } }
+        }
+        PHP],
+    'after a return' => [<<<'PHP'
+        class Base
+        {
+            public readonly string $channel;
+
+            public function __construct() { $this->channel = 'email'; }
+        }
+
+        final class Retagged extends Base
+        {
+            public function __construct(bool $ready = true) { if (! $ready) { return; } parent::__construct(); }
+        }
+        PHP],
+    'a parent that assigns it in a branch' => [<<<'PHP'
+        class Base
+        {
+            public readonly string $channel;
+
+            public function __construct(bool $ready = true) { if ($ready) { $this->channel = 'email'; } }
+        }
+
+        final class Retagged extends Base
+        {
+            public function __construct() { parent::__construct(); }
+        }
+        PHP],
+]);

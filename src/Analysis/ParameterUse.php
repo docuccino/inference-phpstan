@@ -7,6 +7,7 @@ namespace Docuccino\Inference\PhpStan\Analysis;
 use Docuccino\Core\Inference\CallCondition;
 use Docuccino\Core\Inference\LocalWrites;
 use Docuccino\Core\Inference\ReturnSite;
+use Docuccino\Core\Inference\TypeCondition;
 use Docuccino\Inference\PhpStan\Support\SourceOrder;
 use PhpParser\Node;
 use PhpParser\NodeFinder;
@@ -14,8 +15,9 @@ use PHPStan\Analyser\Scope;
 
 /**
  * Reads what a callable body does with its own parameters: which parameter a return hands back unchanged
- * ({@see ReturnSite::$returnsParameter}), and which literal-argument calls on a parameter a return's scope
- * proves. How "unchanged" is judged is in docs/design/inference-embedding.md §4b.
+ * ({@see ReturnSite::$returnsParameter}), and which literal-argument calls on a parameter, and which
+ * `instanceof` tests of one, a return's scope proves about the value the callable was handed. How
+ * "unchanged" is judged is in docs/design/inference-embedding.md §4b.
  *
  * @internal
  */
@@ -51,7 +53,21 @@ final class ParameterUse
             return null;
         }
 
-        return self::untouched($expr, $expr->name, $body) ? $expr->name : null;
+        return self::untouched($expr, $expr->name, $body, rebindsOnly: false) ? $expr->name : null;
+    }
+
+    /**
+     * The parameters still naming the value the callable was handed where `$at` is reached: nothing that can
+     * run first could have bound the name to another value. A scope's answer about any other parameter is
+     * about whatever was bound to it since. What a call on the value changed is the scope's own to forget.
+     *
+     * @param  list<string>  $parameters
+     * @param  list<Node>  $body
+     * @return list<string>
+     */
+    public static function heldAt(Node $at, array $parameters, array $body): array
+    {
+        return array_values(array_filter($parameters, static fn (string $name): bool => self::untouched($at, $name, $body, rebindsOnly: true)));
     }
 
     /**
@@ -77,25 +93,23 @@ final class ParameterUse
             $calls[$key] ??= $call;
         }
 
-        $calls = array_values($calls);
-        usort($calls, static fn (Node\Expr\MethodCall $a, Node\Expr\MethodCall $b): int => SourceOrder::of($a) <=> SourceOrder::of($b));
-
-        return $calls;
+        return self::inSourceOrder($calls);
     }
 
     /**
-     * What `$scope` proves about each call: the ones it types as exactly one constant scalar.
+     * What `$scope` proves about each call on a parameter in `$held`: the ones it types as exactly one constant scalar.
      *
      * @param  list<Node\Expr\MethodCall>  $calls  from {@see literalCalls()}
+     * @param  list<string>  $held  from {@see heldAt()}
      * @return list<CallCondition>
      */
-    public static function conditionsAt(Scope $scope, array $calls): array
+    public static function conditionsAt(Scope $scope, array $calls, array $held): array
     {
         $conditions = [];
         foreach ($calls as $call) {
             $parameter = self::receiver($call);
             $arguments = self::literalArguments($call);
-            if ($parameter === null || ! $call->name instanceof Node\Identifier || $arguments === null) {
+            if ($parameter === null || ! in_array($parameter, $held, true) || ! $call->name instanceof Node\Identifier || $arguments === null) {
                 continue;
             }
 
@@ -109,11 +123,132 @@ final class ParameterUse
     }
 
     /**
-     * Whether nothing that can run before `$returned` is evaluated could have changed the value `$name` holds.
+     * Every `instanceof` test of a parameter against a named class — the other kind of question a return
+     * site's scope can answer outright. Source order, one per distinct parameter and class.
+     *
+     * @param  list<string>  $parameters
+     * @param  list<Node>  $body
+     * @return list<Node\Expr\Instanceof_>
+     */
+    public static function typeTests(array $parameters, array $body): array
+    {
+        $tests = [];
+        foreach ((new NodeFinder)->findInstanceOf($body, Node\Expr\Instanceof_::class) as $test) {
+            $parameter = self::tested($test);
+            if ($parameter === null || ! in_array($parameter, $parameters, true) || ! $test->class instanceof Node\Name) {
+                continue;
+            }
+
+            $tests[$parameter."\0".$test->class->toLowerString()] ??= $test;
+        }
+
+        return self::inSourceOrder($tests);
+    }
+
+    /**
+     * What `$scope` proves about each test of a parameter in `$held`: the ones it types as exactly true or
+     * exactly false. However the guard is spelled — negated, parenthesised, turned around, a ternary — the
+     * scope it leaves is the answer.
+     *
+     * @param  list<Node\Expr\Instanceof_>  $tests  from {@see typeTests()}
+     * @param  list<string>  $held  from {@see heldAt()}
+     * @return list<TypeCondition>
+     */
+    public static function typeConditionsAt(Scope $scope, array $tests, array $held): array
+    {
+        $conditions = [];
+        foreach ($tests as $test) {
+            $parameter = self::tested($test);
+            if ($parameter === null || ! in_array($parameter, $held, true) || ! $test->class instanceof Node\Name) {
+                continue;
+            }
+
+            $answer = $scope->getType($test);
+            if ($answer->isTrue()->yes() || $answer->isFalse()->yes()) {
+                $conditions[] = new TypeCondition($parameter, $scope->resolveName($test->class), $answer->isTrue()->yes());
+            }
+        }
+
+        return $conditions;
+    }
+
+    /**
+     * @template T of Node
+     *
+     * @param  array<string, T>  $nodes
+     * @return list<T>
+     */
+    private static function inSourceOrder(array $nodes): array
+    {
+        $nodes = array_values($nodes);
+        usort($nodes, static fn (Node $a, Node $b): int => SourceOrder::of($a) <=> SourceOrder::of($b));
+
+        return $nodes;
+    }
+
+    /**
+     * Whether nothing that can run before `$at` is evaluated could have changed the value `$name` holds —
+     * or, `$rebindsOnly`, bound the name to another value.
      *
      * @param  list<Node>  $body
      */
-    private static function untouched(Node\Expr\Variable $returned, string $name, array $body): bool
+    private static function untouched(Node $at, string $name, array $body, bool $rebindsOnly): bool
+    {
+        return self::nonePrecedes($at, $body, static fn (array $parents, Node $root): array => self::touches($name, $body, $parents, $root, $rebindsOnly));
+    }
+
+    /**
+     * Whether `$this->{$property}` still holds what it held on entry where `$at` is reached: nothing that can
+     * run first assigns it, binds it in a `foreach`, takes a reference to it, or unsets it. A call writing it from elsewhere is past
+     * what a body read sees, as a callee writing back through a by-reference argument is for a parameter.
+     *
+     * @param  list<Node>  $body
+     */
+    public static function propertyHeldAt(Node $at, string $property, array $body): bool
+    {
+        return self::nonePrecedes($at, $body, static fn (): array => array_values((new NodeFinder)->find($body, static function (Node $node) use ($property): bool {
+            $written = match (true) {
+                $node instanceof Node\Expr\Assign, $node instanceof Node\Expr\AssignOp, $node instanceof Node\Expr\AssignRef => [$node->var],
+                $node instanceof Node\Stmt\Unset_ => $node->vars,
+                $node instanceof Node\Stmt\Foreach_ => array_filter([$node->keyVar, $node->valueVar]),
+                $node instanceof Node\ArrayItem && $node->byRef => [$node->value],
+                default => [],
+            };
+            if ($node instanceof Node\Expr\AssignRef) {
+                $written[] = $node->expr;
+            }
+
+            while ($written !== []) {
+                $target = array_shift($written);
+                if ($target instanceof Node\Expr\List_ || $target instanceof Node\Expr\Array_) {
+                    foreach ($target->items as $item) {
+                        if ($item !== null) {
+                            $written[] = $item->value;
+                        }
+                    }
+                } elseif (self::isOwnProperty($target, $property)) {
+                    return true;
+                }
+            }
+
+            return false;
+        })));
+    }
+
+    private static function isOwnProperty(Node $node, string $property): bool
+    {
+        return ($node instanceof Node\Expr\PropertyFetch || $node instanceof Node\Expr\NullsafePropertyFetch)
+            && $node->var instanceof Node\Expr\Variable && $node->var->name === 'this'
+            && $node->name instanceof Node\Identifier && $node->name->toString() === $property;
+    }
+
+    /**
+     * Whether no node the `$touches` callback names, over the body connected to one root, can run before `$at`.
+     *
+     * @param  list<Node>  $body
+     * @param  callable(array<int, array{Node, string}>, Node): list<Node>  $touches
+     */
+    private static function nonePrecedes(Node $at, array $body, callable $touches): bool
     {
         // One root over the body's statements, so any two of its nodes have an ancestor in common.
         $root = new Node\Stmt\Block([]);
@@ -123,8 +258,8 @@ final class ParameterUse
             self::connect($node, $parents);
         }
 
-        foreach (self::touches($name, $body, $parents, $root) as $touch) {
-            if (self::mayPrecede($touch, $returned, $parents, $root, $body)) {
+        foreach ($touches($parents, $root) as $touch) {
+            if (self::mayPrecede($touch, $at, $parents, $root, $body)) {
                 return false;
             }
         }
@@ -138,19 +273,27 @@ final class ParameterUse
      * and code this does not read may write through it, and any reach into the scope that never names it.
      * What it cannot see is a callee reaching back up the call stack for its caller's arguments.
      *
+     * `$rebindsOnly` keeps the nodes that may bind the name to another value: a write to it, and a reference
+     * taken to it — `use (&…)`, `[&…]`. Like {@see LocalWrites}, it does not see a callee taking an argument
+     * by reference, which would read every `report($e)` before a return as a rebinding.
+     *
      * @param  list<Node>  $body
      * @param  array<int, array{Node, string}>  $parents
      * @return list<Node>
      */
-    private static function touches(string $name, array $body, array $parents, Node $root): array
+    private static function touches(string $name, array $body, array $parents, Node $root, bool $rebindsOnly): array
     {
-        return array_values((new NodeFinder)->find($body, static function (Node $node) use ($name, $parents, $root): bool {
+        return array_values((new NodeFinder)->find($body, static function (Node $node) use ($name, $parents, $root, $rebindsOnly): bool {
             $assignment = LocalWrites::assignment($node);
             if (($assignment !== null && $assignment[0] === $name)
                 || in_array($name, LocalWrites::retires($node), true)
                 || LocalWrites::retiresEveryLocal($node)
             ) {
                 return true;
+            }
+
+            if ($rebindsOnly) {
+                return self::referenced($node, $name);
             }
 
             // Reaching it without its name: a variable variable, or a function handing out the whole scope.
@@ -174,6 +317,18 @@ final class ParameterUse
 
             return $node instanceof Node\Expr\Variable && $node->name === $name && ! self::readsInPlace($node, $parents, $root);
         }));
+    }
+
+    /** Whether the node takes a reference to the variable: a by-reference capture or array item. */
+    private static function referenced(Node $node, string $name): bool
+    {
+        $target = match (true) {
+            $node instanceof Node\ClosureUse && $node->byRef => $node->var,
+            $node instanceof Node\ArrayItem && $node->byRef => $node->value,
+            default => null,
+        };
+
+        return $target instanceof Node\Expr\Variable && $target->name === $name;
     }
 
     /**
@@ -222,18 +377,18 @@ final class ParameterUse
     }
 
     /**
-     * Whether `$touch` can run before `$returned` is evaluated. It cannot where it sits in a branch exclusive
-     * of the return's, where the function has already left by then — the touch's own `return`, or one after
-     * it on its way out — or where it is written after the return with no loop around both; a `finally` runs
-     * it anyway.
+     * Whether `$touch` can run before `$at` is evaluated. It cannot where it sits inside `$at` itself, in a
+     * branch exclusive of `$at`'s, where the function has already left by then — the touch's own `return`,
+     * or one after it on its way out — or where it is written after `$at` with no loop around both; a
+     * `finally` runs it anyway.
      *
      * @param  array<int, array{Node, string}>  $parents
      * @param  list<Node>  $body
      */
-    private static function mayPrecede(Node $touch, Node\Expr\Variable $returned, array $parents, Node $root, array $body): bool
+    private static function mayPrecede(Node $touch, Node $at, array $parents, Node $root, array $body): bool
     {
         $touchPath = self::ancestry($touch, $parents);
-        $returnPath = self::ancestry($returned, $parents);
+        $returnPath = self::ancestry($at, $parents);
 
         $common = null;
         foreach ($touchPath as $candidate) {
@@ -244,8 +399,13 @@ final class ParameterUse
             }
         }
 
-        // Not found in one tree, or one inside the other: nothing to order them by.
-        if ($common === null || $common === $touch || $common === $returned) {
+        // Evaluated as part of `$at`, so after it is reached.
+        if ($common === $at) {
+            return false;
+        }
+
+        // Not found in one tree, or `$at` inside the touch: nothing to order them by.
+        if ($common === null || $common === $touch) {
             return true;
         }
 
@@ -268,7 +428,7 @@ final class ParameterUse
             return false;
         }
 
-        return SourceOrder::of($touch) < SourceOrder::of($returned);
+        return SourceOrder::of($touch) < SourceOrder::of($at);
     }
 
     /**
@@ -474,6 +634,11 @@ final class ParameterUse
     private static function receiver(Node\Expr\MethodCall $call): ?string
     {
         return $call->var instanceof Node\Expr\Variable && is_string($call->var->name) ? $call->var->name : null;
+    }
+
+    private static function tested(Node\Expr\Instanceof_ $test): ?string
+    {
+        return $test->expr instanceof Node\Expr\Variable && is_string($test->expr->name) ? $test->expr->name : null;
     }
 
     /**

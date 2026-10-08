@@ -248,6 +248,17 @@ final class FixtureRunner
     }
 
     /**
+     * Trace a controller with the WrappedCollectionVisitor: whether every construction of `$collection` the
+     * walk sees wraps a plain list.
+     *
+     * @return array<string, mixed>
+     */
+    public static function traceWrappedCollection(string $controllerRelPath, string $class, string $method, string $collection): array
+    {
+        return self::invoke('trace-wrapped-collection', self::path($controllerRelPath), $class, $method, $collection);
+    }
+
+    /**
      * Trace a closure located by start line with the {@see ClosureReturnProbe}: returns one entry per
      * return expression the engine handed over, with its node kind and the scope's type for it.
      *

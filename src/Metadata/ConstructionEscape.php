@@ -4,60 +4,104 @@ declare(strict_types=1);
 
 namespace Docuccino\Inference\PhpStan\Metadata;
 
-use Docuccino\Core\Inference\MethodDeclaration;
+use Docuccino\Inference\PhpStan\Support\ParsedFiles;
 use PhpParser\Node;
 use PhpParser\Node\Expr;
 use PhpParser\Node\Identifier;
 use PhpParser\Node\Name;
 use PhpParser\NodeFinder;
-use PhpParser\NodeTraverser;
-use PhpParser\NodeVisitor\NameResolver;
-use PhpParser\ParserFactory;
 use ReflectionClass;
-use Throwable;
 
 /**
  * Whether anything the analyser does not follow may assign a property before a caller holds the object —
- * what makes a constructor path that skips it prove nothing. The analyser follows one level of
- * `$this->method()` into a method the constructor's class declares (its own or a trait's), and nothing
- * else: not a call made from inside that method, not `self::`/`static::`/`parent::` (`parent::__construct()`
- * included), not `$this` handed on as an argument, aliased, used in a closure or written through a dynamic
- * `$this->{$name}`, not the property passed as an argument (it may be by reference). Any of those, or a
- * constructor only the class can call — whose named constructors then decide what an instance holds —
- * leaves the skip unproved.
+ * what makes a constructor path that skips it prove nothing. What it follows, and what it does not:
+ * `docs/design/inference-embedding.md` §Which keys a constructed object always carries.
  *
  * @internal
  */
 final class ConstructionEscape
 {
-    /** @var array<string, list<Node>> file → its name-resolved statements */
-    private array $files = [];
+    public function __construct(private readonly ParsedFiles $files = new ParsedFiles) {}
 
     /**
-     * Whether one may, given the statements of the constructor `$class` runs.
+     * Whether one may, given the statements of the constructor `$declaring` writes, run to build a `$class`.
+     * With `$parent`, that call is answered for elsewhere and any use of the property counts.
      *
      * @param  ReflectionClass<object>  $class
+     * @param  ReflectionClass<object>  $declaring
      * @param  array<Node>  $statements
      */
-    public function possible(ReflectionClass $class, string $property, array $statements): bool
+    public function possible(ReflectionClass $class, ReflectionClass $declaring, string $property, array $statements, ?Expr\StaticCall $parent = null): bool
     {
         $constructor = $class->getConstructor();
         if ($constructor === null || ! $constructor->isPublic()) {
             return true;
         }
 
-        $declaring = $constructor->getDeclaringClass();
+        $inherited = $parent !== null;
         $followed = [];
-        if ($this->escapes($declaring, $property, $statements, $followed)) {
+        if ($this->escapes($class, $declaring, $property, $statements, $followed, $inherited, $parent)) {
             return true;
         }
 
         foreach ($followed as $method) {
-            $body = $this->methodBody($declaring, $method);
+            $body = $this->files->body($declaring->getMethod($method));
             $nested = [];
             // The analyser follows no call made from inside a followed method.
-            if ($body === null || $this->escapes($declaring, $property, $body, $nested) || $nested !== []) {
+            if ($body === null || $this->escapes($class, $declaring, $property, $body, $nested, $inherited) || $nested !== []) {
                 return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether every `$this->method()` the analyser follows out of these statements runs, on a `$class`, the
+     * declaration it followed — false where the class being built overrides one, so the analysed body is not
+     * the one PHP runs.
+     *
+     * @param  ReflectionClass<object>  $class
+     * @param  ReflectionClass<object>  $declaring  the class declaring the constructor
+     * @param  array<Node>  $statements
+     */
+    public function dispatches(ReflectionClass $class, ReflectionClass $declaring, array $statements): bool
+    {
+        return (new NodeFinder)->findFirst($statements, static fn (Node $node): bool => $node instanceof Expr\MethodCall
+            && self::isThis($node->var)
+            && $node->name instanceof Identifier
+            && self::declares($declaring, $node->name->toString())
+            && ! self::runs($class, $declaring, $node->name->toString())) === null;
+    }
+
+    /**
+     * Whether the statements, or a `$this->method()` of `$declaring`'s they call that a `$class` runs, unset
+     * the property — by name or through a dynamic `$this->{$name}`. The analyser tracks no unset.
+     *
+     * @param  ReflectionClass<object>  $class
+     * @param  ReflectionClass<object>  $declaring
+     * @param  array<Node>  $statements
+     */
+    public function unsets(ReflectionClass $class, ReflectionClass $declaring, string $property, array $statements): bool
+    {
+        $bodies = [$statements];
+        foreach ((new NodeFinder)->findInstanceOf($statements, Expr\MethodCall::class) as $call) {
+            if (self::isThis($call->var) && $call->name instanceof Identifier
+                && self::declares($declaring, $call->name->toString()) && self::runs($class, $declaring, $call->name->toString())
+            ) {
+                $bodies[] = $this->files->body($declaring->getMethod($call->name->toString())) ?? [];
+            }
+        }
+
+        foreach ($bodies as $body) {
+            foreach ((new NodeFinder)->findInstanceOf($body, Node\Stmt\Unset_::class) as $unset) {
+                foreach ($unset->vars as $var) {
+                    if ($var instanceof Expr\PropertyFetch && self::isThis($var->var)
+                        && (! $var->name instanceof Identifier || $var->name->toString() === $property)
+                    ) {
+                        return true;
+                    }
+                }
             }
         }
 
@@ -68,17 +112,18 @@ final class ConstructionEscape
      * Whether the statements hand the work anywhere unfollowed; each `$this->method()` the analyser follows
      * is collected into `$followed` instead.
      *
-     * @param  ReflectionClass<object>  $class  the class declaring the constructor
+     * @param  ReflectionClass<object>  $class  the class being built
+     * @param  ReflectionClass<object>  $declaring  the class declaring the constructor
      * @param  array<Node>  $statements
      * @param  list<string>  $followed
      */
-    private function escapes(ReflectionClass $class, string $property, array $statements, array &$followed): bool
+    private function escapes(ReflectionClass $class, ReflectionClass $declaring, string $property, array $statements, array &$followed, bool $inherited, ?Expr\StaticCall $parent = null): bool
     {
         /** @var array<int, true> $harmless the `$this` nodes, by object id, that a fetch or a followed call is made on */
         $harmless = [];
         $finder = new NodeFinder;
         // Pre-order: a fetch or call is seen before the `$this` it is made on.
-        $escape = $finder->findFirst($statements, static function (Node $node) use ($class, $property, &$harmless, $finder, &$followed): bool {
+        $escape = $finder->findFirst($statements, static function (Node $node) use ($class, $declaring, $property, $inherited, $parent, &$harmless, $finder, &$followed): bool {
             if ($node instanceof Expr\Closure || $node instanceof Expr\ArrowFunction) {
                 return $finder->findFirst($node, self::isThis(...)) !== null;
             }
@@ -88,11 +133,11 @@ final class ConstructionEscape
             ) {
                 $harmless[spl_object_id($node->var)] = true;
 
-                return false;
+                return $inherited && $node->name->toString() === $property;
             }
 
             if ($node instanceof Expr\MethodCall && self::isThis($node->var) && $node->name instanceof Identifier
-                && self::follows($class, $node->name->toString())
+                && self::declares($declaring, $node->name->toString()) && self::runs($class, $declaring, $node->name->toString())
             ) {
                 $harmless[spl_object_id($node->var)] = true;
                 $followed[] = $node->name->toString();
@@ -101,8 +146,9 @@ final class ConstructionEscape
             }
 
             return match (true) {
+                $node === $parent => false,
                 $node instanceof Node\Arg => self::fetches($node->value, $property),
-                $node instanceof Expr\StaticCall => self::bindsThis($class, $node),
+                $node instanceof Expr\StaticCall => self::bindsThis($declaring, $node),
                 default => self::isThis($node) && ! isset($harmless[spl_object_id($node)]),
             };
         });
@@ -114,18 +160,31 @@ final class ConstructionEscape
      * Whether the analyser merges what a `$this->method()` in the constructor assigns: a non-static method
      * with a body that the constructor's class itself declares.
      *
-     * @param  ReflectionClass<object>  $class
+     * @param  ReflectionClass<object>  $declaring
      */
-    private static function follows(ReflectionClass $class, string $method): bool
+    private static function declares(ReflectionClass $declaring, string $method): bool
     {
-        if (! $class->hasMethod($method)) {
+        if (! $declaring->hasMethod($method)) {
             return false;
         }
 
-        $reflected = $class->getMethod($method);
+        $reflected = $declaring->getMethod($method);
 
         return ! $reflected->isAbstract() && ! $reflected->isStatic()
-            && $reflected->getDeclaringClass()->getName() === $class->getName();
+            && $reflected->getDeclaringClass()->getName() === $declaring->getName();
+    }
+
+    /**
+     * Whether `$this->method()`, written in `$declaring`, runs `$declaring`'s own method on a `$class`: a
+     * private one always does, any other unless a subclass overrides it.
+     *
+     * @param  ReflectionClass<object>  $class
+     * @param  ReflectionClass<object>  $declaring
+     */
+    private static function runs(ReflectionClass $class, ReflectionClass $declaring, string $method): bool
+    {
+        return $declaring->getMethod($method)->isPrivate()
+            || ($class->hasMethod($method) && $class->getMethod($method)->getDeclaringClass()->getName() === $declaring->getName());
     }
 
     private static function isThis(Node $node): bool
@@ -184,40 +243,5 @@ final class ConstructionEscape
         }
 
         return false;
-    }
-
-    /**
-     * The statements of a method the class declares, read from the file that writes it (a trait's, for a
-     * trait's method), or null where they cannot be found.
-     *
-     * @param  ReflectionClass<object>  $class
-     * @return array<Node>|null
-     */
-    private function methodBody(ReflectionClass $class, string $method): ?array
-    {
-        $reflected = $class->getMethod($method);
-        $file = $reflected->getFileName();
-        if ($file === false) {
-            return null;
-        }
-
-        return MethodDeclaration::in($this->statements($file), $reflected)?->stmts;
-    }
-
-    /** @return list<Node> */
-    private function statements(string $file): array
-    {
-        if (isset($this->files[$file])) {
-            return $this->files[$file];
-        }
-
-        try {
-            $code = is_file($file) ? file_get_contents($file) : false;
-            $statements = $code === false ? null : (new ParserFactory)->createForHostVersion()->parse($code);
-        } catch (Throwable) {
-            $statements = null;
-        }
-
-        return $this->files[$file] = $statements === null ? [] : array_values((new NodeTraverser(new NameResolver))->traverse($statements));
     }
 }
