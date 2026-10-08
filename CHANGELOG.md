@@ -7,6 +7,19 @@ User-facing changes to `docuccino/inference-phpstan` — features, fixes, perfor
 taken from the commit messages scoped `inference-phpstan`. Entries begin after v0.1.2; older history is in
 the [repository](https://github.com/docuccino/docuccino) git log.
 
+## v0.21.0
+
+### Breaking changes
+
+- read a ternary's branches and a caught call's throw point the way PHPStan 2.3 hands them over ([#623](https://github.com/docuccino/docuccino/pull/623))
+  - phpstan declaration changed.
+
+### Bug fixes
+
+- apply the catch a callee writes around the closure it runs ([#640](https://github.com/docuccino/docuccino/pull/640))
+- drop what a catch takes from an undeclared call's descended throws ([#625](https://github.com/docuccino/docuccino/pull/625))
+- answer a parent-declared property through the parent::__construct() a constructor always runs ([#624](https://github.com/docuccino/docuccino/pull/624))
+
 ## v0.20.4
 
 ### Bug fixes
