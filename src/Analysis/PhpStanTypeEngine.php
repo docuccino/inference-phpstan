@@ -49,7 +49,6 @@ use PhpParser\Node\Expr\Variable;
 use PHPStan\Analyser\Scope;
 use PHPStan\Node\ClosureReturnStatementsNode;
 use PHPStan\Node\InArrowFunctionNode;
-use PHPStan\Node\MethodReturnStatementsNode;
 use PHPStan\Type\ObjectType;
 use Throwable;
 
@@ -65,6 +64,9 @@ use Throwable;
  */
 final class PhpStanTypeEngine implements TypeEngine
 {
+    /** The method name a closure route's action carries: it has no class, and is found by its line. */
+    private const CLOSURE = '{closure}';
+
     /**
      * Per-build memo of action analyses, so one controller method is analysed once however many routes
      * reach it — and once for a whole export run rather than once per version document, since every
@@ -188,25 +190,21 @@ final class PhpStanTypeEngine implements TypeEngine
 
     private function doAnalyze(ActionRef $action): ActionAnalysis
     {
-        $node = $this->fileAnalyzer->method($action->file, $action->class, $action->method);
+        $body = $this->actionBody($action);
 
-        if (! $node instanceof MethodReturnStatementsNode) {
+        if ($body === null) {
             return new ActionAnalysis(
                 returns: [],
                 throws: [],
-                diagnostics: [new Diagnostic(
-                    Severity::Warning,
-                    'inference.method-not-found',
-                    sprintf('No analysable method body for %s.', $this->label($action)),
-                )],
+                diagnostics: [$this->bodyNotFound($action)],
                 dependencyFiles: [$action->file],
             );
         }
 
-        $returns = $this->harvestReturns($node, $action->file);
+        $returns = $this->harvestReturns($body, $action->file);
 
         $throwAnalyzer = $this->makeThrowAnalyzer();
-        $throws = $throwAnalyzer->analyze($node, $this->selfLabel($action));
+        $throws = $throwAnalyzer->analyze($body, $this->selfLabel($action));
 
         $truncation = $this->refinerTruncation($this->label($action));
         $diagnostics = $throwAnalyzer->diagnostics();
@@ -220,18 +218,54 @@ final class PhpStanTypeEngine implements TypeEngine
     }
 
     /**
+     * The body an action names: a method by its class and name, or a closure route's closure — full or
+     * arrow, the two spellings PHP gives one thing — by the line reflection places it on.
+     */
+    private function actionBody(ActionRef $action): ?CallableBody
+    {
+        if ($action->class === null && $action->method === self::CLOSURE) {
+            return $this->fileAnalyzer->callableAtLine($action->file, $action->line);
+        }
+
+        $node = $this->fileAnalyzer->method($action->file, $action->class, $action->method);
+
+        return $node === null ? null : CallableBody::ofMethod($node);
+    }
+
+    /** Why an action has no body, naming the one cause the author can act on: two closures sharing a line. */
+    private function bodyNotFound(ActionRef $action): Diagnostic
+    {
+        $closure = $action->class === null && $action->method === self::CLOSURE;
+
+        return new Diagnostic(
+            Severity::Warning,
+            'inference.method-not-found',
+            match (true) {
+                ! $closure => sprintf('No analysable method body for %s.', $this->label($action)),
+                $this->fileAnalyzer->closuresDeclaredOn($action->file, $action->line) > 1 => sprintf(
+                    'No analysable body for %s: line %d declares more than one closure, and the line is all reflection gives to tell them apart.',
+                    $this->label($action),
+                    $action->line,
+                ),
+                default => sprintf('No analysable closure body for %s at line %d.', $this->label($action), $action->line),
+            },
+        );
+    }
+
+    /**
+     * Every return a body can answer with, the arrow function's one implicit return included.
+     *
      * @return list<ReturnSite>
      */
-    private function harvestReturns(MethodReturnStatementsNode $node, string $file): array
+    private function harvestReturns(CallableBody $body, string $file): array
     {
         $returns = [];
-        foreach ($node->getReturnStatements() as $statement) {
-            $returnNode = $statement->getReturnNode();
-            $location = new SourceLocation($file, $returnNode->getStartLine());
-            $scope = $this->fileAnalyzer->stableScope($statement->getScope());
+        foreach ($body->returns as $return) {
+            $location = new SourceLocation($file, $return['at']->getStartLine());
+            $scope = $this->fileAnalyzer->stableScope($return['scope']);
             // One return statement can be several responses: an application's `toResponse()` answering a
             // guard arm beside the framework's rendering ({@see ResponseShapeRefiner::refineArms()}).
-            foreach ($this->siteShapes($returnNode->expr, $scope) as $shape) {
+            foreach ($this->siteShapes($return['expr'], $scope) as $shape) {
                 $returns[] = new ReturnSite($shape['type'], $location, $shape['component']);
             }
         }
@@ -789,7 +823,7 @@ final class PhpStanTypeEngine implements TypeEngine
             // A closure located by line: its returns are the harvest (a `RateLimiter::for` closure folded
             // to a concrete limit). Walked in place, never interprocedurally — a limiter that delegates
             // its limit to a helper doesn't fold.
-            if ($action->method === '{closure}') {
+            if ($action->method === self::CLOSURE) {
                 $this->traceClosure($action, $visitor);
             }
 

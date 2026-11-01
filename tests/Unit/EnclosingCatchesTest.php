@@ -103,6 +103,33 @@ it('lists the calls and throws a try guards, under the same boundaries', functio
     ))->toBe(['guarded', 'throw Guarded', 'new Guarded', 'nested', 'inInnerCatch', 'rethrow']);
 });
 
+it('lists every call and throw an arrow function makes, stopping at a function it hands on', function (): void {
+    // An arrow's body is one expression and holds no `try`, so every point in it is one no catch is around;
+    // a function written inside it runs only when the callee it is handed to calls it, which is read there.
+    $statements = (new ParserFactory)->createForHostVersion()->parse(<<<'PHP'
+        <?php
+        fn ($id) => $id === null
+            ? throw new Missing(reason())
+            : respond(find($id), fn () => inArrow(), function () { inClosure(); });
+        PHP) ?? [];
+    $arrow = (new NodeFinder)->findFirstInstanceOf($statements, Node\Expr\ArrowFunction::class);
+    assert($arrow instanceof Node\Expr\ArrowFunction);
+    $read = static fn (array $nodes): array => array_map(
+        static fn (Node\Expr $node): string => match (true) {
+            $node instanceof Node\Expr\FuncCall && $node->name instanceof Node\Name => $node->name->toString(),
+            $node instanceof Node\Expr\Throw_ => 'throw',
+            $node instanceof Node\Expr\New_ && $node->class instanceof Node\Name => 'new '.$node->class->toString(),
+            default => '?',
+        },
+        EnclosingCatches::pointsIn($nodes),
+    );
+
+    expect($read([$arrow->expr]))->toBe(['throw', 'new Missing', 'reason', 'respond', 'find'])
+        // Read where a `try` can be, guarded or not: the try, its catch and what follows it all count.
+        ->and($read((new ParserFactory)->createForHostVersion()->parse('<?php try { a(); } catch (A) { b(); } c();') ?? []))
+        ->toBe(['a', 'b', 'c']);
+});
+
 it('lists the rethrows of every catch around a node', function (): void {
     // A rethrow by any catch on the path counts, an outer one around an inner that keeps included.
     $statements = (new ParserFactory)->createForHostVersion()->parse(<<<'PHP'

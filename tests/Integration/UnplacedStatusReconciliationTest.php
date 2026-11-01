@@ -358,15 +358,13 @@ function unplacedSweep(): array
  * The actions the analysis surfaces NO throw for, with the boundary that swallowed it. A row here is the
  * worst outcome of the four: the application really raises an error and the document says nothing, so a
  * consumer cannot even see that the endpoint can fail. Each excuse is checked below, so a new one cannot
- * be closed by pasting a sentence.
+ * be closed by pasting a sentence. Empty: no action in the sweep crosses a boundary that swallows a throw.
  *
  * @return array<string, string>
  */
 function unsurfacedThrowActions(): array
 {
-    return [
-        'App\\Http\\Controllers\\ThrowsController::arrowThrownStatus' => 'the `throw` is written in an ARROW function, which PHPStan models with no statement result, so the analysis is handed no throw point to read',
-    ];
+    return [];
 }
 
 /**
@@ -541,11 +539,10 @@ it('lands every swept action in exactly one column', function (): void {
 
     $counts = array_count_values($columns);
 
-    // Each column really holds something: a classification nothing lands in proves nothing about it, and
-    // three of the four are populations this file exists to keep visible.
+    // Each column with a population really holds something: a classification nothing lands in proves
+    // nothing about it. `unsurfaced` is the worst of the four and is held to its ledger, empty, below.
     expect($counts['placed'] ?? 0)->toBeGreaterThan(10)
         ->and($counts['unplaced'] ?? 0)->toBeGreaterThan(10)
-        ->and($counts['unsurfaced'] ?? 0)->toBeGreaterThan(0)
         ->and($counts['demoted'] ?? 0)->toBeGreaterThan(0);
 
     // And the two columns with a ledger hold exactly it — a new member fails until somebody writes down
@@ -558,10 +555,10 @@ it('lands every swept action in exactly one column', function (): void {
 
 /**
  * The unsurfaced ledger checked rather than believed. A throw may only vanish where the path to it crosses
- * a boundary this build DECLARES — an arrow function, which PHPStan hands over with no statement result,
- * or a callee outside the descend scope, which descent is bounded by on purpose. So each row has to name
- * one of those in the action's own source; an action written entirely inside the descend scope with no
- * arrow function in it has no excuse available, and a silent one there is a defect rather than a bound.
+ * a boundary this build DECLARES — a callee outside the descend scope, which descent is bounded by on
+ * purpose. So each row has to name one in the action's own source; an action written entirely inside the
+ * descend scope has no excuse available, and a silent one there is a defect rather than a bound. An arrow
+ * function is no boundary: it is read as the closure it means.
  *
  * The descend scope is the roots the application SHIPS, so "outside it" now means a root declared only in
  * `autoload-dev` — a modular `Modules\…` root is inside it, and the two rows this ledger used to carry for
@@ -570,11 +567,10 @@ it('lands every swept action in exactly one column', function (): void {
  * excusing a silence the build stopped having.
  *
  * The predicate is necessary, not sufficient — an action can name a modular class and still publish, and
- * one does — so it is held against an action with neither boundary, which must fail it.
+ * one does — so it is held against actions with no such boundary, which must fail it.
  */
 it('excuses an unsurfaced throw only where a declared boundary is crossed', function (): void {
     $ledger = unsurfacedThrowActions();
-    expect($ledger)->not->toBeEmpty();
 
     $crosses = static function (string $action): bool {
         [$class, $method] = explode('::', $action, 2);
@@ -585,10 +581,6 @@ it('excuses an unsurfaced throw only where a declared boundary is crossed', func
 
         $source = throwActionSource($relPath, $method);
         expect($source)->not->toBe('');
-
-        if (str_contains($source, 'fn (') || str_contains($source, 'fn(')) {
-            return true;
-        }
 
         // A type the action names that the application declares outside the descend scope: the callee
         // whose body descent is not entitled to read.
@@ -608,8 +600,10 @@ it('excuses an unsurfaced throw only where a declared boundary is crossed', func
     }
 
     // The predicate answering "yes" to everything would pass the loop above without proving anything:
-    // this action throws in its own body, inside the descend scope, and really is surfaced.
-    expect($crosses('App\\Http\\Controllers\\ThrowsController::manifestStatusAtAction'))->toBeFalse();
+    // this action throws in its own body, inside the descend scope, and really is surfaced — and so does
+    // one whose throw is written in an arrow function, which crosses no boundary.
+    expect($crosses('App\\Http\\Controllers\\ThrowsController::manifestStatusAtAction'))->toBeFalse()
+        ->and($crosses('App\\Http\\Controllers\\ThrowsController::arrowThrownStatus'))->toBeFalse();
 })->group('fixture');
 
 /**

@@ -9,7 +9,9 @@ use PhpParser\Node;
 use PhpParser\NodeFinder;
 use PhpParser\ParserFactory;
 use PHPStan\Analyser\Scope;
+use PHPStan\Node\InArrowFunctionNode;
 use PHPStan\ShouldNotHappenException;
+use PHPStan\Type\ClosureType;
 use PHPUnit\Framework\MockObject\Stub;
 
 /**
@@ -75,6 +77,7 @@ it('harvests methods, closures and assignments off one pass per normalised file'
     // Whichever harvest is asked for first pays the one pass; the no-emit adapter collects nothing.
     expect($analyzer->analyze('/x.php'))->toBe([])
         ->and($analyzer->closures('/x.php'))->toBe([])
+        ->and($analyzer->arrows('/x.php'))->toBe([])
         ->and($analyzer->arrayAssignments('/x.php'))->toBe([])
         ->and($analyzer->localAssignments('/x.php'))->toBe([])
         ->and($adapter->totalPasses)->toBe(1);
@@ -82,6 +85,7 @@ it('harvests methods, closures and assignments off one pass per normalised file'
     // Re-access hits the per-file cache — no further passes.
     expect($analyzer->analyze('/x.php'))->toBe([])
         ->and($analyzer->closures('/x.php'))->toBe([])
+        ->and($analyzer->arrows('/x.php'))->toBe([])
         ->and($analyzer->arrayAssignments('/x.php'))->toBe([])
         ->and($analyzer->localAssignments('/x.php'))->toBe([])
         ->and($adapter->totalPasses)->toBe(1);
@@ -157,9 +161,35 @@ it('finds a closure at the line reflection gives it, and none where a line decla
         ->and($analyzer->closureAt($file, $line('static')))->toBe(strpos($source, "static\n"))
         ->and($analyzer->closureAt($file, $line('nested')))->toBeNull()
         ->and($analyzer->closureAt($file, 1))->toBeNull()
+        // The count the declined route's warning names: two on one line is the one cause an author can fix.
+        ->and($analyzer->closuresDeclaredOn($file, $line('nested')))->toBe(2)
+        ->and($analyzer->closuresDeclaredOn($file, $line('static')))->toBe(1)
+        ->and($analyzer->closuresDeclaredOn($file, 1))->toBe(0)
         // Found in the source, but the pass harvested no body for it: nothing to answer with.
         ->and($analyzer->callableAtLine($file, $line('static')))->toBeNull()
         ->and($analyzer->callableAtLine($file, $line('nested')))->toBeNull();
+});
+
+it('reads an arrow function at its line as the arrow, its one expression the return', function (): void {
+    // A closure route written with `fn` is located as a full one is. The analyser hangs no throw points on
+    // an arrow, so the engine reads its throws off the declaration it is handed: that has to be the arrow.
+    $source = "<?php\nreturn fn (int \$id, \$query) => find(\$id);\n";
+    $file = fileAnalyzerScratch($source);
+    $arrow = (new NodeFinder)->findFirstInstanceOf((new ParserFactory)->createForHostVersion()->parse($source) ?? [], Node\Expr\ArrowFunction::class);
+    assert($arrow instanceof Node\Expr\ArrowFunction);
+    $scope = $this->createStub(Scope::class);
+    $adapter = new ScriptedRuntimeAdapter([$file => [[new InArrowFunctionNode(new ClosureType, $arrow), $scope]]]);
+    $analyzer = fileAnalyzerOn($adapter);
+    // The return is typed in the scope the walk paired with the arrow's inside, stabilised as every scope is.
+    $inside = $adapter->stableScope($scope);
+
+    $body = $analyzer->callableAtLine($file, 2);
+
+    expect($analyzer->arrows($file))->toBe([$arrow->getStartFilePos() => [$arrow, $inside]])
+        ->and($body?->declaration)->toBe($arrow)
+        ->and($body?->returns)->toBe([['expr' => $arrow->expr, 'scope' => $inside, 'at' => $arrow->expr]])
+        ->and($body?->nodes)->toBe([$arrow->expr])
+        ->and($body?->parameters)->toBe(['id', 'query']);
 });
 
 it('finds no closure in a file it cannot read or parse', function (): void {

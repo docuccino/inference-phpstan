@@ -94,6 +94,9 @@ it('leaves the engine suite no truncating write but the ones that own their file
     // created itself has no reader to race: what may not happen is a truncating write to a path the rest
     // of the suite is reading.
     expect(truncatingWritesInEngineTests())->toBe([
+        // A routes source the engine reads closure lines off, in a temp file named for the process and the
+        // source, removed when the process ends. Never in the fixture tree.
+        'inference-phpstan/tests/Unit/ActionBodyNotFoundTest.php::file_put_contents called in bodyNotFoundRoutes',
         // A closure source a row reflects and then looks up, in a temp file named for the process and the
         // source, removed when the process ends. Never in the fixture tree.
         'inference-phpstan/tests/Unit/FileAnalyzerTest.php::file_put_contents called in fileAnalyzerScratch',

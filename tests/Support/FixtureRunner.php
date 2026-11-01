@@ -270,6 +270,18 @@ final class FixtureRunner
     }
 
     /**
+     * Serialized {@see ActionAnalysis} for each closure route action at the named lines — the
+     * `{closure}` action a router's closure reflects to — every one asked of ONE engine, keyed by line.
+     *
+     * @param  list<int>  $lines
+     * @return array<string, mixed>
+     */
+    public static function analyzeClosures(string $relPath, array $lines): array
+    {
+        return self::invoke('analyze-closures', self::path($relPath), '', implode(',', $lines));
+    }
+
+    /**
      * Serialized {@see ClassMetadata} for a class (property names + reflected types). The file argument
      * is unused in this mode.
      *

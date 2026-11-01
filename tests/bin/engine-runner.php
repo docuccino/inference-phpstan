@@ -35,6 +35,7 @@ declare(strict_types=1);
  *   php engine-runner.php data-response-status      <dataFile>       <class[,class…]> <ignored>
  *   php engine-runner.php trace-file-responses      <controllerFile> <class> <method>
  *   php engine-runner.php trace-closure             <file> <ignored> <ignored> <line>
+ *   php engine-runner.php analyze-closures          <file> <ignored> <line[,line…]>
  *   php engine-runner.php request-headers           <controllerFile> <class> <method> <formRequest>
  *
  * Dispatch stays a `match ($mode)` rather than a mode => factory table — each arm is a thin
@@ -464,6 +465,9 @@ $result = match ($mode) {
                 // callback closure the engine folded out of a helper's body.
                 'typeColumn' => $filter->typeColumn,
                 'nullable' => $filter->nullable,
+                // A `->default(…)` value, as the query it filters on would bind it.
+                'hasDefault' => $filter->hasDefault,
+                'default' => $filter->default,
                 // The recovered leading comment — PHPStan's parser attributes it to the array item the
                 // same way ParserFactory does, which is what makes it usable as an override description.
                 'comment' => $filter->comment,
@@ -496,12 +500,15 @@ $result = match ($mode) {
             'pageSizeDefault' => $facts->pageSize?->default,
             'visitedBasenames' => array_map('basename', $dependencyFiles),
             'dependencyFiles' => $dependencyFiles,
+            // Files the visitor read by reflection, beyond the walk's own.
+            'visitorDependencyBasenames' => array_map('basename', $visitor->dependencyFiles()),
         ];
     })(),
     'trace-rules' => (static function () use ($engine, $ref): array {
         // RulesMethodVisitor recovers a rules() method's returned array with AST-level constant folding
         // so Rule::enum(...) descriptors survive. Returns each field's rule names + params, the fields
-        // that are present but unrecoverable, and the ones that recovered minus a constraint they widened.
+        // that are present but unrecoverable, the ones that recovered minus a constraint they widened or
+        // a rule they could not read, and the ones given up for a rule whose content is unknown.
         $visitor = new RulesMethodVisitor;
         $engine->trace($ref, $visitor);
 
@@ -518,6 +525,8 @@ $result = match ($mode) {
             'fields' => $fields,
             'unrecoverable' => $visitor->unrecoverableFields(),
             'widened' => $visitor->widenedFields(),
+            'unread' => $visitor->unreadRules(),
+            'opaque' => $visitor->opaqueFields(),
         ];
     })(),
     'trace-inline-rules' => (static function () use ($engine, $ref): array {
@@ -575,6 +584,15 @@ $result = match ($mode) {
             'pageSizeKey' => $visitor->pageSize()?->key,
             'pageSizeDefault' => $visitor->pageSize()?->default,
         ];
+    })(),
+    // One engine, a closure route's action at each line — how a routes file of them is analysed in a build.
+    'analyze-closures' => (static function () use ($engine, $file, $method): array {
+        $analyses = [];
+        foreach (explode(',', $method) as $at) {
+            $analyses[$at] = $engine->analyzeAction(new ActionRef($file, null, '{closure}', (int) $at))->toArray();
+        }
+
+        return $analyses;
     })(),
     'trace-closure' => (static function () use ($engine, $file, $line): array {
         // The closure-by-line trace — how a closure route's action is walked — hands each return

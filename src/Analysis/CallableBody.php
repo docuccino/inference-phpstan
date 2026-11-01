@@ -12,8 +12,9 @@ use PHPStan\Node\ReturnStatementsNode;
 
 /**
  * One analysable callable body — a method, a closure or an arrow function — as the returns it can answer
- * with, each paired with its flow-refined scope, plus the nodes it is written in and its parameter names.
- * An arrow function has no `return`: its one implicit return is its body expression, in the scope inside it.
+ * with, each paired with its flow-refined scope, plus the nodes it is written in, its parameter names and
+ * the node it was read off. An arrow function has no `return`: its one implicit return is its body
+ * expression, in the scope inside it.
  *
  * @phpstan-type BodyReturn array{expr: Node\Expr|null, scope: Scope, at: Node}
  *
@@ -30,6 +31,7 @@ final readonly class CallableBody
         public array $returns,
         public array $nodes,
         public array $parameters,
+        public MethodReturnStatementsNode|ClosureReturnStatementsNode|Node\Expr\ArrowFunction $declaration,
     ) {}
 
     public static function ofMethod(MethodReturnStatementsNode $node): self
@@ -39,19 +41,19 @@ final readonly class CallableBody
             $parameters[] = $parameter->getName();
         }
 
-        return new self(self::returnsOf($node), array_values($node->getStatements()), $parameters);
+        return new self(self::returnsOf($node), array_values($node->getStatements()), $parameters, $node);
     }
 
     public static function ofClosure(ClosureReturnStatementsNode $node): self
     {
         $closure = $node->getClosureExpr();
 
-        return new self(self::returnsOf($node), array_values($closure->stmts), self::names($closure->params));
+        return new self(self::returnsOf($node), array_values($closure->stmts), self::names($closure->params), $node);
     }
 
     public static function ofArrow(Node\Expr\ArrowFunction $arrow, Scope $scope): self
     {
-        return new self([['expr' => $arrow->expr, 'scope' => $scope, 'at' => $arrow->expr]], [$arrow->expr], self::names($arrow->params));
+        return new self([['expr' => $arrow->expr, 'scope' => $scope, 'at' => $arrow->expr]], [$arrow->expr], self::names($arrow->params), $arrow);
     }
 
     /**

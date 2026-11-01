@@ -113,6 +113,17 @@ final class FileAnalyzer
     }
 
     /**
+     * The file's arrow functions by start offset, each with the scope inside it — {@see closures()} for the
+     * closures PHP spells with `fn`.
+     *
+     * @return array<int, array{Node\Expr\ArrowFunction, Scope}>
+     */
+    public function arrows(string $file): array
+    {
+        return $this->harvest($file)['arrows'];
+    }
+
+    /**
      * The closure or arrow function declared at `$line`, for the caller that has no offset to ask with: an
      * exception-handler callback, which `ReflectionFunction` gives us as file+line and nothing else. Null where the line declares none, or more than one — see {@see closureAt()}.
      */
@@ -143,11 +154,26 @@ final class FileAnalyzer
      */
     public function closureAt(string $file, int $line): ?int
     {
-        $normalised = $this->adapter->normalize($file);
-        $lines = $this->declared[$normalised] ??= self::closureLines($file);
-        $offsets = $lines[$line] ?? [];
+        $offsets = $this->closuresOn($file, $line);
 
         return count($offsets) === 1 ? $offsets[0] : null;
+    }
+
+    /** How many closures and arrow functions {@see closureAt()} finds on `$line` — it answers for one only. */
+    public function closuresDeclaredOn(string $file, int $line): int
+    {
+        return count($this->closuresOn($file, $line));
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function closuresOn(string $file, int $line): array
+    {
+        $normalised = $this->adapter->normalize($file);
+        $lines = $this->declared[$normalised] ??= self::closureLines($file);
+
+        return $lines[$line] ?? [];
     }
 
     /**

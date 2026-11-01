@@ -7,7 +7,6 @@ namespace Docuccino\Inference\PhpStan\Trace;
 use Docuccino\Core\Inference\ConstValue;
 use Docuccino\Core\Inference\FoldsCallReturns;
 use Docuccino\Inference\PhpStan\Analysis\FileAnalyzer;
-use Docuccino\Inference\PhpStan\Support\ScalarFold;
 use PHPStan\Reflection\ParameterReflection;
 use PHPStan\Reflection\ReflectionProvider;
 
@@ -83,8 +82,7 @@ final class ReturnValueFolder
             $argument = $positional[$index] ?? $named[$parameter->getName()] ?? null;
             if ($argument === null) {
                 $default = $parameter->getDefaultValue();
-                $folded = $default === null ? null : ScalarFold::of($default);
-                $argument = $folded === null ? null : ConstValue::scalar($folded[0]);
+                $argument = $default === null ? null : ConstantFolder::ofType($default);
             }
 
             if ($argument !== null) {

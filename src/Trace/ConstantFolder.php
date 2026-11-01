@@ -9,6 +9,7 @@ use Docuccino\Core\Inference\ConstValue;
 use Docuccino\Inference\PhpStan\Support\ScalarFold;
 use PhpParser\Node;
 use PHPStan\Analyser\Scope;
+use PHPStan\Type\Type;
 
 /**
  * The AST-level constant fold behind {@see TypeScopeImpl::constantValueOf()} and
@@ -23,7 +24,7 @@ use PHPStan\Analyser\Scope;
 final class ConstantFolder
 {
     /**
-     * Seven cases, and the precedence is load-bearing — each earlier one folds at the AST level to stop
+     * Six cases, and the precedence is load-bearing — each earlier one folds at the AST level to stop
      * PHPStan collapsing something we need:
      *
      *   0. a bound parameter → the caller's value, before PHPStan is asked (it only knows the declared type);
@@ -33,13 +34,12 @@ final class ConstantFolder
      *      type (which would collapse it to the factory's return class);
      *   3. fluent method-call over a descriptor → the same descriptor with the call appended, so
      *      `Rule::enum(...)->only([...])` survives;
-     *   4. enum-case constant → the case name as a scalar, so `->only([Status::Active])` folds; a bare
-     *      `::class` and non-enum class constants fall through;
-     *   5. `new X(...)` → an instance value {class, args}: PHPStan would give us the class too, but the
+     *   4. `new X(...)` → an instance value {class, args}: PHPStan would give us the class too, but the
      *      args come from the call site, and a rule object is documentable only by its class;
-     *   6. genuine literal → PHPStan's constant folding.
+     *   5. anything else → what PHPStan's type pins it to ({@see ofType()}): an enum case such as
+     *      `Status::Active` with its enum, or a constant scalar.
      *
-     * A first-class callable (`Foo::bar(...)`) is declined by 2/3/5 and falls through to 6 — null beats a
+     * A first-class callable (`Foo::bar(...)`) is declined by 2/3/4 and falls through to 5 — null beats a
      * descriptor with empty args, which would name a call the code never makes. Null when nothing constant
      * is recoverable.
      *
@@ -79,13 +79,13 @@ final class ConstantFolder
             return ConstValue::descriptor($factory, self::foldArgs($expr->getArgs(), $scope, $bindings, 'factory arg'));
         }
 
-        // 3. Fluent call over a descriptor receiver — append to the receiver's chain.
+        // 3. Fluent call over a descriptor or `new` receiver — append to the receiver's chain.
         if ($expr instanceof Node\Expr\MethodCall
             && $expr->name instanceof Node\Identifier
             && ! $expr->isFirstClassCallable()
         ) {
             $receiver = self::fold($expr->var, $scope, $bindings);
-            if ($receiver !== null && $receiver->isDescriptor()) {
+            if ($receiver !== null && ($receiver->isDescriptor() || $receiver->isInstance())) {
                 return $receiver->withChainedCall(
                     $expr->name->toString(),
                     self::foldArgs($expr->getArgs(), $scope, $bindings, 'chained-call arg'),
@@ -93,17 +93,7 @@ final class ConstantFolder
             }
         }
 
-        // 4. Enum-case constant (`Status::Active`) → the case name.
-        if ($expr instanceof Node\Expr\ClassConstFetch
-            && $expr->class instanceof Node\Name
-            && $expr->name instanceof Node\Identifier
-            && strtolower($expr->name->toString()) !== 'class'
-            && enum_exists($scope->resolveName($expr->class))
-        ) {
-            return ConstValue::scalar($expr->name->toString());
-        }
-
-        // 5. `new X(...)` — the class plus its folded constructor args.
+        // 4. `new X(...)` — the class plus its folded constructor args.
         if ($expr instanceof Node\Expr\New_
             && $expr->class instanceof Node\Name
             && ! $expr->isFirstClassCallable()
@@ -114,8 +104,24 @@ final class ConstantFolder
             );
         }
 
-        // 6. Let PHPStan fold it. A folded `null` is a meaningful constant here, not a failure to fold.
-        $folded = ScalarFold::of($scope->getType($expr));
+        // 5. Let PHPStan fold it.
+        return self::ofType($scope->getType($expr));
+    }
+
+    /**
+     * The constant a type pins: the one enum case it can be, with its enum, else a single constant scalar.
+     * A folded `null` is a meaningful constant here, not a failure to fold. The case is read off the type
+     * rather than the written name, so an enum constant aliasing a case (`const DEFAULT = self::Normal`)
+     * is that case and a plain constant on an enum is its value.
+     */
+    public static function ofType(Type $type): ?ConstValue
+    {
+        $cases = $type->getEnumCases();
+        if (count($cases) === 1 && $type->isSuperTypeOf($cases[0])->yes() && $cases[0]->isSuperTypeOf($type)->yes()) {
+            return ConstValue::enumCase($cases[0]->getClassName(), $cases[0]->getEnumCaseName());
+        }
+
+        $folded = ScalarFold::of($type);
 
         return $folded === null ? null : ConstValue::scalar($folded[0]);
     }

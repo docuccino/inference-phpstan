@@ -79,9 +79,9 @@ it('publishes the status each construction shape writes', function (string $meth
     'a status written at a throw inside a closure' => ['closureThrownStatus', ['ExportLockedException@423']],
     'a factory named at a throw inside a closure' => ['closureFactoryThrownStatus', ['ExportUnsupportedException@422']],
     'a closure held in a local before it is handed over' => ['heldClosureThrownStatus', ['ExportLockedException@423']],
-    // The boundary of that hop, pinned rather than described: PHPStan models an arrow function with no
-    // statement result, so it has no throw points to read and nothing is surfaced.
-    'the same throw in an arrow function' => ['arrowThrownStatus', []],
+    // An arrow function is the same closure spelled with `fn`, so the callee runs the same throw and the
+    // route answers the same 423 — though PHPStan hangs no throw points on an arrow function to read it by.
+    'the same throw in an arrow function' => ['arrowThrownStatus', ['ExportLockedException@423']],
     // …and the other boundary, counted rather than described: a closure spends one of descent's own
     // depth budget, so the throw three closures in is read and the 410 one nesting behind it is not.
     // The counted throw is written BEFORE the closure it is measured against, and that is load-bearing:

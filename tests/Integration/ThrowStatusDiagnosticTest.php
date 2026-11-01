@@ -128,7 +128,6 @@ it('says nothing where the status read, and nothing about a class the author doe
     'closureThrownStatus',
     'closureFactoryThrownStatus',
     'heldClosureThrownStatus',
-    // Nothing is surfaced from an arrow function at all, so there is no class to name.
     'arrowThrownStatus',
     'nestedClosureThrownStatus',
     // The construction one assignment behind the throw, and the base's factory the subclass inherits:

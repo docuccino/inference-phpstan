@@ -86,6 +86,23 @@ final class EnclosingCatches
     }
 
     /**
+     * Every call and `throw` the nodes make, guarded or not, in source order — up to a function or class
+     * boundary, as {@see guardedIn()} reads them.
+     *
+     * @param  array<Node>  $nodes
+     * @return list<Node\Expr\CallLike|Node\Expr\Throw_>
+     */
+    public static function pointsIn(array $nodes): array
+    {
+        $calls = [];
+        foreach ($nodes as $node) {
+            self::collect($node, true, $calls);
+        }
+
+        return $calls;
+    }
+
+    /**
      * @param  array<Node>  $nodes
      * @return list<Node\Expr\CallLike|Node\Expr\Throw_>
      */

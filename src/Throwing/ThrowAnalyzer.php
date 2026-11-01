@@ -13,6 +13,7 @@ use Docuccino\Core\Inference\ThrowDisposition;
 use Docuccino\Core\Inference\ThrownException;
 use Docuccino\Core\Provenance\MessagePaths;
 use Docuccino\Core\Support\Fqcn;
+use Docuccino\Inference\PhpStan\Analysis\CallableBody;
 use Docuccino\Inference\PhpStan\Analysis\FileAnalyzer;
 use Docuccino\Inference\PhpStan\Support\ProjectFilter;
 use Docuccino\Inference\PhpStan\Trace\Callee;
@@ -108,17 +109,42 @@ final class ThrowAnalyzer
     }
 
     /**
+     * What a method, closure or arrow function throws.
+     *
      * @return list<ThrownException>
      */
-    public function analyze(MethodReturnStatementsNode $node, string $selfLabel): array
+    public function analyze(CallableBody $body, string $selfLabel): array
+    {
+        $this->begin();
+
+        if ($body->declaration instanceof Node\Expr\ArrowFunction) {
+            $body = CallableBody::ofArrow($body->declaration, $this->fileAnalyzer->stableScope($body->returns[0]['scope']));
+        }
+
+        return $this->deduped($this->bodyPoints($body, $selfLabel, 0, [], [], []));
+    }
+
+    /**
+     * A body's throws: a method's or closure's off its throw points ({@see analyzeMethod()}), an arrow
+     * function's off its one expression ({@see arrowPoints()}).
+     *
+     * @param  list<string>  $visited
+     * @param  list<Frame>  $priorChain
+     * @param  list<string>  $caught
+     * @return list<ThrownException>
+     */
+    private function bodyPoints(CallableBody $body, string $selfLabel, int $depth, array $visited, array $priorChain, array $caught): array
+    {
+        return $body->declaration instanceof Node\Expr\ArrowFunction
+            ? $this->arrowPoints($body->declaration, $body->returns[0]['scope'], $selfLabel, $depth, $visited, $priorChain, $caught)
+            : $this->analyzeMethod($body->declaration, $selfLabel, $depth, $visited, $priorChain, $caught);
+    }
+
+    private function begin(): void
     {
         $this->visitedFiles = [];
         $this->unreadStatuses = new UnreadStatuses;
         $this->skippedDescents = new SkippedDescents($this->declaredFilter);
-
-        $raw = $this->analyzeMethod($node, $selfLabel, 0, [], [], []);
-
-        return $this->deduped($raw);
     }
 
     /**
@@ -620,7 +646,8 @@ final class ThrowAnalyzer
      * PHPStan scopes a closure separately, so a `throw` inside one reaches the enclosing method as the
      * CALL that was given the closure — a bare `Throwable` where the callee declares one and nothing at
      * all where it does not. The closure's own body is where the exception and its status are written, and
-     * {@see FileAnalyzer::closures()} already holds it against the same walk.
+     * {@see FileAnalyzer::closures()} already holds it against the same walk — or, for an arrow function,
+     * {@see FileAnalyzer::arrows()}, read by {@see arrowPoints()}.
      *
      * One hop and no further, and no interprocedural analysis: the closure has to be one this body itself
      * writes, either at the argument or one assignment behind it. Depth is descent's own, so a closure
@@ -672,14 +699,8 @@ final class ThrowAnalyzer
             // and the depth it spends is what bounds it. What it must not do is lose the callees the path
             // has already descended into, which is what that list is.
             foreach ($inCallee['sites'] ?? [[]] as $site) {
-                foreach ($this->analyzeMethod(
-                    $closure,
-                    $selfLabel.'::{closure}',
-                    $depth + 1,
-                    $visited,
-                    [...$priorChain, $frame],
-                    [...$caught, ...$site],
-                ) as $result) {
+                $read = $this->bodyPoints($closure, $selfLabel.'::{closure}', $depth + 1, $visited, [...$priorChain, $frame], [...$caught, ...$site]);
+                foreach ($read as $result) {
                     $results[] = $result;
                 }
             }
@@ -688,14 +709,61 @@ final class ThrowAnalyzer
         return $results;
     }
 
-    /** The harvested closure one argument is — written at the call, or held in a local behind it. */
-    private function closureArgument(Node\Expr $expr, Scope $scope): ?ClosureReturnStatementsNode
+    /**
+     * The harvested closure or arrow function one argument is — written at the call, or held in a local
+     * behind it — an arrow with the scope inside it.
+     */
+    private function closureArgument(Node\Expr $expr, Scope $scope): ?CallableBody
     {
         [$written] = $this->localValue($expr, $scope);
 
-        return $written instanceof Node\Expr\Closure
-            ? ($this->fileAnalyzer->closures($scope->getFile())[$written->getStartFilePos()] ?? null)
-            : null;
+        if ($written instanceof Node\Expr\ArrowFunction) {
+            $arrow = $this->fileAnalyzer->arrows($scope->getFile())[$written->getStartFilePos()] ?? null;
+
+            return $arrow === null ? null : CallableBody::ofArrow($arrow[0], $this->fileAnalyzer->stableScope($arrow[1]));
+        }
+
+        $closure = $written instanceof Node\Expr\Closure ? ($this->fileAnalyzer->closures($scope->getFile())[$written->getStartFilePos()] ?? null) : null;
+
+        return $closure === null ? null : CallableBody::ofClosure($closure);
+    }
+
+    /**
+     * An arrow function's throws. The analyser hangs an arrow function's throw points on no node of its
+     * own, and its body can hold no `try`, so each call and `throw` in its one expression is read as the
+     * point it makes where no catch is around it ({@see pointOutsideTry()}) — the grammar a body's guarded
+     * calls are read with — and then through the layers, and the closures, a body's points go through.
+     *
+     * @param  list<string>  $visited
+     * @param  list<Frame>  $priorChain
+     * @param  list<string>  $caught
+     * @return list<ThrownException>
+     */
+    private function arrowPoints(
+        Node\Expr\ArrowFunction $arrow,
+        Scope $scope,
+        string $selfLabel,
+        int $depth,
+        array $visited,
+        array $priorChain,
+        array $caught,
+    ): array {
+        $results = [];
+        foreach (EnclosingCatches::pointsIn([$arrow->expr]) as $node) {
+            $frame = $this->frame($selfLabel, $scope, $node);
+            foreach ($this->applyClosures($node, $scope, $selfLabel, $depth, $visited, $priorChain, $frame, $caught) as $result) {
+                $results[] = $result;
+            }
+
+            $point = $this->pointOutsideTry($node, $scope);
+            if ($point !== null) {
+                foreach ($this->applyLayers($node, $scope, $point[0], $point[1], $depth, $visited, $priorChain, $frame, $caught) as $result) {
+                    $results[] = $result;
+                }
+            }
+        }
+
+        return $results;
     }
 
     /**
