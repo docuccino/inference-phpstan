@@ -6,11 +6,13 @@ namespace Docuccino\Inference\PhpStan\Throwing;
 
 use Docuccino\Core\Inference\ArgumentSlots;
 use Docuccino\Core\Inference\LocalWrites;
+use Docuccino\Inference\PhpStan\Analysis\AccessorKind;
+use Docuccino\Inference\PhpStan\Analysis\ParamAccessor;
 use PhpParser\Node;
 use PhpParser\NodeFinder;
 
 /**
- * The statements half of {@see HttpExceptionStatus}: what a constructor hands its parent in one argument
+ * The statements half of {@see SubclassStatus}: what a constructor hands its parent in one argument
  * slot, whether the constructor moves that value before handing it over, and every `new` a body makes of
  * the class. Nothing here resolves a type, so it answers off the parse alone.
  *
@@ -42,6 +44,45 @@ final class StatusForwarding
     }
 
     /**
+     * Every `$this->{$method}(…)` a body makes, wherever in it.
+     *
+     * @param  array<array-key, Node\Stmt>  $statements
+     * @return list<Node\Expr\MethodCall>
+     */
+    public static function selfCalls(array $statements, string $method): array
+    {
+        /** @var list<Node\Expr\MethodCall> $calls */
+        $calls = (new NodeFinder)->find(
+            $statements,
+            static fn (Node $node): bool => $node instanceof Node\Expr\MethodCall
+                && $node->var instanceof Node\Expr\Variable
+                && $node->var->name === 'this'
+                && $node->name instanceof Node\Identifier
+                && $node->name->toLowerString() === strtolower($method)
+                && ! $node->isFirstClassCallable(),
+        );
+
+        return $calls;
+    }
+
+    /**
+     * The position of the statement that IS `$call` among a body's own statements, or null where the call is
+     * not one of them — nested in a branch, a loop or a larger expression, where it may not run.
+     *
+     * @param  list<Node\Stmt>  $statements
+     */
+    public static function statementOf(array $statements, Node\Expr $call): ?int
+    {
+        foreach ($statements as $index => $statement) {
+            if ($statement instanceof Node\Stmt\Expression && $statement->expr === $call) {
+                return $index;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * The expression a `parent::__construct()` puts in one slot of the parent's signature. The parameter
      * names are passed so an argument written by NAME is found in the position it fills rather than missed
      * by a reader that only counts.
@@ -55,6 +96,41 @@ final class StatusForwarding
     public static function argumentAt(Node\Expr\StaticCall $call, int $slot, array $paramNames): ?Node\Expr
     {
         return ArgumentSlots::of($call->getArgs(), $paramNames)->at($slot);
+    }
+
+    /**
+     * The local a `parent::__construct()` argument forwards, and how the status comes off it. A bare
+     * `$variable` hands the parent its slot unchanged, so it is read the way the parent reads it
+     * (`$parentRead`). Where the parent takes the status itself, a no-argument method or `->value` on the
+     * variable (`$reason->status()`) is the read, applied later to the enum case a construction passes. A
+     * read of a read is not followed, and anything else forwards nothing.
+     *
+     * @return array{string, ParamAccessor|null}|null
+     */
+    public static function forwarded(Node\Expr $argument, ?ParamAccessor $parentRead): ?array
+    {
+        if ($argument instanceof Node\Expr\Variable && is_string($argument->name)) {
+            return [$argument->name, $parentRead?->withParam($argument->name)];
+        }
+
+        if ($parentRead !== null
+            || ! ($argument instanceof Node\Expr\MethodCall || $argument instanceof Node\Expr\PropertyFetch)
+            || ! $argument->var instanceof Node\Expr\Variable
+            || ! is_string($argument->var->name)
+            || ! $argument->name instanceof Node\Identifier
+        ) {
+            return null;
+        }
+
+        $variable = $argument->var->name;
+
+        if ($argument instanceof Node\Expr\PropertyFetch) {
+            return $argument->name->toString() === 'value' ? [$variable, new ParamAccessor($variable, AccessorKind::Value)] : null;
+        }
+
+        return ! $argument->isFirstClassCallable() && $argument->getArgs() === []
+            ? [$variable, new ParamAccessor($variable, AccessorKind::Method, $argument->name->toString())]
+            : null;
     }
 
     /**

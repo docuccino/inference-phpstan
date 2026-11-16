@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+use Docuccino\Inference\PhpStan\Analysis\AccessorKind;
+use Docuccino\Inference\PhpStan\Analysis\ParamAccessor;
 use Docuccino\Inference\PhpStan\Support\ProjectFilter;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Http\ProbeBranchingFactory;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Http\ProbeConstructedDefault;
@@ -18,7 +20,7 @@ use Docuccino\Inference\PhpStan\Tests\Support\HttpProbeRows;
 use Docuccino\Inference\PhpStan\Tests\Support\ParsedBodies;
 use Docuccino\Inference\PhpStan\Tests\Support\RecordingBodies;
 use Docuccino\Inference\PhpStan\Throwing\ClassBodies;
-use Docuccino\Inference\PhpStan\Throwing\HttpExceptionStatus;
+use Docuccino\Inference\PhpStan\Throwing\SubclassStatus;
 use PhpParser\Node;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
@@ -29,9 +31,9 @@ use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
  * the same bodies and folds the same constants is the fixture group's job ({@see ThrowStatusTest});
  * everything the read DECIDES is decided here.
  */
-function httpStatuses(bool $projectSeesTheFile = true): HttpExceptionStatus
+function httpStatuses(bool $projectSeesTheFile = true): SubclassStatus
 {
-    return new HttpExceptionStatus(new ParsedBodies, httpProjectFilter($projectSeesTheFile));
+    return SubclassStatus::ofHttpExceptions(new ParsedBodies, httpProjectFilter($projectSeesTheFile));
 }
 
 function httpProjectFilter(bool $sees): ProjectFilter
@@ -39,14 +41,21 @@ function httpProjectFilter(bool $sees): ProjectFilter
     return new ProjectFilter($sees ? ['/'] : [], static fn (string $file): string => $file);
 }
 
-it('reads what a class states about its status', function (string $fqcn, ?int $pinned, ?int $parameter, ?int $agreed): void {
-    // One row per class, all three answers on it: they divide the same domain, and two datasets covered
-    // their own halves and left seven probes with nothing saying which slot they forward.
+it('reads what a class states about its status', function (string $fqcn, ?int $pinned, ?int $parameter, ?int $agreed, ?string $read = null): void {
+    // One row per class, all four answers on it: they divide the same domain, and two datasets covered
+    // their own halves and left seven probes with nothing saying which slot they forward. A row naming no
+    // read says the slot's argument IS the status, which is every class whose parent is handed a number.
     $statuses = httpStatuses();
+    $through = $statuses->statusRead($fqcn);
 
     expect($statuses->pinned($fqcn))->toBe($pinned)
         ->and($statuses->statusParameter($fqcn))->toBe($parameter)
-        ->and($statuses->agreed($fqcn)['status'])->toBe($agreed);
+        ->and($statuses->agreed($fqcn)['status'])->toBe($agreed)
+        ->and(match ($through?->kind) {
+            null => null,
+            AccessorKind::Method => $through->method.'()',
+            default => '->'.strtolower($through->kind->name),
+        })->toBe($read);
 })->with([
     ...HttpProbeRows::statuses(),
     // No class below `HttpException` adds a constructor, so its own runs and argument 0 IS the status.
@@ -63,7 +72,7 @@ it('reads one class\'s own constructions once, however many routes throw it', fu
     // The memo holds its NULLS too, which a return value cannot show: a class that agrees on nothing is
     // the commonest answer, and re-reading it per route would re-parse the same body for every throw.
     $bodies = new RecordingBodies(new ParsedBodies);
-    $statuses = new HttpExceptionStatus($bodies, httpProjectFilter(true));
+    $statuses = SubclassStatus::ofHttpExceptions($bodies, httpProjectFilter(true));
 
     $agreed = $statuses->agreed(ProbeBranchingFactory::class);
     $folds = count($bodies->folded);
@@ -197,9 +206,9 @@ it('states nothing about a class whose body it cannot read', function (): void {
             return [];
         }
 
-        public function foldInt(string $file, Node\Expr $expr, Node\Expr\New_|Node\Expr\StaticCall $at): ?int
+        public function foldStatus(string $file, Node\Expr $expr, Node\Expr\New_|Node\Expr\StaticCall|Node\Expr\MethodCall $at, ?ParamAccessor $read): array
         {
-            return null;
+            return ['status' => null, 'files' => []];
         }
 
         public function intDefault(string $file, string $class, string $method, int $index): ?int
@@ -208,7 +217,7 @@ it('states nothing about a class whose body it cannot read', function (): void {
         }
     };
 
-    $statuses = new HttpExceptionStatus($blind, httpProjectFilter(true));
+    $statuses = SubclassStatus::ofHttpExceptions($blind, httpProjectFilter(true));
 
     expect($statuses->pinned(ProbePinned::class))->toBeNull()
         ->and($statuses->pinned(ProbeFactory::class))->toBeNull()
@@ -219,7 +228,7 @@ it('states nothing about a class whose body it cannot read', function (): void {
 });
 
 it('answers an HttpException subclass and nothing else', function (string $fqcn, bool $is): void {
-    expect(httpStatuses()->isHttpException($fqcn))->toBe($is);
+    expect(httpStatuses()->governs($fqcn))->toBe($is);
 })->with([
     'a subclass' => [ProbePinned::class, true],
     'the class itself' => [HttpException::class, true],

@@ -379,3 +379,33 @@ it('keeps the declared type where the parent\'s constructor may not run', functi
         }
         PHP],
 ]);
+
+// An instance built by its class's own name is exactly that class, so no subclass's constructor ran: finality
+// is the one condition that set aside. The class's schema describes every instance, a subclass's too, and
+// still pins nothing.
+it('pins a value on an instance built as exactly its class, final or not', function (): void {
+    $factory = new ClassMetadataFactory;
+    $exact = $factory->exactValues(OpenMessage::class);
+
+    expect($exact['values'])->toEqual(['channel' => new LiteralT('email')])
+        ->and($factory->exactValues(OpenMessage::class))->toBe($exact)
+        ->and($exact['files'])->toContain((string) (new ReflectionEnum(ChannelKind::class))->getFileName())
+        ->and(fixedPropertyType(OpenMessage::class, 'channel'))->toEqual(new EnumT(ChannelKind::class, ['Email', 'Sms', 'Push']));
+});
+
+it('pins nothing on an exact instance where it could still hold another value', function (string $class, string $property): void {
+    expect((new ClassMetadataFactory)->exactValues($class)['values'])->not->toHaveKey($property);
+})->with([
+    'a property anyone may write afterwards' => [MutableMessage::class, 'channel'],
+    'a promoted property with a default' => [ChosenMessage::class, 'promoted'],
+    'a value passed in' => [ChosenMessage::class, 'fromArgument'],
+    'a value chosen by a branch' => [ChosenMessage::class, 'branched'],
+    'an assignment a return can skip' => [ChosenMessage::class, 'afterReturn'],
+    'a class whose __clone may re-initialise it' => [ClonedMessage::class, 'channel'],
+    'a string written into an int' => [MistypedMessage::class, 'priority'],
+    'a property the constructor never assigns' => [SmsMessage::class, 'segments'],
+]);
+
+it('reads nothing off a class that does not exist', function (): void {
+    expect((new ClassMetadataFactory)->exactValues('App\\Nowhere\\Missing'))->toBe(['values' => [], 'files' => []]);
+});

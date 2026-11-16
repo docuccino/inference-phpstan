@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Docuccino\Inference\PhpStan\Tests\Support;
 
+use BackedEnum;
+use Docuccino\Inference\PhpStan\Analysis\AccessorKind;
+use Docuccino\Inference\PhpStan\Analysis\ParamAccessor;
 use Docuccino\Inference\PhpStan\Throwing\ClassBodies;
 use PhpParser\ConstExprEvaluationException;
 use PhpParser\ConstExprEvaluator;
@@ -12,10 +15,12 @@ use PhpParser\NodeFinder;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitor\NameResolver;
 use PhpParser\ParserFactory;
+use UnitEnum;
 
 /**
  * A container-free {@see ClassBodies}: bodies off a plain parse, statuses off php-parser's own
- * constant evaluator with `constant()` behind it, so a class constant folds the way the analyser folds it.
+ * constant evaluator with `constant()` behind it, so a class constant folds the way the analyser folds it —
+ * and an enum case named by its constant is asked for its status the way the analyser folds the method.
  * Names are resolved as PHPStan resolves them, which is what the class-name comparisons downstream expect.
  *
  * A trait is where the two are built differently and answer alike. Parsing a trait's file keys its methods
@@ -46,9 +51,32 @@ final class ParsedBodies implements ClassBodies
         );
     }
 
-    public function foldInt(string $file, Node\Expr $expr, Node\Expr\New_|Node\Expr\StaticCall $at): ?int
+    public function foldStatus(string $file, Node\Expr $expr, Node\Expr\New_|Node\Expr\StaticCall|Node\Expr\MethodCall $at, ?ParamAccessor $read): array
     {
-        return self::constantInt($expr);
+        if ($read === null) {
+            $status = self::constantInt($expr);
+            if ($status !== null
+                || ! $expr instanceof Node\Expr\MethodCall
+                || ! $expr->name instanceof Node\Identifier
+                || $expr->getArgs() !== []
+            ) {
+                return ['status' => $status, 'files' => []];
+            }
+
+            [$expr, $read] = [$expr->var, new ParamAccessor('', AccessorKind::Method, $expr->name->toString())];
+        }
+
+        // A case named by its constant is the probe's own enum, so asking it is the test running its own code.
+        $name = $expr instanceof Node\Expr\ClassConstFetch ? self::constantName($expr) : null;
+        $case = $name !== null && defined($name) ? constant($name) : null;
+        $status = match (true) {
+            ! $case instanceof UnitEnum => null,
+            $read->kind === AccessorKind::Value => $case instanceof BackedEnum ? $case->value : null,
+            $read->kind === AccessorKind::Method && $read->method !== null => $case->{$read->method}(),
+            default => null,
+        };
+
+        return ['status' => is_int($status) ? $status : null, 'files' => []];
     }
 
     public function intDefault(string $file, string $class, string $method, int $index): ?int

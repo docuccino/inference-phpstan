@@ -17,9 +17,9 @@ use ReflectionException;
  * The one call-resolution service for both the {@see Tracer} and the throw analyzer, on PHPStan's
  * `ReflectionProvider` — two reflection stacks would classify the same call differently.
  *
- * `resolve()` returns null for every "vendor terminal, don't descend" case: a non-method call, an unresolved
- * receiver, a magic/forwarded call (`__call`, e.g. Spatie QB forwarding `paginate`), or a PHP-internal/stub
- * method with no file. That null is the boundary signal both callers act on; each then applies its own
+ * `resolve()` returns null for every "vendor terminal, don't descend" case: a call by a variable or callable,
+ * an unresolved receiver or function, a magic/forwarded call (`__call`, e.g. Spatie QB forwarding
+ * `paginate`), or a PHP-internal/stub method or function with no file. That null is the boundary signal both callers act on; each then applies its own
  * {@see ProjectFilter} gate.
  *
  * @internal
@@ -49,6 +49,13 @@ final class CalleeResolver
     /** Null for the vendor-terminal cases above; the first resolvable receiver candidate wins. */
     public function resolve(Node $node, Scope $scope): ?Callee
     {
+        if ($node instanceof Node\Expr\FuncCall) {
+            $function = $this->function($node, $scope);
+            $file = $function?->getFileName();
+
+            return $function === null || $file === null ? null : new Callee(null, $function->getName(), $file);
+        }
+
         $receivers = self::receivers($node, $scope);
         if ($receivers === null) {
             return null;
@@ -117,9 +124,7 @@ final class CalleeResolver
     public function reached(Node $node, Scope $scope): FunctionReflection|ExtendedMethodReflection|null
     {
         if ($node instanceof Node\Expr\FuncCall) {
-            return $node->name instanceof Node\Name && $this->reflectionProvider->hasFunction($node->name, $scope)
-                ? $this->reflectionProvider->getFunction($node->name, $scope)
-                : null;
+            return $this->function($node, $scope);
         }
 
         $receivers = self::receivers($node, $scope);
@@ -138,6 +143,14 @@ final class CalleeResolver
         }
 
         return null;
+    }
+
+    /** The function a call names, resolved as PHP falls back from the namespace to the global one. */
+    private function function(Node\Expr\FuncCall $call, Scope $scope): ?FunctionReflection
+    {
+        return $call->name instanceof Node\Name && $this->reflectionProvider->hasFunction($call->name, $scope)
+            ? $this->reflectionProvider->getFunction($call->name, $scope)
+            : null;
     }
 
     /**

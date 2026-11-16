@@ -349,3 +349,97 @@ it('holds a property of $this as handed only where nothing that can run first as
     'written through it' => ['$this->resource->items = []; return [];', true],
     'read' => ['$items = $this->resource->all(); return [];', true],
 ]);
+
+it('reads what the guards on the way to a return require of the parameters, joined as they are written', function (string $code, ?string $required): void {
+    $parsed = (new ParserFactory)->createForNewestSupportedVersion()->parse('<?php $f = function ($response, $e, $request) {'.$code.'};') ?? [];
+    $closure = (new NodeFinder)->findFirstInstanceOf($parsed, Node\Expr\Closure::class);
+    assert($closure instanceof Node\Expr\Closure);
+
+    // The return judged is the one handing back `$judged`, or the ternary arm that is `$judged`.
+    $at = (new NodeFinder)->findFirst($closure->stmts, static fn (Node $node): bool => ($node instanceof Node\Stmt\Return_ && $node->expr instanceof Node\Expr\Variable && $node->expr->name === 'judged')
+        || ($node instanceof Node\Expr\Ternary && (($node->if instanceof Node\Expr\Variable && $node->if->name === 'judged') || ($node->else instanceof Node\Expr\Variable && $node->else->name === 'judged'))));
+    assert($at instanceof Node);
+    if ($at instanceof Node\Expr\Ternary) {
+        $at = $at->if instanceof Node\Expr\Variable && $at->if->name === 'judged' ? $at->if : $at->else;
+    }
+
+    $scope = $this->createStub(Scope::class);
+    $scope->method('resolveName')->willReturnCallback(static fn (Node\Name $name): string => $name->toString());
+
+    $render = static function (array $tree) use (&$render): string {
+        $leaf = static function (array $c): string {
+            $read = $c['parameter'].(isset($c['class']) ? ' instanceof '.$c['class'] : '->'.$c['method'].'('.implode(', ', $c['arguments']).')');
+
+            return isset($c['class']) || $c['value'] === true ? $read : '('.$read.' === '.var_export($c['value'], true).')';
+        };
+
+        return match (array_key_first($tree)) {
+            'all' => '('.implode(' && ', array_map($render, $tree['all'])).')',
+            'any' => '('.implode(' || ', array_map($render, $tree['any'])).')',
+            'not' => '!'.$render($tree['not']),
+            'call', 'type' => $leaf($tree[array_key_first($tree)]),
+            default => '?',
+        };
+    };
+
+    $tree = ParameterUse::reachedWhen($at, $scope, ['response', 'e', 'request'], array_values($closure->stmts));
+
+    expect($tree === null ? null : $render($tree->toArray()))->toBe($required);
+})->with([
+    'inside a disjunction' => ['if (! $response instanceof JsonResponse || $e instanceof HttpResponseException) { return $judged; } return $response;', '(!response instanceof JsonResponse || e instanceof HttpResponseException)'],
+    'past a disjunction that leaves' => ['if (! $request->is(\'api/*\') || ! $response instanceof JsonResponse) { return $response; } return $judged;', '!(!request->is(api/*) || !response instanceof JsonResponse)'],
+    'past a negated conjunction that leaves' => ['if (! ($request->is(\'api/*\') && $response instanceof JsonResponse)) { return $response; } return $judged;', '(request->is(api/*) && response instanceof JsonResponse)'],
+    'one guard, as the scope proves it too' => ['if (! $request->is(\'api/*\')) { return $judged; } return $response;', '!request->is(api/*)'],
+    'past a guard that throws' => ['if ($response->getStatusCode() === 419) { throw new RuntimeException; } return $judged;', '!(response->getStatusCode() === 419)'],
+    'a comparison turned around and negated' => ['if (500 !== $response->getStatusCode()) { return $judged; } return $response;', '!(response->getStatusCode() === 500)'],
+    'an elseif, after the conditions before it' => ['if ($request->is(\'admin/*\')) { return $response; } elseif ($request->is(\'api/*\') || $e instanceof HttpResponseException) { return $judged; } return $response;', '((request->is(api/*) || e instanceof HttpResponseException) && !request->is(admin/*))'],
+    'an else, after every condition' => ['if ($request->is(\'admin/*\')) { return $response; } elseif ($request->is(\'web/*\')) { return $response; } else { return $judged; }', '(!request->is(admin/*) && !request->is(web/*))'],
+    'nested ifs, the inner first' => ['if ($request->is(\'api/*\')) { if ($response instanceof JsonResponse || $e instanceof RuntimeException) { return $judged; } } return $response;', '((response instanceof JsonResponse || e instanceof RuntimeException) && request->is(api/*))'],
+    'a ternary arm' => ['return $request->is(\'api/*\') || $request->routeIs(\'api.*\') ? $judged : $response;', '(request->is(api/*) || request->routeIs(api.*))'],
+    'the other ternary arm' => ['return $request->is(\'api/*\') ? $response : $judged;', '!request->is(api/*)'],
+    // An operand nobody can answer from the code stays in its place, so its neighbours decide only what they can.
+    'an operand that is not a parameter call' => ['if ($flag || $response instanceof JsonResponse) { return $judged; } return $response;', '(? || response instanceof JsonResponse)'],
+    'a call with an argument not a literal' => ['if ($request->is($pattern) || $response instanceof JsonResponse) { return $judged; } return $response;', '(? || response instanceof JsonResponse)'],
+    'a comparison with a string, loosely' => ['if ($response->getStatusCode() == \'419\' || $response instanceof JsonResponse) { return $judged; } return $response;', '(? || response instanceof JsonResponse)'],
+    // A test or call reads the value as it was handed only where nothing before it changed or rebound it.
+    'a response rebound before the guard' => ['$response = back(); if ($response instanceof JsonResponse || $e instanceof HttpResponseException) { return $judged; } return $response;', '(? || e instanceof HttpResponseException)'],
+    'a status written before the guard' => ['$response->setStatusCode(500); if ($response->getStatusCode() === 500 || $e instanceof HttpResponseException) { return $judged; } return $response;', '(? || e instanceof HttpResponseException)'],
+    'a literal call outside any guard before it' => ['$request->setMethod(\'POST\'); if ($request->is(\'api/*\') || $e instanceof HttpResponseException) { return $judged; } return $response;', '(? || e instanceof HttpResponseException)'],
+    'a question an earlier guard asked' => ['if ($request->is(\'admin/*\')) { return $response; } if ($request->is(\'api/*\') || $e instanceof HttpResponseException) { return $judged; } return $response;', '((request->is(api/*) || e instanceof HttpResponseException) && !request->is(admin/*))'],
+    // Only an `if` that leaves on every branch says anything about what follows it.
+    'past a guard that falls through' => ['if ($request->is(\'api/*\') || $e instanceof HttpResponseException) { report($e); } return $judged;', null],
+    'past a guard with an else' => ['if ($request->is(\'api/*\')) { return $response; } else { report($e); } return $judged;', null],
+    'no guard at all' => ['return $judged;', null],
+]);
+
+it('reads what every return of a long chain of guards requires in time that grows with what it reads, not cubically', function (string $arm): void {
+    // An exception handler's respond() callback with one guarded arm per API version, every return asked for:
+    // each guard is judged where it stands, which is the same for every return past it, so it is judged once.
+    $arms = 150;
+    $code = '';
+    for ($i = 0; $i < $arms; $i++) {
+        $code .= sprintf('if (%s) { return response()->json([\'arm\' => %d], 400); } ', sprintf($arm, $i), $i);
+    }
+    $closure = (new NodeFinder)->findFirstInstanceOf(
+        (new ParserFactory)->createForHostVersion()->parse('<?php $f = function ($response, $e, $request) { '.$code.'return $response; };') ?? [],
+        Node\Expr\Closure::class,
+    );
+    assert($closure instanceof Node\Expr\Closure);
+    $body = array_values($closure->stmts);
+    $scope = $this->createStub(Scope::class);
+    $scope->method('resolveName')->willReturnCallback(static fn (Node\Name $name): string => $name->toString());
+
+    $started = hrtime(true);
+    $guarded = 0;
+    foreach ((new NodeFinder)->findInstanceOf($body, Node\Stmt\Return_::class) as $return) {
+        $guarded += ParameterUse::reachedWhen($return, $scope, ['response', 'e', 'request'], $body) === null ? 0 : 1;
+    }
+    $seconds = (hrtime(true) - $started) / 1e9;
+
+    // Judging each guard again for every return past it took over a minute here; once each, well under a second.
+    expect($guarded)->toBe($arms + 1)
+        ->and($seconds)->toBeLessThan(10.0);
+})->with([
+    'a call on the request' => ['$request->is(\'api/v%d/*\')'],
+    'an instanceof test of the exception' => ['$e instanceof \App\Exceptions\Version%dException'],
+]);

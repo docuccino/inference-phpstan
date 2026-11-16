@@ -50,6 +50,17 @@ final class FixtureRunner
     }
 
     /**
+     * As {@see analyze()}, with core's docblock parser built before the engine, plus `phpDocParserCopies`:
+     * the copies of phpdoc-parser (`phar`, `vendor`) the process's loaded classes came from.
+     *
+     * @return array<string, mixed>
+     */
+    public static function analyzeCoreFirst(string $controllerRelPath, string $class, string $method): array
+    {
+        return self::invoke('analyze-core-first', self::path($controllerRelPath), $class, $method);
+    }
+
+    /**
      * Every named method analysed by ONE engine, keyed by method name — the shape a sweep over a whole
      * controller needs, since a subprocess per action pays for a container boot per action.
      *
@@ -259,6 +270,28 @@ final class FixtureRunner
     }
 
     /**
+     * Trace a controller with the ResourceModelVisitor: the one model every construction of `$resource`
+     * the walk sees is built around, or null.
+     *
+     * @return array<string, mixed>
+     */
+    public static function traceResourceModels(string $controllerRelPath, string $class, string $method, string $resource): array
+    {
+        return self::invoke('trace-resource-models', self::path($controllerRelPath), $class, $method, $resource);
+    }
+
+    /**
+     * Trace a controller with the DataSourceVisitor: what each construction of `$data` the walk sees is
+     * built from, or null where it sees none.
+     *
+     * @return array<string, mixed>
+     */
+    public static function traceDataSources(string $controllerRelPath, string $class, string $method, string $data): array
+    {
+        return self::invoke('trace-data-sources', self::path($controllerRelPath), $class, $method, $data);
+    }
+
+    /**
      * Trace a closure located by start line with the {@see ClosureReturnProbe}: returns one entry per
      * return expression the engine handed over, with its node kind and the scope's type for it.
      *
@@ -353,6 +386,19 @@ final class FixtureRunner
     public static function dataResponseStatuses(string $relPath, string ...$classes): array
     {
         return self::invoke('data-response-status', self::path($relPath), implode(',', $classes), '');
+    }
+
+    /**
+     * Each named document built in turn in ONE process, through the adapter's own contract assertions, as a
+     * test suite holding several documents to their artifacts builds them: every path's response statuses,
+     * keyed by document. `$perTest` boots an application for each, as each test of a suite gets one.
+     *
+     * @param  list<string>  $documents
+     * @return array<string, mixed>
+     */
+    public static function contractBuilds(array $documents, bool $perTest = false): array
+    {
+        return self::invoke('contract-builds', '', '', implode(',', $documents), $perTest ? 'per-test' : '');
     }
 
     /**

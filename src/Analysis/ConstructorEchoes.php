@@ -14,6 +14,7 @@ use JsonSerializable;
 use PhpParser\Node;
 use ReflectionClass;
 use ReflectionException;
+use ReflectionMethod;
 use ReflectionParameter;
 use ReflectionProperty;
 
@@ -21,7 +22,10 @@ use ReflectionProperty;
  * Which members of an object body are read off its constructor's parameters, the object-payload half of
  * the member provenance an array body carries inline: a property the constructor assigns `$param->x()` (or
  * `$param` itself), or the status-text table read at one (`Response::$statusTexts[$this->status] ?? 'Error'`).
- * Accessors come back in the constructor's own parameter names, for the construction site to re-home.
+ * Accessors come back in the constructor's own parameter names, for the construction site to re-home, and
+ * a `parent::__construct()` the constructor always runs answers for what the parent writes.
+ *
+ * @phpstan-type Echo array{accessor: ParamAccessor, text: bool, fallback: ?LiteralT}
  *
  * @internal
  */
@@ -46,7 +50,7 @@ final class ConstructorEchoes
      * Property → the parameter accessor it echoes, and for a table read the `??` fallback, in assignment
      * order. Empty where the class says nothing this can stand behind.
      *
-     * @return array<string, array{accessor: ParamAccessor, text: bool, fallback: ?LiteralT}>
+     * @return array<string, Echo>
      */
     public function of(string $fqcn): array
     {
@@ -55,22 +59,51 @@ final class ConstructorEchoes
         }
 
         $class = new ReflectionClass($fqcn);
-        foreach (self::OWN_JSON as $interface) {
-            if (is_a($fqcn, $interface, true)) {
-                return [];
-            }
-        }
-
-        $constructor = $class->getConstructor();
-        $file = $constructor?->getFileName();
-        if ($constructor === null || $file === false || $file === null) {
+        if (self::ownJson($fqcn)) {
             return [];
         }
 
-        // The answer rests on the constructor's body and on what the hierarchy declares of each property.
-        foreach ([...DeclarationFiles::of($fqcn), $file] as $read) {
+        $constructor = $class->getConstructor();
+        if ($constructor === null) {
+            return [];
+        }
+
+        // The answer rests on the constructors' bodies and on what the hierarchy declares of each property.
+        foreach (DeclarationFiles::of($fqcn) as $read) {
             ($this->touch)($read);
         }
+
+        return $this->written($class, $constructor);
+    }
+
+    /** Whether a response serialises the class as something other than its public properties. */
+    public static function ownJson(string $fqcn): bool
+    {
+        foreach (self::OWN_JSON as $interface) {
+            if (is_a($fqcn, $interface, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * The echoes one constructor of `$class`'s hierarchy writes, in its own parameter names: its reached
+     * statements' writes, and those of the `parent::__construct()` they reach, re-homed through its arguments.
+     * A readonly property's first write is its value, since any later one throws.
+     *
+     * @param  ReflectionClass<object>  $class  the class being built
+     * @return array<string, Echo>
+     */
+    private function written(ReflectionClass $class, ReflectionMethod $constructor): array
+    {
+        $file = $constructor->getFileName();
+        if ($file === false) {
+            return [];
+        }
+
+        ($this->touch)($file);
         $body = $this->files->body($constructor);
         if ($body === null) {
             return [];
@@ -80,7 +113,7 @@ final class ConstructorEchoes
         $declaring = $constructor->getDeclaringClass();
         $resolveName = static fn (Node\Name $name): string => match ($name->toLowerString()) {
             'self' => $declaring->getName(),
-            'static' => $fqcn,
+            'static' => $class->getName(),
             'parent' => (string) get_parent_class($declaring->getName()),
             default => $name->toString(),
         };
@@ -93,7 +126,9 @@ final class ConstructorEchoes
             return $folded === null ? null : new LiteralT($folded['value']);
         };
 
-        // A promoted parameter is its property's first write: the argument lands before the body runs.
+        // A promoted parameter is its property's first write: the argument lands before the body runs. A
+        // parent's echo arrives already read, and one it cannot re-home still takes the write.
+        /** @var array<string, Node\Expr|Echo|null> $first */
         $first = [];
         foreach ($constructor->getParameters() as $parameter) {
             if ($parameter->isPromoted()) {
@@ -105,10 +140,23 @@ final class ConstructorEchoes
             if ($written !== null && ! array_key_exists($written[0], $first)) {
                 $first[$written[0]] = $written[1];
             }
+
+            $call = ReachedStatements::parentConstruct($statement);
+            $parent = $call === null ? null : ReachedStatements::parentConstructorClass($declaring)?->getConstructor();
+            if ($call !== null && $parent !== null) {
+                $first += $this->inherited($class, $parent, $call, $parameters);
+            }
         }
 
         $echoes = [];
         foreach ($first as $name => $expr) {
+            if (! $expr instanceof Node\Expr) {
+                if ($expr !== null) {
+                    $echoes[$name] = $expr;
+                }
+
+                continue;
+            }
             if (! self::fixedOnceWritten($class, $name)) {
                 continue;
             }
@@ -124,19 +172,45 @@ final class ConstructorEchoes
     }
 
     /**
+     * What the parent constructor a `parent::__construct(…)` runs writes, each echo re-homed onto the
+     * parameter of this constructor its argument hands on; null for one it hands anything else, which the
+     * parent still wrote first.
+     *
+     * @param  ReflectionClass<object>  $class
+     * @param  list<string>  $parameters  this constructor's parameter names
+     * @return array<string, Echo|null>
+     */
+    private function inherited(ReflectionClass $class, ReflectionMethod $parent, Node\Expr\StaticCall $call, array $parameters): array
+    {
+        $args = ConstructorArgs::named($call, array_map(static fn (ReflectionParameter $parameter): string => $parameter->getName(), $parent->getParameters()));
+        $echoes = [];
+        foreach ($this->written($class, $parent) as $name => $echo) {
+            $arg = $args[$echo['accessor']->param] ?? null;
+            $accessor = $arg === null ? null : AccessorExtractor::rehome($arg, $echo['accessor'], $parameters);
+            $echoes[$name] = $accessor === null ? null : ['accessor' => $accessor] + $echo;
+        }
+
+        return $echoes;
+    }
+
+    /**
      * A parameter accessor, read through `$this->other` where that property's first write is one.
      *
      * @param  list<string>  $parameters
-     * @param  array<string, Node\Expr>  $first
+     * @param  array<string, Node\Expr|Echo|null>  $first
      * @param  ReflectionClass<object>  $class
      */
     private static function accessor(Node\Expr $expr, array $parameters, array $first, ReflectionClass $class): ?ParamAccessor
     {
         $property = ReachedStatements::thisProperty($expr);
         if ($property !== null) {
-            return isset($first[$property]) && self::readonly($class, $property)
-                ? AccessorExtractor::fromExpr($first[$property], $parameters)
-                : null;
+            $written = $first[$property] ?? null;
+            if ($written === null || ! self::readonly($class, $property)) {
+                return null;
+            }
+
+            // A parent's echo is already read: the value itself where it is not a phrase of it.
+            return $written instanceof Node\Expr ? AccessorExtractor::fromExpr($written, $parameters) : ($written['text'] ? null : $written['accessor']);
         }
 
         return AccessorExtractor::fromExpr($expr, $parameters);

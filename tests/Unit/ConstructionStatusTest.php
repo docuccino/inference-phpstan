@@ -64,7 +64,7 @@ it('reads the status one call passes in a slot', function (string $code, int $sl
 /**
  * Every `new X(...)` in a snippet as the site it is written at — which is what the class read and the
  * factory read each hand the fold. One file per snippet here; that a class's constructions can come from
- * SEVERAL is {@see HttpExceptionStatusTest}'s hierarchy rows.
+ * SEVERAL is {@see SubclassStatusTest}'s hierarchy rows.
  *
  * @return list<ConstructionSite>
  */

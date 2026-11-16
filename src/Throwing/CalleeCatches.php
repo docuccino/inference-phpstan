@@ -98,7 +98,7 @@ final class CalleeCatches
         }
 
         $callee = $this->calleeResolver->resolve($call, $scope);
-        if ($callee === null || ! $this->appFilter->isProjectFile($callee->writtenIn())) {
+        if ($callee === null || $callee->class === null || ! $this->appFilter->isProjectFile($callee->writtenIn())) {
             return null;
         }
 

@@ -28,7 +28,7 @@ function caNamed(string $name, string $value): Node\Arg
 }
 
 /** @return array<string, string> argument name → the literal it carries */
-function caValues(Node\Expr\New_ $new, array $paramNames): array
+function caValues(Node\Expr\New_|Node\Expr\StaticCall $new, array $paramNames): array
 {
     $values = [];
     foreach (ConstructorArgs::named($new, $paramNames) as $name => $expr) {
@@ -71,4 +71,10 @@ it('names nothing when the constructor’s parameters are unknown', function ():
     // value to the wrong member. Explicitly named arguments still come through.
     expect(caValues(caNew(caPositional('about:blank')), []))->toBe([])
         ->and(caValues(caNew(caNamed('type', 'about:blank')), []))->toBe(['type' => 'about:blank']);
+});
+
+it('names a parent constructor call’s arguments the way it names a construction’s', function (): void {
+    $call = new Node\Expr\StaticCall(new Node\Name('parent'), '__construct', [caPositional('about:blank'), caNamed('status', '500')]);
+
+    expect(caValues($call, ['type', 'title', 'status']))->toBe(['type' => 'about:blank', 'status' => '500']);
 });

@@ -9,6 +9,7 @@ use Docuccino\Inference\PhpStan\Runtime\RuntimeAdapter;
 use PhpParser\Node;
 use PHPStan\Analyser\Scope;
 use PHPStan\Reflection\ReflectionProvider;
+use PHPStan\Type\Type;
 use RuntimeException;
 use WeakMap;
 
@@ -88,6 +89,11 @@ final class ScriptedRuntimeAdapter implements RuntimeAdapter
     {
         // A stand-in for toMutatingScope(), which is likewise a function of the scope it is asked about.
         return $this->stabilised[$scope] ??= clone $scope;
+    }
+
+    public function holding(Scope $scope, Node\Expr $expr, Type $type): Scope
+    {
+        throw new RuntimeException('the scripted adapter types no expression');
     }
 
     public function reflectionProvider(): ReflectionProvider

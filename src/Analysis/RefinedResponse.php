@@ -49,6 +49,9 @@ use Docuccino\Inference\PhpStan\Support\ScalarFold;
  * `$component` travels beside all of that rather than inside the shape: it names the body rather than
  * describing it ({@see withComponent()}).
  *
+ * `$transport` names the response class when it is a file, stream or redirect rather than a JSON one: the
+ * status is all this recovers of those, and they are emitted as that class, never as a `JsonResponse`.
+ *
  * @internal
  */
 final readonly class RefinedResponse
@@ -67,6 +70,7 @@ final readonly class RefinedResponse
         public ?ComponentDeclaration $component = null,
         public bool $statusOfPayload = false,
         public bool $statusUnread = false,
+        public ?string $transport = null,
     ) {}
 
     /**
@@ -79,7 +83,7 @@ final readonly class RefinedResponse
      */
     public function withComponent(ComponentDeclaration $component): self
     {
-        return new self($this->payload, $this->status, $this->statusSource, $this->contentType, $this->delegates, $this->payloadParamProvenance, $this->payloadMembers, $component, $this->statusOfPayload, $this->statusUnread);
+        return new self($this->payload, $this->status, $this->statusSource, $this->contentType, $this->delegates, $this->payloadParamProvenance, $this->payloadMembers, $component, $this->statusOfPayload, $this->statusUnread, transport: $this->transport);
     }
 
     /**
@@ -92,6 +96,15 @@ final readonly class RefinedResponse
     public static function renderedBy(DType $payload): self
     {
         return new self($payload, statusOfPayload: true);
+    }
+
+    /**
+     * A file, stream or redirect response ({@see $transport}): the status its building call states, or the
+     * parameter that status reads from, and no body, since the class and its call say what that is.
+     */
+    public static function transported(string $class, LiteralT|UnionT|null $status, ?ParamAccessor $statusSource): self
+    {
+        return new self(status: $status, statusSource: $statusSource, transport: $class);
     }
 
     /** A `return null`/void return: the framework handles it, so there's no response to document. */
@@ -116,7 +129,7 @@ final readonly class RefinedResponse
      */
     public function withContentType(?string $contentType): self
     {
-        return new self($this->payload, $this->status, $this->statusSource, $contentType, $this->delegates, $this->payloadParamProvenance, $this->payloadMembers, $this->component, $this->statusOfPayload, $this->statusUnread);
+        return new self($this->payload, $this->status, $this->statusSource, $contentType, $this->delegates, $this->payloadParamProvenance, $this->payloadMembers, $this->component, $this->statusOfPayload, $this->statusUnread, transport: $this->transport);
     }
 
     /**
@@ -125,7 +138,7 @@ final readonly class RefinedResponse
      */
     public function withBoundStatus(LiteralT|UnionT $status): self
     {
-        return new self($this->payload, $status, null, $this->contentType, $this->delegates, $this->payloadParamProvenance, $this->payloadMembers, $this->component, $this->statusOfPayload);
+        return new self($this->payload, $status, null, $this->contentType, $this->delegates, $this->payloadParamProvenance, $this->payloadMembers, $this->component, $this->statusOfPayload, transport: $this->transport);
     }
 
     /**
@@ -135,7 +148,25 @@ final readonly class RefinedResponse
      */
     public function withUnreadStatus(): self
     {
-        return new self($this->payload, null, null, $this->contentType, $this->delegates, $this->payloadParamProvenance, $this->payloadMembers, $this->component, statusUnread: true);
+        return new self($this->payload, null, null, $this->contentType, $this->delegates, $this->payloadParamProvenance, $this->payloadMembers, $this->component, statusUnread: true, transport: $this->transport);
+    }
+
+    /**
+     * The body once something replaced it with one this read: nothing read off the one before — its members,
+     * what they echoed, the component naming it, or a status it decided — stands.
+     */
+    public function withBody(DType $payload): self
+    {
+        return new self($payload, $this->status, $this->statusSource, $this->contentType, $this->delegates, transport: $this->transport, statusUnread: $this->statusUnread || $this->statusOfPayload);
+    }
+
+    /**
+     * The body once something this cannot read may have rewritten it: nothing of the one it was built with
+     * stands, so none is claimed.
+     */
+    public function withUnreadBody(): self
+    {
+        return new self(null, $this->status, $this->statusSource, $this->contentType, $this->delegates, [], null, $this->component, $this->statusOfPayload, $this->statusUnread, transport: $this->transport);
     }
 
     /**
@@ -144,7 +175,7 @@ final readonly class RefinedResponse
      */
     public function withStatusSource(?ParamAccessor $statusSource): self
     {
-        return new self($this->payload, null, $statusSource, $this->contentType, $this->delegates, $this->payloadParamProvenance, $this->payloadMembers, $this->component, $this->statusOfPayload, $this->statusUnread);
+        return new self($this->payload, null, $statusSource, $this->contentType, $this->delegates, $this->payloadParamProvenance, $this->payloadMembers, $this->component, $this->statusOfPayload, $this->statusUnread, transport: $this->transport);
     }
 
     /**
@@ -152,7 +183,7 @@ final readonly class RefinedResponse
      */
     public function withPayload(?DType $payload, array $payloadParamProvenance): self
     {
-        return new self($payload, $this->status, $this->statusSource, $this->contentType, $this->delegates, $payloadParamProvenance, $this->payloadMembers, $this->component, $this->statusOfPayload, $this->statusUnread);
+        return new self($payload, $this->status, $this->statusSource, $this->contentType, $this->delegates, $payloadParamProvenance, $this->payloadMembers, $this->component, $this->statusOfPayload, $this->statusUnread, transport: $this->transport);
     }
 
     /**
@@ -163,7 +194,7 @@ final readonly class RefinedResponse
      */
     public function withPayloadMembers(ArrayShapeT $payloadMembers, array $payloadParamProvenance): self
     {
-        return new self($this->payload, $this->status, $this->statusSource, $this->contentType, $this->delegates, $payloadParamProvenance, $payloadMembers, $this->component, $this->statusOfPayload, $this->statusUnread);
+        return new self($this->payload, $this->status, $this->statusSource, $this->contentType, $this->delegates, $payloadParamProvenance, $payloadMembers, $this->component, $this->statusOfPayload, $this->statusUnread, transport: $this->transport);
     }
 
     /**
@@ -274,7 +305,7 @@ final readonly class RefinedResponse
                 : $type,
         );
 
-        return new self($payload, $this->status, $this->statusSource, $this->contentType, $this->delegates, $this->payloadParamProvenance, $members, $this->component, $this->statusOfPayload, $this->statusUnread);
+        return new self($payload, $this->status, $this->statusSource, $this->contentType, $this->delegates, $this->payloadParamProvenance, $members, $this->component, $this->statusOfPayload, $this->statusUnread, transport: $this->transport);
     }
 
     /**
@@ -307,7 +338,8 @@ final readonly class RefinedResponse
      * map follows it, which needs the slot held so the map stays fourth.
      *
      * These args are read back by the pipeline, never by PHPStan, so the count here is independent of how
-     * many `@template`s `JsonResponse.stub` declares.
+     * many `@template`s `JsonResponse.stub` declares. A {@see $transport} response is emitted as its own
+     * class, its status in the same slot.
      */
     public function toClassT(string $fqcn): ?ClassT
     {
@@ -330,6 +362,6 @@ final readonly class RefinedResponse
             $args[] = $this->payloadMembers;
         }
 
-        return new ClassT($fqcn, $args);
+        return new ClassT($this->transport ?? $fqcn, $args);
     }
 }

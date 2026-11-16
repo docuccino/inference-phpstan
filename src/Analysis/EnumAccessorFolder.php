@@ -11,6 +11,7 @@ use Docuccino\Inference\PhpStan\Support\ProjectFilter;
 use Docuccino\Inference\PhpStan\Support\ScalarFold;
 use PhpParser\Node;
 use PHPStan\Analyser\Scope;
+use PHPStan\Type\Enum\EnumCaseObjectType;
 use ReflectionEnum;
 use Throwable;
 
@@ -18,9 +19,9 @@ use Throwable;
  * Folds an accessor on a known enum case to a literal — the last hop of the folding arc, driven by
  * {@see ResponseShapeRefiner}. Two containment rules live here: `->value`/`->name` come off the case by
  * reflection, so vendor enums work too (`->value` needs a backed enum, `->name` is universal); `->method()`
- * only folds for an enum the application declares, by analysing one body with `$this` narrowed to the
- * case — a `match ($this)` arm or a plain constant return. Anything computed, or any vendor enum method,
- * folds to null rather than a guess.
+ * only folds for an enum the application declares, by analysing one body for the case — a `match ($this)`
+ * arm, `$this->value`, or a constant, at every return the case can reach. Anything computed, or any vendor
+ * enum method, folds to null rather than a guess.
  *
  * Memoised per (enum-case, method); the enum's file goes through {@see $recordFile} on every path, hit
  * included, so it reaches `dependencyFiles`.
@@ -82,8 +83,8 @@ final class EnumAccessorFolder
     }
 
     /**
-     * Analyses the (project-only) body, picks the `match ($this)` arm for this case — or a plain constant
-     * return — and folds it. The enum file is recorded on every path, hit included.
+     * Analyses the (project-only) body and folds what each return the case reaches gives it. The enum file
+     * is recorded on every path, hit included.
      */
     private function foldMethod(string $enumFqcn, string $caseName, string $method): ?LiteralT
     {
@@ -111,28 +112,59 @@ final class EnumAccessorFolder
             return null;
         }
 
+        // Every return the case can reach must fold, and to one value: a return `$this` cannot be at for this
+        // case — the far side of `if ($this === self::Other) { return …; }` — is another case's answer.
+        $case = new EnumCaseObjectType($enumFqcn, $caseName);
+        $folded = null;
         foreach ($node->getReturnStatements() as $statement) {
-            $expr = $statement->getReturnNode()->expr;
-            if ($expr === null) {
+            $scope = $this->fileAnalyzer->stableScope($statement->getScope());
+            if ($scope->getType(new Node\Expr\Variable('this'))->isSuperTypeOf($case)->no()) {
                 continue;
             }
-            $scope = $this->fileAnalyzer->stableScope($statement->getScope());
 
-            if ($expr instanceof Node\Expr\Match_) {
-                $body = AccessorExtractor::matchArmBodyForCase(
-                    $expr,
-                    $enumFqcn,
-                    $caseName,
-                    static fn (Node\Name $name): string => $scope->resolveName($name),
-                );
-
-                return $body === null ? null : $this->constLiteral($body, $scope);
+            $expr = $statement->getReturnNode()->expr;
+            $literal = $expr === null ? null : $this->returned($expr, $scope, $enumFqcn, $caseName);
+            if ($literal === null || ($folded !== null && $literal->value !== $folded->value)) {
+                return null;
             }
 
-            return $this->constLiteral($expr, $scope);
+            $folded = $literal;
         }
 
-        return null;
+        return $folded;
+    }
+
+    /**
+     * What one returned expression is for the case: the `match ($this)` arm naming it, the case's own
+     * `$this->value`/`$this->name`, or a constant.
+     */
+    private function returned(Node\Expr $expr, Scope $scope, string $enumFqcn, string $caseName): ?LiteralT
+    {
+        if ($expr instanceof Node\Expr\Match_) {
+            $body = AccessorExtractor::matchArmBodyForCase(
+                $expr,
+                $enumFqcn,
+                $caseName,
+                static fn (Node\Name $name): string => $scope->resolveName($name),
+            );
+
+            return $body === null ? null : $this->returned($body, $scope, $enumFqcn, $caseName);
+        }
+
+        // `return $this->value;` is the case's own value, which the scope across every case cannot fold.
+        if ($expr instanceof Node\Expr\PropertyFetch
+            && $expr->var instanceof Node\Expr\Variable
+            && $expr->var->name === 'this'
+            && $expr->name instanceof Node\Identifier
+        ) {
+            return match ($expr->name->toString()) {
+                'value' => $this->backingValue($enumFqcn, $caseName),
+                'name' => new LiteralT($caseName),
+                default => null,
+            };
+        }
+
+        return $this->constLiteral($expr, $scope);
     }
 
     /** Null when the expression doesn't constant-fold. */

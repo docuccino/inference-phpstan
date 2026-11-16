@@ -6,10 +6,14 @@ namespace Docuccino\Inference\PhpStan\Tests\Unit;
 
 use Composer\InstalledVersions;
 use Docuccino\Inference\PhpStan\Runtime\V2_2\RuntimeAdapter;
+use PhpParser\Node\Expr;
+use PHPStan\Analyser\MutatingScope;
 use PHPStan\Analyser\Scope;
+use PHPStan\Type\Type;
 use ReflectionClass;
 use ReflectionMethod;
 use ReflectionNamedType;
+use ReflectionParameter;
 
 /*
  * The engine embeds PHPStan, so part of what it depends on is not covered by anyone's promise: the
@@ -124,6 +128,16 @@ it('runs against a callback-scope surface the adapter was read against', functio
         InstalledVersions::getPrettyVersion('phpstan/phpstan') ?? 'unknown',
         $drift ?? '',
     ));
+});
+
+it('declares the assignment the adapter reads a held expression through', function (): void {
+    // `RuntimeAdapter::holding()` types a body for one call by the analyser's own reading of an assignment,
+    // which carries no compatibility promise. Where it moves, this fails, rather than every body read that
+    // way quietly going back to its declared types.
+    $parameters = (new ReflectionMethod(MutatingScope::class, 'assignExpression'))->getParameters();
+
+    expect(array_map(static fn (ReflectionParameter $parameter): string => (string) $parameter->getType(), $parameters))
+        ->toBe([Expr::class, Type::class, Type::class]);
 });
 
 it('decides drift from the declared surface alone', function (bool $stabiliser, bool $fibers, bool $walkScope, ?string $expected): void {

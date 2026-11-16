@@ -4,15 +4,18 @@ declare(strict_types=1);
 
 namespace Docuccino\Inference\PhpStan\Analysis;
 
+use Closure;
 use Docuccino\Core\Inference\DeclarationLine;
 use Docuccino\Core\Inference\LocalWrites;
 use Docuccino\Inference\PhpStan\Runtime\FileWalks;
 use Docuccino\Inference\PhpStan\Runtime\RuntimeAdapter;
+use Docuccino\Inference\PhpStan\Trace\Callee;
 use PhpParser\Node;
 use PhpParser\NodeFinder;
 use PhpParser\ParserFactory;
 use PHPStan\Analyser\Scope;
 use PHPStan\Node\ClosureReturnStatementsNode;
+use PHPStan\Node\FunctionReturnStatementsNode;
 use PHPStan\Node\InArrowFunctionNode;
 use PHPStan\Node\MethodReturnStatementsNode;
 use PHPStan\Reflection\ParameterReflection;
@@ -22,20 +25,23 @@ use Throwable;
 /**
  * Parses a file once and harvests everything the engine reads out of it: the virtual
  * `MethodReturnStatementsNode`s — the node that pairs every `return` with its flow-refined scope and carries
- * the method's throw points — plus the closures and the local assignments. Memoised per file so descent
- * reuses one rich parse; the adapter's priming is what keeps the bodies from being stripped.
+ * the method's throw points — and their `FunctionReturnStatementsNode` twins, plus the closures and the local
+ * assignments. Memoised per file so descent reuses one rich parse; the adapter's priming is what keeps the
+ * bodies from being stripped.
  *
  * @phpstan-type FileHarvest array{
  *     methods: array<string, MethodReturnStatementsNode>,
+ *     functions: array<string, FunctionReturnStatementsNode>,
  *     closures: array<int, ClosureReturnStatementsNode>,
  *     arrows: array<int, array{Node\Expr\ArrowFunction, Scope}>,
  *     arrays: array<string, array<string, Node\Expr\Array_>>,
  *     locals: array<string, array<string, array{Node\Expr, Scope}|null>>,
- *     calls: array<int, Scope>,
+ *     calls: array<string, Scope>,
  *     branches: array<string, array{Scope, Scope}>,
  *     mentions: array<string, array<string, list<int>>>,
  *     members: array<int, true>,
  *     written: array<int, true>,
+ *     handed: array<int, array{Node\Expr\CallLike, ?Node\Arg, Scope}>,
  * }
  *
  * @internal
@@ -51,6 +57,7 @@ final class FileAnalyzer
     public function __construct(
         private readonly RuntimeAdapter $adapter,
         private readonly FileWalks $walks,
+        private readonly StateKeepingCalls $keeping = new StateKeepingCalls,
     ) {}
 
     /**
@@ -97,6 +104,14 @@ final class FileAnalyzer
         }
 
         return count($found) === 1 ? reset($found) : null;
+    }
+
+    /** The body a resolved call runs: the method's, or the function's, which the file keys by its name. */
+    public function callee(Callee $callee): MethodReturnStatementsNode|FunctionReturnStatementsNode|null
+    {
+        return $callee->class === null
+            ? $this->harvest($callee->file)['functions'][strtolower($callee->method)] ?? null
+            : $this->method($callee->file, $callee->class, $callee->method);
     }
 
     /**
@@ -206,9 +221,9 @@ final class FileAnalyzer
     }
 
     /**
-     * The scope PHPStan resolved AT one construction or static call, or null where the file holds no such
-     * call at that position. Keyed by start offset rather than by node identity: the same file parses to
-     * fresh nodes whenever a recorded walk has been discarded, and an offset survives that where an object
+     * The scope PHPStan resolved AT one construction, static or method call, or null where the file holds no such
+     * call at that position. Keyed by span rather than by node identity: the same file parses to
+     * fresh nodes whenever a recorded walk has been discarded, and a span survives that where an object
      * handle does not.
      *
      * This is the scope a reader folding one ARGUMENT of that call must use. The method's end scope answers
@@ -216,11 +231,9 @@ final class FileAnalyzer
      * reassigns its status parameter after forwarding it makes the two disagree, with the end scope naming
      * a value the callee never received.
      */
-    public function scopeAtCall(string $file, Node\Expr\New_|Node\Expr\StaticCall $call): ?Scope
+    public function scopeAtCall(string $file, Node\Expr\New_|Node\Expr\StaticCall|Node\Expr\MethodCall $call): ?Scope
     {
-        $position = $call->getStartFilePos();
-
-        return $position < 0 ? null : ($this->harvest($file)['calls'][$position] ?? null);
+        return $call->getStartFilePos() < 0 ? null : ($this->harvest($file)['calls'][self::spanKey($call)] ?? null);
     }
 
     /**
@@ -271,20 +284,102 @@ final class FileAnalyzer
      * Whether a read of `$variable` — a member of it, or the variable itself where `$member` is false —
      * ending at offset `$after` still gives the same value anywhere later in the scope's body ({@see scopeKey()}):
      * nothing after it writes the variable, and, for a member, nothing names the variable except to read a
-     * property of it or call one of its methods with no arguments. A call with arguments (`->setStatusCode(503)`)
-     * or the object handed on may have changed what the member gives, so a value named before one is not
+     * property of it, call one of its methods with no arguments, test its class, or make a call that keeps the
+     * object as it was ({@see StateKeepingCalls}). Any other call (`->setStatusCode(503)`), or the object handed
+     * where it cannot be followed, may have changed what the member gives, so a value named before one is not
      * what the read gives at the return.
+     *
+     * @param  ?Closure(string): void  $touch  records each file a call's answer was read out of
      */
-    public function readHolds(string $file, string $key, int $after, string $variable, bool $member): bool
+    public function readHolds(string $file, string $key, int $after, string $variable, bool $member, ?Closure $touch = null): bool
     {
         $harvest = $this->harvest($file);
         foreach ($harvest['mentions'][$key][$variable] ?? [] as $at) {
-            if ($at > $after && (isset($harvest['written'][$at]) || ($member && ! isset($harvest['members'][$at])))) {
+            if ($at <= $after) {
+                continue;
+            }
+            if (isset($harvest['written'][$at])
+                || ($member && ! isset($harvest['members'][$at]) && ! $this->kept($harvest['handed'][$at] ?? null, $touch))
+            ) {
                 return false;
             }
         }
 
         return true;
+    }
+
+    /**
+     * Whether the call made on the variable mentioned at offset `$at`, or handed it there, keeps the object it
+     * holds ({@see StateKeepingCalls}). `$madeOn` is the call made on it, which the harvest records only where
+     * it takes arguments.
+     *
+     * @param  ?Closure(string): void  $touch
+     */
+    public function keepsAt(string $file, int $at, ?Node\Expr\MethodCall $madeOn, ?Closure $touch = null): bool
+    {
+        $call = $this->harvest($file)['handed'][$at] ?? null;
+        if ($call === null && $madeOn !== null) {
+            $scope = $this->scopeAtCall($file, $madeOn);
+            $call = $scope === null ? null : [$madeOn, null, $scope];
+        }
+
+        return $this->kept($call, $touch);
+    }
+
+    /**
+     * The statements of the innermost method, function or closure in the file whose body holds offset `$at`,
+     * or null where none does.
+     *
+     * @return list<Node\Stmt>|null
+     */
+    public function bodyAround(string $file, int $at): ?array
+    {
+        $harvest = $this->harvest($file);
+        $bodies = [
+            ...array_map(static fn (MethodReturnStatementsNode $node): array => $node->getStatements(), array_values($harvest['methods'])),
+            ...array_map(static fn (FunctionReturnStatementsNode $node): array => $node->getStatements(), array_values($harvest['functions'])),
+            ...array_map(static fn (ClosureReturnStatementsNode $node): array => $node->getClosureExpr()->stmts, array_values($harvest['closures'])),
+        ];
+
+        $found = null;
+        $from = -1;
+        foreach ($bodies as $statements) {
+            $statements = array_values($statements);
+            $first = $statements[0] ?? null;
+            $last = $statements[count($statements) - 1] ?? null;
+            if ($first !== null && $last !== null && $first->getStartFilePos() <= $at && $last->getEndFilePos() >= $at && $first->getStartFilePos() > $from) {
+                [$found, $from] = [$statements, $first->getStartFilePos()];
+            }
+        }
+
+        return $found;
+    }
+
+    /**
+     * Whether a call keeps the object it is made on or handed, recording every file the answer was read out of.
+     *
+     * @param  array{Node\Expr\CallLike, ?Node\Arg, Scope}|null  $call
+     * @param  ?Closure(string): void  $touch
+     */
+    private function kept(?array $call, ?Closure $touch): bool
+    {
+        if ($call === null) {
+            return false;
+        }
+
+        try {
+            [$kept, $read] = $this->keeping->atCall(...$call);
+        } catch (Throwable) {
+            return false; // a type PHPStan could not resolve: nothing says the call kept it
+        }
+
+        if ($touch !== null) {
+            foreach ($read as $file) {
+                $touch($file);
+            }
+        }
+
+        return $kept;
     }
 
     /**
@@ -322,6 +417,8 @@ final class FileAnalyzer
 
         /** @var array<string, MethodReturnStatementsNode> $methods `Class::method` → its returns */
         $methods = [];
+        /** @var array<string, FunctionReturnStatementsNode> $functions by lower-cased name, as PHP matches one */
+        $functions = [];
         /** @var array<int, ClosureReturnStatementsNode> $closures by start offset */
         $closures = [];
         /** @var array<int, array{Node\Expr\ArrowFunction, Scope}> $arrows by start offset, with the scope inside */
@@ -330,7 +427,7 @@ final class FileAnalyzer
         $arrays = [];
         /** @var array<string, array<string, array{Node\Expr, Scope}|null>> $locals */
         $locals = [];
-        /** @var array<int, Scope> $calls the scope at each construction/static call, by start offset */
+        /** @var array<string, Scope> $calls the scope at each call a status read folds an argument of, by span */
         $calls = [];
         /** @var array<string, true> $opaque scopes where a write named no single local */
         $opaque = [];
@@ -340,18 +437,25 @@ final class FileAnalyzer
         $ternaries = [];
         /** @var array<string, array<string, list<int>>> $mentions each variable's offsets, by scope, {@see readHolds()} */
         $mentions = [];
-        /** @var array<int, true> $members offsets of a variable a member is read off, with no arguments */
+        /** @var array<int, true> $members offsets of a variable a member is read off, with no arguments, or whose class is tested */
         $members = [];
         /** @var array<int, true> $written offsets of a variable written, itself or through what it holds */
         $written = [];
+        /** @var array<int, array{Node\Expr\CallLike, ?Node\Arg, Scope}> $handed offsets of a variable a call is made on with arguments, or handed to */
+        $handed = [];
 
-        $this->walks->walk($file, function (Node $node, Scope $scope) use (&$methods, &$closures, &$arrows, &$arrays, &$locals, &$calls, &$opaque, &$evaluated, &$ternaries, &$mentions, &$members, &$written): void {
+        $this->walks->walk($file, function (Node $node, Scope $scope) use (&$methods, &$functions, &$closures, &$arrows, &$arrays, &$locals, &$calls, &$opaque, &$evaluated, &$ternaries, &$mentions, &$members, &$written, &$handed): void {
             // Watching for these virtual nodes is the sanctioned way to pair returns with refined scope.
             // Collected first and outside the guard below, so that a reader wanting only a method body — the
             // throw analyzer, the tracer descending into a callee — never pays for the write half's failures.
             // @phpstan-ignore phpstanApi.instanceofAssumption
             if ($node instanceof MethodReturnStatementsNode) {
                 $methods[$node->getClassReflection()->getName().'::'.$node->getMethodName()] = $node;
+            }
+
+            // @phpstan-ignore phpstanApi.instanceofAssumption
+            if ($node instanceof FunctionReturnStatementsNode) {
+                $functions[strtolower($node->getFunctionReflection()->getName())] = $node;
             }
 
             // @phpstan-ignore phpstanApi.instanceofAssumption
@@ -368,13 +472,14 @@ final class FileAnalyzer
                 $arrows[$node->getOriginalNode()->getStartFilePos()] = [$node->getOriginalNode(), $scope];
             }
 
-            // The two call forms whose arguments a status read folds ({@see scopeAtCall()}), paired with the
-            // scope they are evaluated in. Collected here rather than on a walk of their own, so the pairing
-            // is the same walk's and costs nothing beyond the entry.
-            if (($node instanceof Node\Expr\New_ || $node instanceof Node\Expr\StaticCall)
+            // The call forms whose arguments a status read folds ({@see scopeAtCall()}), paired with the scope
+            // they are evaluated in. Collected here rather than on a walk of their own, so the pairing is the
+            // same walk's and costs nothing beyond the entry. Keyed by span, since `Foo::make()->send()` starts
+            // two of them at one offset.
+            if (($node instanceof Node\Expr\New_ || $node instanceof Node\Expr\StaticCall || $node instanceof Node\Expr\MethodCall)
                 && $node->getStartFilePos() >= 0
             ) {
-                $calls[$node->getStartFilePos()] = $scope;
+                $calls[self::spanKey($node)] = $scope;
             }
 
             // A ternary's branches are paired with their scopes once the walk is done, since which of a node
@@ -403,6 +508,11 @@ final class FileAnalyzer
                 }
                 foreach (self::writtenVariables($node) as $at) {
                     $written[$at] = true;
+                }
+                if ($node instanceof Node\Expr\CallLike) {
+                    foreach (self::handedVariables($node) as $at => $argument) {
+                        $handed[$at] = [$node, $argument, $scope];
+                    }
                 }
 
                 $assignment = LocalWrites::assignment($node);
@@ -455,6 +565,7 @@ final class FileAnalyzer
 
         return $this->cache[$normalised] = [
             'methods' => $methods,
+            'functions' => $functions,
             'closures' => $closures,
             'arrows' => $arrows,
             'arrays' => $arrays,
@@ -464,15 +575,20 @@ final class FileAnalyzer
             'mentions' => $mentions,
             'members' => $members,
             'written' => $written,
+            'handed' => $handed,
         ];
     }
 
     /**
-     * The variable's offset, where the node reads a member straight off a variable: a property, or a method
-     * called with no arguments.
+     * The variable's offset, where the node reads a member straight off a variable — a property, or a method
+     * called with no arguments — or tests its class.
      */
     private static function memberRead(Node $node): ?int
     {
+        if ($node instanceof Node\Expr\Instanceof_) {
+            return $node->expr instanceof Node\Expr\Variable ? $node->expr->getStartFilePos() : null;
+        }
+
         $called = $node instanceof Node\Expr\MethodCall || $node instanceof Node\Expr\NullsafeMethodCall;
         if (! $called && ! $node instanceof Node\Expr\PropertyFetch && ! $node instanceof Node\Expr\NullsafePropertyFetch) {
             return null;
@@ -481,6 +597,34 @@ final class FileAnalyzer
         return $node->var instanceof Node\Expr\Variable && (! $called || (! $node->isFirstClassCallable() && $node->getArgs() === []))
             ? $node->var->getStartFilePos()
             : null;
+    }
+
+    /**
+     * Where the node is a call: the offset of a variable it is made on with arguments (to null), and of each
+     * variable it is handed as an argument (to that argument), for {@see readHolds()} to ask whether it kept them.
+     *
+     * @return array<int, ?Node\Arg>
+     */
+    private static function handedVariables(Node\Expr\CallLike $node): array
+    {
+        if ($node->isFirstClassCallable()) {
+            return [];
+        }
+
+        $handed = [];
+        if (($node instanceof Node\Expr\MethodCall || $node instanceof Node\Expr\NullsafeMethodCall)
+            && $node->var instanceof Node\Expr\Variable
+            && $node->getArgs() !== []
+        ) {
+            $handed[$node->var->getStartFilePos()] = null;
+        }
+        foreach ($node->getArgs() as $argument) {
+            if ($argument->value instanceof Node\Expr\Variable && ! $argument->unpack) {
+                $handed[$argument->value->getStartFilePos()] = $argument;
+            }
+        }
+
+        return $handed;
     }
 
     /**

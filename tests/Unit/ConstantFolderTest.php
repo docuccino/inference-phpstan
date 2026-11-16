@@ -230,3 +230,18 @@ it('folds a type to the one value it pins, and to nothing where it could be more
     'null' => [new NullType, 'null'],
     'anything' => [new MixedType, null],
 ]);
+
+it('keeps the keys an array literal writes, so a reader that takes a map can rebuild it', function (string $code, ?array $keys, string $rendered): void {
+    // `new Dimensions(['min_width' => '10'])` means its keys: without them it is a list nothing can rebuild.
+    $value = ConstantFolder::fold(foldableExpr($code), foldingScope($this->createStub(Scope::class)), ['key' => ConstValue::scalar('min_width')]);
+
+    expect($value?->keys)->toBe($keys)
+        ->and($value?->render())->toBe($rendered);
+})->with([
+    'every item keyed' => ["['min_width' => '10', 'max_height' => '20']", ['min_width', 'max_height'], "['min_width' => '10', 'max_height' => '20']"],
+    'one item keyed beside one that is not' => ["['ratio' => '3/2', 'a']", ['ratio', null], "['ratio' => '3/2', 'a']"],
+    'a bound key' => ['[$key => \'10\']', ['min_width'], "['min_width' => '10']"],
+    'a list' => ["['a', 'b']", null, "['a', 'b']"],
+    // A key that does not fold could be any key, so no key of the array is kept.
+    'a key nothing can read' => ["['min_width' => '10', \$other => '20']", null, "['10', '20']"],
+]);

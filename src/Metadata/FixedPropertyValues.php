@@ -24,7 +24,9 @@ use Throwable;
  * The value a property holds on every instance of its class, where PHP guarantees the class fixes it: a
  * readonly property a final class's constructor assigns once, from a literal — itself or through the
  * `parent::__construct()` it always runs — and that nothing its hierarchy declares can re-initialise on a
- * copy. Rule, and what a source read cannot see, in full: `docs/design/uir-and-extensions.md` §Discriminated unions.
+ * copy. An instance known to be exactly its class, as one built by its name is, holds it without the class
+ * being final, since no subclass's constructor ran. Rule, and what a source read cannot see, in full:
+ * `docs/design/uir-and-extensions.md` §Discriminated unions.
  *
  * @internal
  */
@@ -38,12 +40,13 @@ final class FixedPropertyValues
      *
      * @param  ReflectionClass<object>  $class  the class being described
      * @param  DType  $declared  the property's type as otherwise recovered, which the value must satisfy
+     * @param  bool  $exact  whether the instance is exactly `$class`, never a subclass's
      * @return array{type: LiteralT, files: list<string>}|null
      */
-    public function of(ReflectionClass $class, ReflectionProperty $property, DType $declared): ?array
+    public function of(ReflectionClass $class, ReflectionProperty $property, DType $declared, bool $exact = false): ?array
     {
         $constructor = $class->getConstructor();
-        if (! $class->isFinal()
+        if ((! $exact && ! $class->isFinal())
             || ! $property->isReadOnly()
             || $property->isPromoted()
             || $constructor === null

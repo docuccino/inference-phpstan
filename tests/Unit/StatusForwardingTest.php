@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+use Docuccino\Inference\PhpStan\Analysis\AccessorKind;
+use Docuccino\Inference\PhpStan\Analysis\ParamAccessor;
 use Docuccino\Inference\PhpStan\Throwing\StatusForwarding;
 use PhpParser\Node;
 use PhpParser\ParserFactory;
@@ -86,6 +88,40 @@ it('finds the argument a call puts in a slot, however it was written', function 
     // A spread written out as a plain list IS its arguments; any other spread makes the position opaque.
     'a spread written as a list' => ["parent::__construct(...[422, 'no']);", 0, ['statusCode', 'message'], '422'],
     'a spread of something unreadable' => ['parent::__construct(...$args);', 0, ['statusCode', 'message'], null],
+]);
+
+it('names the local an argument forwards and how the status comes off it', function (string $argument, ?string $parentRead, ?string $expected): void {
+    // A parent taking the status itself (`$parentRead` null) can be handed it read off an enum case the
+    // constructor was given, which a construction then folds on the case it passes. A parent that already
+    // reads its slot through a case can only be handed the case: a read of a read is two folds away.
+    $statement = forwardingStmts($argument.';')[0];
+    expect($statement)->toBeInstanceOf(Node\Stmt\Expression::class);
+    assert($statement instanceof Node\Stmt\Expression);
+
+    $forwarded = StatusForwarding::forwarded($statement->expr, match ($parentRead) {
+        null => null,
+        'status()' => new ParamAccessor('reason', AccessorKind::Method, 'status'),
+        default => new ParamAccessor('reason', AccessorKind::Value),
+    });
+
+    expect($forwarded === null ? null : '$'.$forwarded[0].match ($forwarded[1]?->kind) {
+        null => '',
+        AccessorKind::Method => '->'.$forwarded[1]->method.'()',
+        default => '->'.strtolower($forwarded[1]->kind->name),
+    })->toBe($expected);
+})->with([
+    'the status itself' => ['$statusCode', null, '$statusCode'],
+    'a case handed to a parent that reads it' => ['$reason', 'status()', '$reason->status()'],
+    'a case handed to a parent reading its value' => ['$status', '->value', '$status->value'],
+    'a method read off a case' => ['$reason->status()', null, '$reason->status()'],
+    'a backing value read off a case' => ['$status->value', null, '$status->value'],
+    // Neither is a read off the case alone: the name is a string, and an argument makes it another call.
+    'a case\'s name' => ['$reason->name', null, null],
+    'a method taking arguments' => ['$reason->status($fallback)', null, null],
+    'a first-class callable' => ['$reason->status(...)', null, null],
+    'a read on something that is not a local' => ['$this->reason->status()', null, null],
+    'a read of a read' => ['$reason->escalated()', 'status()', null],
+    'a literal' => ['409', null, null],
 ]);
 
 it('finds every `new` a body makes of the class', function (string $code, int $found): void {

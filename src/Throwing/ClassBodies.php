@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Docuccino\Inference\PhpStan\Throwing;
 
+use Docuccino\Inference\PhpStan\Analysis\ParamAccessor;
 use PhpParser\Node;
 
 /**
@@ -24,15 +25,19 @@ interface ClassBodies
     public function methods(string $file, string $class): array;
 
     /**
-     * The constant integer `$expr` folds to where it is WRITTEN — in the scope at `$at`, the call it is an
-     * argument of. A literal and a class constant alike; null where it is not one.
+     * The status `$expr` states where it is WRITTEN — in the scope at `$at`, the call it is an argument of.
+     * A literal and a class constant alike, or a read on an enum case ({@see CaseStatus}); `$read` is how a
+     * slot whose class reads its argument through `->status()` or `->value` turns the case into a status.
+     * The files are the declarations the fold went through beyond the body, whether or not it folded.
      *
      * The call is named rather than the method, because the scope at the end of a body answers a different
      * question: what a variable holds once the body has finished. A constructor that reassigns its status
      * parameter after forwarding it makes the two disagree, and the end scope's answer is a value the callee
      * never received.
+     *
+     * @return array{status: int|null, files: list<string>}
      */
-    public function foldInt(string $file, Node\Expr $expr, Node\Expr\New_|Node\Expr\StaticCall $at): ?int;
+    public function foldStatus(string $file, Node\Expr $expr, Node\Expr\New_|Node\Expr\StaticCall|Node\Expr\MethodCall $at, ?ParamAccessor $read): array;
 
     /**
      * The constant integer default of parameter `$index` of `$class::$method`, as WRITTEN in `$file` — the

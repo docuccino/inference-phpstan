@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace Docuccino\Inference\PhpStan\Runtime;
 
+use PhpParser\Node\Expr;
 use PHPStan\Analyser\Scope;
 use PHPStan\Reflection\ReflectionProvider;
+use PHPStan\Type\Type;
 
 /**
  * The single seam onto PHPStan's non-BC-covered plumbing (`ContainerFactory`, `NodeScopeResolver`, the
@@ -63,6 +65,12 @@ interface RuntimeAdapter
      * that produced it and the adapter does whichever its analyser needs — on 2.2.10+ that is nothing.
      */
     public function stableScope(Scope $scope): Scope;
+
+    /**
+     * A stabilised scope in which `$expr` is known to hold `$type`, as an assignment to it would leave it:
+     * every expression read through it is typed from that, so a body can be read for one call to it.
+     */
+    public function holding(Scope $scope, Expr $expr, Type $type): Scope;
 
     /** The container's reflection provider (autoloader-backed, lazy). */
     public function reflectionProvider(): ReflectionProvider;

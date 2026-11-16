@@ -7,7 +7,6 @@ namespace Docuccino\Inference\PhpStan\Trace;
 use Docuccino\Core\Inference\ConstValue;
 use Docuccino\Core\Inference\FoldsCallReturns;
 use Docuccino\Inference\PhpStan\Analysis\FileAnalyzer;
-use PHPStan\Reflection\ParameterReflection;
 use PHPStan\Reflection\ReflectionProvider;
 
 /**
@@ -37,7 +36,7 @@ final class ReturnValueFolder
      */
     public function fold(Callee $callee, array $positional, array $named): ?FoldedReturn
     {
-        $node = $this->fileAnalyzer->method($callee->file, $callee->class, $callee->method);
+        $node = $this->fileAnalyzer->callee($callee);
         if ($node === null) {
             return null;
         }
@@ -74,7 +73,7 @@ final class ReturnValueFolder
     private function bindings(Callee $callee, array $positional, array $named): array
     {
         $bindings = [];
-        foreach ($this->parameters($callee) as $index => $parameter) {
+        foreach ($callee->parameters($this->reflectionProvider) as $index => $parameter) {
             if ($parameter->isVariadic()) {
                 break;
             }
@@ -91,21 +90,5 @@ final class ReturnValueFolder
         }
 
         return $bindings;
-    }
-
-    /**
-     * @return list<ParameterReflection>
-     */
-    private function parameters(Callee $callee): array
-    {
-        if (! $this->reflectionProvider->hasClass($callee->class)) {
-            return [];
-        }
-        $class = $this->reflectionProvider->getClass($callee->class);
-        if (! $class->hasNativeMethod($callee->method)) {
-            return [];
-        }
-
-        return $class->getNativeMethod($callee->method)->getVariants()[0]->getParameters();
     }
 }

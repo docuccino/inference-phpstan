@@ -5,14 +5,15 @@ declare(strict_types=1);
 namespace Docuccino\Inference\PhpStan\Throwing;
 
 use Docuccino\Inference\PhpStan\Analysis\FileAnalyzer;
+use Docuccino\Inference\PhpStan\Analysis\ParamAccessor;
 use PhpParser\Node;
 use PHPStan\Type\Constant\ConstantIntegerType;
 
 /**
  * The analyser's answer to {@see ClassBodies}: bodies off the file harvest, and folding through the scope
  * the harvest paired with the CALL the expression is an argument of, so a class constant
- * (`Response::HTTP_CONFLICT`) reads the same as the literal beside it and a variable reads as what the
- * callee was actually handed.
+ * (`Response::HTTP_CONFLICT`) reads the same as the literal beside it, a variable reads as what the
+ * callee was actually handed, and an enum case reads as the status its method maps it to.
  *
  * A parameter default comes off the same harvest, out of PHPStan's own reflection of the parsed
  * declaration — the analyser resolves the initialiser to a type without running it, which is the whole
@@ -22,7 +23,10 @@ use PHPStan\Type\Constant\ConstantIntegerType;
  */
 final class AnalyzedBodies implements ClassBodies
 {
-    public function __construct(private readonly FileAnalyzer $fileAnalyzer) {}
+    public function __construct(
+        private readonly FileAnalyzer $fileAnalyzer,
+        private readonly CaseStatus $cases,
+    ) {}
 
     public function methods(string $file, string $class): array
     {
@@ -38,16 +42,11 @@ final class AnalyzedBodies implements ClassBodies
         return $methods;
     }
 
-    public function foldInt(string $file, Node\Expr $expr, Node\Expr\New_|Node\Expr\StaticCall $at): ?int
+    public function foldStatus(string $file, Node\Expr $expr, Node\Expr\New_|Node\Expr\StaticCall|Node\Expr\MethodCall $at, ?ParamAccessor $read): array
     {
         $scope = $this->fileAnalyzer->scopeAtCall($file, $at);
-        if ($scope === null) {
-            return null;
-        }
 
-        $type = $scope->getType($expr);
-
-        return $type instanceof ConstantIntegerType ? $type->getValue() : null;
+        return $scope === null ? ['status' => null, 'files' => []] : $this->cases->of($expr, $scope, $read);
     }
 
     public function intDefault(string $file, string $class, string $method, int $index): ?int

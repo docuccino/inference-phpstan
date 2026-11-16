@@ -6,8 +6,10 @@ namespace Docuccino\Inference\PhpStan\Tests\Support;
 
 use Docuccino\Inference\PhpStan\Runtime\RuntimeAdapter;
 use Docuccino\Inference\PhpStan\Runtime\RuntimeAdapterFactory;
+use PhpParser\Node\Expr;
 use PHPStan\Analyser\Scope;
 use PHPStan\Reflection\ReflectionProvider;
+use PHPStan\Type\Type;
 
 /**
  * A pass-through {@see RuntimeAdapter} that counts `processFile()` per normalised file. Substituted into a
@@ -57,6 +59,11 @@ final class CountingRuntimeAdapter implements RuntimeAdapter
     public function stableScope(Scope $scope): Scope
     {
         return $this->inner->stableScope($scope);
+    }
+
+    public function holding(Scope $scope, Expr $expr, Type $type): Scope
+    {
+        return $this->inner->holding($scope, $expr, $type);
     }
 
     public function reflectionProvider(): ReflectionProvider

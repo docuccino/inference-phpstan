@@ -118,4 +118,93 @@ it('publishes the status each construction shape writes', function (string $meth
     // analyser's walk of that file holds no bodies at all because PHPStan reads a trait in the using
     // class's context. So the honest answer is no status, with the notice beside it.
     'a factory the class gets from a trait' => ['traitFactoryStatus', ['ExportThrottledException@null']],
+    // A refusal whose constructor hands its parent `$reason->status()`: the status is whatever the case
+    // passed at the throw maps to in the enum's `match ($this)`, so one class answers each case's own.
+    // Read through an inherited constructor typed to the enum's INTERFACE, which names no case at all.
+    'a reason enum\'s status, read through the constructor' => ['enumReasonStatus', ['Refused@401']],
+    'the same class with a case mapping to another status' => ['otherEnumReasonStatus', ['Refused@409']],
+    // …and a reason only chosen at run time, whose cases map to 401 and 409. A throw carries one status,
+    // so naming either would be a guess: no status, with the notice, as `abort($a ? 403 : 404)` answers.
+    'a reason chosen at run time, whose cases disagree' => ['runtimeEnumReasonStatus', ['Refused@null']],
+    // …and one narrowed before the throw to the two cases that both map to 401: every value it can be
+    // answers 401, so that is the status, chosen at run time or not.
+    'a reason narrowed to cases that agree' => ['narrowedEnumReasonStatus', ['Refused@401']],
+    // The same read through `->value`, where the enum's backing value IS the status.
+    'a case\'s backing value, read through the constructor' => ['enumValueStatus', ['ExportFaultException@410']],
+    // The same reads where nothing forwards anything: the argument to abort() is the case's status itself.
+    'abort() with a case\'s backing value' => ['abortEnumValue', ['HttpException@423']],
+    'abort() with a case\'s mapped status' => ['abortEnumStatus', ['HttpException@409']],
+    'abort() through a method returning the case\'s own value' => ['abortEnumStatusCode', ['HttpException@410']],
+    // A method choosing by early return: `Expired` never reaches the `return 409` guarded for another
+    // case, so reading the first return in the body would publish another case's status.
+    'abort() through a method that chooses by early return' => ['abortEnumEarlyReturn', ['HttpException@401']],
+    // A named constructor choosing the case is the factory idiom, folded in the factory.
+    'a named constructor choosing the reason' => ['enumReasonInFactory', ['RotationRefused@401']],
+    // One handed the case reads it as the factory's own parameter, where it may be any case: the throw's
+    // argument is not carried into the factory, for a reason as for a number.
+    'a named constructor handed the reason' => ['enumReasonThroughFactory', ['RotationRefused@null']],
 ])->group('fixture');
+
+it('reads a case looked up by its value as that case', function (): void {
+    // `ExportFault::from(423)` is the case whose value is 423, so the refusal is a 423.
+    expect(signalThrows('enumFromStatus'))->toContain('ExportFaultException@423');
+})->group('fixture');
+
+it('publishes what a case lookup can throw for the value it is handed', function (string $method, array $expected): void {
+    $throws = [];
+    /** @var list<array<string, mixed>> $raw */
+    $raw = throwsAnalysis($method)['throws'];
+    foreach ($raw as $throw) {
+        if (in_array($throw['exceptionFqcn'], ['TypeError', 'ValueError'], true)) {
+            $throws[] = $throw['exceptionFqcn'].' '.$throw['confidence'].' '.$throw['disposition'];
+        }
+    }
+    sort($throws);
+
+    expect($throws)->toBe($expected);
+})->with([
+    // `from()` throws ValueError for a value no case is backed by and TypeError for one PHP refuses as the
+    // backing type. 423 is an int and backs `Locked`, so the lookup cannot fail and its 500s would be a
+    // failure the server does not have.
+    'a value a case is backed by' => ['enumFromStatus', []],
+    // The same where the case's status is not what the route answers: the lookup still cannot fail.
+    'a value a case is backed by, its status unread' => ['enumLookedUp', []],
+    // An int no case is backed by always throws ValueError, and is an int, so never a TypeError.
+    'a value no case is backed by' => ['enumFromNoCase', ['ValueError certain signal']],
+    // `strict_types` refuses a string for an int-backed enum before any case is looked up.
+    'a string for an int-backed enum, under strict_types' => ['enumFromString', ['TypeError certain signal']],
+    // A value the request chooses may be any int, so either may happen and both stay as declared.
+    'a value the request chooses' => ['enumFromRuntime', ['TypeError declared signal', 'ValueError declared signal']],
+    // `tryFrom()` answers null where `from()` would throw, and declares nothing.
+    'tryFrom()' => ['enumTryFrom', []],
+])->group('fixture');
+
+it('publishes only what an operand that always throws lets out', function (string $method, array $expected): void {
+    // PHP evaluates a call's arguments before it makes the call, and a construction's before it builds
+    // the object, so an argument that always throws means the call is never made and the exception never
+    // built. What the server sends is that argument's own error. Documenting the construction as well
+    // publishes a response the route cannot give: the 404 below is never sent, and the refusals with no
+    // status would be filed under a status nothing answers with.
+    expect(signalThrows($method))->toBe($expected)
+        ->and(unreadStatusDiagnostics($method))->toBe([]);
+})->with([
+    // `from(999)`: 999 backs no case, so PHP throws a ValueError (the manual's documented failure).
+    'a refusal built from a value no case backs' => ['enumFromNoCase', ['ValueError@500']],
+    // Under `strict_types` a string for an int-backed enum is a TypeError before any case is looked up.
+    'a refusal built from a value of the wrong type' => ['enumFromString', ['TypeError@500']],
+    'abort() handed the lookup\'s value as its status' => ['enumFromNoCaseAbort', ['ValueError@500']],
+    'abort() handed the lookup\'s name beside a 404' => ['enumFromNoCaseMessage', ['ValueError@500']],
+    // A `throw` expression always throws, so the refusal it is handed to is never built.
+    'a refusal handed a throw expression' => ['throwExpressionArgument', ['LogicException@500']],
+    // The boundary: a lookup a case backs completes, so the refusal is built and thrown.
+    'a refusal built from a value a case backs' => ['enumFromStatus', ['ExportFaultException@423']],
+])->group('fixture');
+
+it('documents no response for a return whose value always throws first', function (): void {
+    // The response's status is read off a lookup that always throws, so `response()->json()` is never
+    // called and nothing is returned: the request gets the lookup's 500 and no other answer.
+    $analysis = throwsAnalysis('enumFromNoCaseReturn');
+
+    expect($analysis['returns'])->toBe([])
+        ->and(signalThrows('enumFromNoCaseReturn'))->toBe(['ValueError@500']);
+})->group('fixture');

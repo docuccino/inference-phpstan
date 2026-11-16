@@ -5,9 +5,11 @@ declare(strict_types=1);
 use Docuccino\Core\Inference\ActionAnalysis;
 use Docuccino\Core\Inference\DType\ArrayShapeT;
 use Docuccino\Core\Inference\DType\ClassT;
+use Docuccino\Core\Inference\DType\DType;
 use Docuccino\Core\Inference\DType\LiteralT;
 use Docuccino\Core\Inference\DType\StatusMarkerT;
 use Docuccino\Core\Inference\DType\UnknownT;
+use Docuccino\Core\Inference\ReturnSite;
 use Docuccino\Inference\PhpStan\Tests\Support\FixtureRunner;
 
 /**
@@ -637,9 +639,8 @@ function refinedReturn(string $relPath, string $class, string $method): array
 }
 
 it('refuses the shape when the local is written again by a form that is not an assignment', function (string $method): void {
-    // Each arm names a 418 body first and then replaces the local — destructured, bound by a `foreach`, or
-    // written by a callee through a reference. Serving the first expression would publish a Teapot body for
-    // a response that carries somebody else's.
+    // Each arm names a 418 body first and then replaces the local — destructured, or bound by a `foreach`.
+    // Serving the first expression would publish a Teapot body for a response that carries somebody else's.
     $return = refinedReturn(
         'app/Exceptions/RebuiltProblemRenderer.php',
         'App\\Exceptions\\RebuiltProblemRenderer',
@@ -652,8 +653,16 @@ it('refuses the shape when the local is written again by a form that is not an a
 })->with([
     'list destructuring' => ['destructured'],
     'a foreach value binding' => ['iterated'],
-    'a by-reference argument' => ['relabelled'],
 ])->group('fixture');
+
+it('claims neither the replaced body nor any status where a callee handed the local may have rewritten it', function (): void {
+    // `$this->relabel($response)` writes the local through a reference: whatever it holds at the return, the
+    // Teapot body and its 418 are not known to be it, and nor is the framework's 200 the bare class states.
+    $analysis = ActionAnalysis::fromArray(FixtureRunner::analyzeCallable('app/Exceptions/RebuiltProblemRenderer.php', 'App\\Exceptions\\RebuiltProblemRenderer', 'relabelled'));
+
+    expect(array_map(static fn (ReturnSite $site): DType => $site->type, $analysis->returns))
+        ->toEqual([new ClassT('Illuminate\\Http\\JsonResponse', [new UnknownT('payload not folded'), new UnknownT('status not folded')])]);
+})->group('fixture');
 
 it('keeps two same-named methods in one file from answering for each other', function (): void {
     // `DecoratedProblemRenderer::render()` returns the response it was HANDED; the inline renderer beside it
@@ -749,14 +758,14 @@ it('reads a status it cannot fold as unknown, never as the one the body-builder 
     ])->and($type instanceof ClassT ? $type->typeArgs[1] ?? null : null)->toBeInstanceOf(UnknownT::class);
 })->group('fixture');
 
-it('refuses a whole chain when a link may have rewritten the body', function (): void {
-    // `->setData(...)` returns `static` exactly as `->setStatusCode()` does, so passing the receiver's
-    // payload through would publish a body the endpoint replaced. The guard is the same function as the
-    // fold: a mutation of a response it does not model takes the chain with it, status included.
+it('reads the body a link replaced, and the status a later link set', function (): void {
+    // `(new JsonResponse)->setData(['digest' => 'ok'])->setStatusCode(202)` sends `{"digest": "ok"}` with a
+    // 202: `setData()` replaces the body and nothing else, so neither the empty body the response was built
+    // with nor the 200 it would have been sent with is what goes out.
     expect(fluentShape('digest'))->toBe([
-        'status' => null,
+        'status' => 202,
         'contentType' => null,
-        'keys' => [],
+        'keys' => ['digest'],
     ]);
 })->group('fixture');
 

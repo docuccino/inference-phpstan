@@ -51,6 +51,10 @@ it('names the class whose HTTP status it could not read', function (string $meth
     // Reached through descent, which is what makes the SITE the notice names worth checking: the
     // throw is a call away from the action.
     'a throw a call away, in an injected collaborator' => ['deepUnreadHttpStatus', 'App\\Exceptions\\ExportConflictException'],
+    // A reason enum chosen at run time whose cases map to two statuses, and a named constructor handed one:
+    // the author can pass the case at the throw, which is what the notice asks for.
+    'a reason chosen at run time, whose cases disagree' => ['runtimeEnumReasonStatus', 'App\\Exceptions\\Refused'],
+    'a named constructor handed the reason' => ['enumReasonThroughFactory', 'App\\Exceptions\\RotationRefused'],
 ])->group('fixture');
 
 /**
@@ -143,4 +147,13 @@ it('says nothing where the status read, and nothing about a class the author doe
     'manifestStatusDeclaredByCallee',
     'manifestStatusDeclaredNotFound',
     'modularDeclaredStatus',
+    // A status read off a reason enum, at the throw, in abort() and in a named constructor.
+    'enumReasonStatus',
+    'otherEnumReasonStatus',
+    'narrowedEnumReasonStatus',
+    'enumValueStatus',
+    'abortEnumStatus',
+    'abortEnumStatusCode',
+    'abortEnumEarlyReturn',
+    'enumReasonInFactory',
 ])->group('fixture');

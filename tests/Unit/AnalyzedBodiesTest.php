@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 use Docuccino\Inference\PhpStan\Analysis\FileAnalyzer;
 use Docuccino\Inference\PhpStan\Runtime\FileWalks;
+use Docuccino\Inference\PhpStan\Support\ProjectFilter;
 use Docuccino\Inference\PhpStan\Tests\Support\ScriptedRuntimeAdapter;
 use Docuccino\Inference\PhpStan\Throwing\AnalyzedBodies;
+use Docuccino\Inference\PhpStan\Throwing\CaseStatus;
 use Docuccino\Inference\PhpStan\Throwing\ClassBodies;
 use PhpParser\Node;
 use PhpParser\NodeFinder;
@@ -34,7 +36,9 @@ function analyzedBodiesOver(string $code, ?Scope $scope): array
 
     $adapter = new ScriptedRuntimeAdapter(['/x.php' => $scope === null ? [] : [[$call, $scope]]]);
 
-    return [new AnalyzedBodies(new FileAnalyzer($adapter, new FileWalks($adapter))), $call];
+    $files = new FileAnalyzer($adapter, new FileWalks($adapter));
+
+    return [new AnalyzedBodies($files, new CaseStatus($files, new ProjectFilter(['/'], static fn (string $file): string => $file))), $call];
 }
 
 it('folds a construction argument in the scope the walk paired with that call', function (): void {
@@ -43,7 +47,7 @@ it('folds a construction argument in the scope the walk paired with that call', 
 
     [$bodies, $call] = analyzedBodiesOver('new X(409)', $scope);
 
-    expect($bodies->foldInt('/x.php', $call->getArgs()[0]->value, $call))->toBe(409);
+    expect($bodies->foldStatus('/x.php', $call->getArgs()[0]->value, $call, null))->toBe(['status' => 409, 'files' => []]);
 });
 
 it('folds nothing where the scope answers a type that is not one constant integer', function (): void {
@@ -52,7 +56,7 @@ it('folds nothing where the scope answers a type that is not one constant intege
 
     [$bodies, $call] = analyzedBodiesOver('new X($runtime)', $scope);
 
-    expect($bodies->foldInt('/x.php', $call->getArgs()[0]->value, $call))->toBeNull();
+    expect($bodies->foldStatus('/x.php', $call->getArgs()[0]->value, $call, null)['status'])->toBeNull();
 });
 
 it('folds nothing for a call the walk never paired a scope with', function (): void {
@@ -60,7 +64,7 @@ it('folds nothing for a call the walk never paired a scope with', function (): v
     // Answering off some other scope would fold the argument against variables it never held.
     [$bodies, $call] = analyzedBodiesOver('new X(409)', null);
 
-    expect($bodies->foldInt('/x.php', $call->getArgs()[0]->value, $call))->toBeNull();
+    expect($bodies->foldStatus('/x.php', $call->getArgs()[0]->value, $call, null)['status'])->toBeNull();
 });
 
 it('answers no bodies and no default for a file whose harvest holds no method', function (): void {

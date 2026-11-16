@@ -20,7 +20,7 @@ use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Http\ProbeTraitFactory;
 use Docuccino\Inference\PhpStan\Tests\Support\ParsedBodies;
 use Docuccino\Inference\PhpStan\Tests\Support\RecordingBodies;
 use Docuccino\Inference\PhpStan\Throwing\FactoryStatus;
-use Docuccino\Inference\PhpStan\Throwing\HttpExceptionStatus;
+use Docuccino\Inference\PhpStan\Throwing\SubclassStatus;
 
 /**
  * The one hop from a `throw X::y()` into the factory it names, over REAL exception classes: the hierarchy,
@@ -34,7 +34,7 @@ function factoryStatuses(bool $projectSeesTheFile = true): FactoryStatus
 
     $filter = factoryProjectFilter($projectSeesTheFile);
 
-    return new FactoryStatus(new HttpExceptionStatus($bodies, $filter), $bodies, $filter);
+    return new FactoryStatus(SubclassStatus::ofHttpExceptions($bodies, $filter), $bodies, $filter);
 }
 
 function factoryProjectFilter(bool $sees): ProjectFilter
@@ -92,7 +92,7 @@ it('records the factory file, read or refused', function (bool $projectSeesTheFi
 it('never reads the factory of a class that pins a LITERAL', function (): void {
     $bodies = new RecordingBodies(new ParsedBodies);
     $filter = factoryProjectFilter(true);
-    $factories = new FactoryStatus(new HttpExceptionStatus($bodies, $filter), $bodies, $filter);
+    $factories = new FactoryStatus(SubclassStatus::ofHttpExceptions($bodies, $filter), $bodies, $filter);
 
     // `new self(409)` is the same construction the rows above fold to 409 on a class that pins nothing. Here
     // the class pins 410 with a literal, so it forwards no slot at all: no file is recorded and no
@@ -116,7 +116,7 @@ it('DOES read the factory of a class pinned by its constructor default, and agre
 it('reads one factory once, however many routes throw it', function (): void {
     $bodies = new RecordingBodies(new ParsedBodies);
     $filter = factoryProjectFilter(true);
-    $factories = new FactoryStatus(new HttpExceptionStatus($bodies, $filter), $bodies, $filter);
+    $factories = new FactoryStatus(SubclassStatus::ofHttpExceptions($bodies, $filter), $bodies, $filter);
 
     $first = $factories->forFactory(ProbeScanFactory::class, 'detected');
     $folds = count($bodies->folded);

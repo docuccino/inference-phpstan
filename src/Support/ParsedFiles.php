@@ -23,6 +23,9 @@ final class ParsedFiles
     /** @var array<string, list<Node\Stmt>> file → its name-resolved statements */
     private array $files = [];
 
+    /** @var array<string, array<Node\Stmt>|null> `class::method` → the statements of its body */
+    private array $bodies = [];
+
     /** @return list<Node\Stmt> */
     public function statements(string $file): array
     {
@@ -55,8 +58,13 @@ final class ParsedFiles
      */
     public function body(ReflectionMethod $method): ?array
     {
+        $key = $method->class.'::'.$method->name;
+        if (array_key_exists($key, $this->bodies)) {
+            return $this->bodies[$key];
+        }
+
         $file = $method->getFileName();
 
-        return is_string($file) ? MethodDeclaration::in($this->statements($file), $method)?->stmts : null;
+        return $this->bodies[$key] = is_string($file) ? MethodDeclaration::in($this->statements($file), $method)?->stmts : null;
     }
 }

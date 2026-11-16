@@ -60,9 +60,33 @@ it('names both the rejected version and the supported range when a minor is not 
 });
 
 it('reports an undetectable version as "unknown" rather than guessing', function (): void {
-    // detectVersion() swallows Composer's OutOfRangeException for a package it cannot see; the
-    // sentinel it substitutes has to reach the message, or the failure is unattributable.
+    // detectVersion() answers "unknown" for a package no installed set gives a version; the sentinel
+    // has to reach the message, or the failure is unattributable.
     $exception = UnsupportedPhpStanVersionException::forVersion('unknown', '~2.2.0 || ~2.3.0');
 
     expect($exception->getMessage())->toContain('"unknown"');
+});
+
+it('reads the version the application installed, past a set that only replaces the package', function (array $installed, ?string $expected): void {
+    // Once PHPStan's phar has loaded, its own Composer metadata is the FIRST set the process holds, and there
+    // `phpstan/phpstan` is replaced by the source package with no version of its own. A read that stopped at
+    // the first set naming the package found none, and every engine booted after the first refused to start.
+    expect(RuntimeAdapterFactory::installedVersion($installed, 'phpstan/phpstan'))->toBe($expected);
+})->with(function (): array {
+    $phar = ['root' => ['name' => 'phpstan/phpstan-src'], 'versions' => [
+        'phpstan/phpstan' => ['dev_requirement' => false, 'replaced' => ['2.3.x']],
+        'phpstan/phpstan-src' => ['pretty_version' => '2.3.5'],
+    ]];
+    $application = ['root' => ['name' => 'laravel/laravel'], 'versions' => [
+        'phpstan/phpstan' => ['pretty_version' => '2.3.5', 'dev_requirement' => true],
+    ]];
+
+    return [
+        'the application alone' => [[$application], '2.3.5'],
+        'behind the phar' => [[$phar, $application], '2.3.5'],
+        'only replaced' => [[$phar], null],
+        'not installed' => [[['versions' => []]], null],
+        'nothing installed' => [[], null],
+        'a set not shaped as one' => [['nonsense', ['versions' => 'nonsense']], null],
+    ];
 });

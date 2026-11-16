@@ -99,3 +99,27 @@ it('says so where a return names no exception class', function (): void {
 
     expect(mapperUnread($analysis))->toBeTrue();
 })->group('fixture');
+
+it('reads an HttpResponseException a mapper returns as the response it carries', function (string $method, string $fqcn, string $error): void {
+    // The handler sends the response an `HttpResponseException` carries as it is, so that response is
+    // the answer, read as a `throw` of it would be: a 423 with the body written. The class alone states no
+    // status, so it keeps the 500 it falls back to, which stands only where no response could be read.
+    $analysis = mapperAnalysis($method, 'Illuminate\\Database\\Eloquent\\ModelNotFoundException');
+
+    expect(mapperTranslations($analysis))->toBe([[$fqcn, 500]])
+        ->and(mapperUnread($analysis))->toBeFalse()
+        ->and($analysis->throws[0]->response?->type->toArray())->toBe([
+            'kind' => 'class',
+            'fqcn' => 'Illuminate\\Http\\JsonResponse',
+            'typeArgs' => [
+                ['kind' => 'arrayShape', 'isList' => false, 'fields' => [
+                    ['key' => 'error', 'type' => ['kind' => 'literal', 'base' => 'string', 'value' => $error], 'optional' => false],
+                ]],
+                ['kind' => 'literal', 'base' => 'int', 'value' => 423],
+            ],
+        ]);
+})->with([
+    'the framework\'s own class' => ['carriedResponse', 'Illuminate\\Http\\Exceptions\\HttpResponseException', 'gone_elsewhere'],
+    // A subclass is sent as whatever reaches the framework's constructor, here through its own factory.
+    'a subclass built by its factory' => ['carriedBySubclass', 'App\\Exceptions\\Relayed\\ExportRefusedException', 'locked'],
+])->group('fixture');

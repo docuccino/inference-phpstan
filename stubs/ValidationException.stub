@@ -1,0 +1,17 @@
+<?php
+
+namespace Illuminate\Validation;
+
+/**
+ * Docuccino stub: `errors()` returns its validator's `errors()->messages()`, each failed field to the list of
+ * its messages, but the framework declares it a bare `array`, which reads as a list of anything. Declared as
+ * what it returns, a body built from it is published as the same errors map Laravel's own validation error
+ * renders. A subclass overriding `errors()` keeps its own declaration.
+ */
+class ValidationException extends \Exception
+{
+    /**
+     * @return array<string, array<string>>
+     */
+    public function errors() {}
+}

@@ -7,8 +7,6 @@ namespace Docuccino\Inference\PhpStan\Analysis;
 use Docuccino\Core\Inference\ComponentDeclaration;
 use Docuccino\Core\Inference\DType\ClassT;
 use Docuccino\Core\Inference\DType\DType;
-use Docuccino\Core\Inference\DType\LiteralT;
-use Docuccino\Core\Inference\DType\UnionT;
 use Docuccino\Core\Inference\DType\VoidT;
 use PhpParser\Node;
 
@@ -18,7 +16,7 @@ use PhpParser\Node;
  * from the scope-driven walk so they read (and test) without an analyser. The invariant: a subset of the
  * responses is never published as the whole, so one arm nothing could read loses them all.
  *
- * @phpstan-type Chain array{receiver: Node\Expr, status: LiteralT|UnionT|null, statusUnknown: bool, contentType: string|null, contentTypeUnknown: bool}
+ * @phpstan-import-type PeeledChain from FluentResponseChain
  *
  * @internal
  */
@@ -27,13 +25,19 @@ final class ResponseArms
     /**
      * A shape with a fluent chain's statements laid over it. A status stated on the wire beats whatever the
      * receiver carried — it is the last thing that ran — and so does it beat what the body echoed of the
-     * old one ({@see RefinedResponse::withoutStatusEchoes()}). A receiver that recovers nothing still leaves
-     * a chain worth reporting, but a shape saying nothing at all is not a response.
+     * old one ({@see RefinedResponse::withoutStatusEchoes()}); a body set or touched replaces the one it was
+     * built with. A receiver that recovers nothing still leaves a chain worth reporting, but a shape saying
+     * nothing at all is not a response.
      *
-     * @param  Chain  $chain
+     * @param  PeeledChain  $chain
      */
     public static function laid(RefinedResponse $refined, array $chain): ?RefinedResponse
     {
+        if ($chain['body'] !== null) {
+            $refined = $refined->withBody($chain['body']);
+        } elseif ($chain['bodyUnknown']) {
+            $refined = $refined->withUnreadBody();
+        }
         if ($chain['contentType'] !== null || $chain['contentTypeUnknown']) {
             $refined = $refined->withContentType($chain['contentType']);
         }
@@ -54,7 +58,7 @@ final class ResponseArms
      * The chain over every arm, or null when it leaves any of them saying nothing.
      *
      * @param  non-empty-list<RefinedResponse>  $arms
-     * @param  Chain  $chain
+     * @param  PeeledChain  $chain
      * @return non-empty-list<RefinedResponse>|null
      */
     public static function allLaid(array $arms, array $chain): ?array

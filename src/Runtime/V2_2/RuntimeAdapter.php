@@ -9,11 +9,16 @@ use Docuccino\Inference\PhpStan\Extensions\DataToResponseReturnTypeExtension;
 use Docuccino\Inference\PhpStan\Extensions\DataTransformReturnTypeExtension;
 use Docuccino\Inference\PhpStan\Extensions\ResourceCollectionReturnTypeExtension;
 use Docuccino\Inference\PhpStan\Extensions\ResourceCollectionTransformReturnTypeExtension;
+use Docuccino\Inference\PhpStan\Extensions\ResponseFactoryFacadeReturnTypeExtension;
 use Docuccino\Inference\PhpStan\Extensions\ResponseJsonReturnTypeExtension;
 use Docuccino\Inference\PhpStan\Runtime\BootFailedException;
+use Docuccino\Inference\PhpStan\Runtime\FacadeAliases;
+use Docuccino\Inference\PhpStan\Runtime\PhpDocParserCopy;
+use Docuccino\Inference\PhpStan\Runtime\RealTimeFacades;
 use Docuccino\Inference\PhpStan\Runtime\RuntimeAdapter as RuntimeAdapterContract;
 use Docuccino\Inference\PhpStan\Runtime\RuntimeConfig;
 use FilesystemIterator;
+use PhpParser\Node\Expr;
 use PHPStan\Analyser\NodeScopeResolver;
 use PHPStan\Analyser\Scope;
 use PHPStan\Analyser\ScopeContext;
@@ -23,6 +28,7 @@ use PHPStan\File\FileHelper;
 use PHPStan\Parser\Parser;
 use PHPStan\Parser\PathRoutingParser;
 use PHPStan\Reflection\ReflectionProvider;
+use PHPStan\Type\Type;
 use RecursiveDirectoryIterator;
 use RecursiveIteratorIterator;
 use SplFileInfo;
@@ -103,6 +109,9 @@ final class RuntimeAdapter implements RuntimeAdapterContract
         // Larastan boots the app from getcwd()/bootstrap/app.php — cwd must be the app root first.
         chdir($this->config->projectRoot);
 
+        // Before the container loads PHPStan's first scoped class, which registers the phar's autoloader.
+        PhpDocParserCopy::complete();
+
         $factory = new ContainerFactory($this->config->projectRoot);
         $container = $factory->create(
             $this->config->tmpDir,
@@ -123,6 +132,10 @@ final class RuntimeAdapter implements RuntimeAdapterContract
                 }
             }
         }
+
+        // After the app booted, so every alias it registers is known; before anything is analysed.
+        FacadeAliases::declare();
+        RealTimeFacades::serve();
 
         $this->nodeScopeResolver = $container->getByType(NodeScopeResolver::class);
         $this->scopeFactory = $container->getByType(ScopeFactory::class);
@@ -202,6 +215,16 @@ final class RuntimeAdapter implements RuntimeAdapterContract
         return $scope->toMutatingScope();
     }
 
+    public function holding(Scope $scope, Expr $expr, Type $type): Scope
+    {
+        // The read the analyser itself makes of an assignment, on the scope both eras stabilise to. Not
+        // BC-promised, which is why it is here; AnalyserDriftTest fails if the signature moves.
+        $mutating = $scope->toMutatingScope();
+
+        // @phpstan-ignore phpstanApi.method (the analyser's own assignment, behind this seam)
+        return $mutating->assignExpression($expr, $type, $mutating->getNativeType($expr));
+    }
+
     public function reflectionProvider(): ReflectionProvider
     {
         return $this->reflectionProvider ?? throw new BootFailedException('Adapter not booted.');
@@ -253,6 +276,7 @@ final class RuntimeAdapter implements RuntimeAdapterContract
         $services = '';
         foreach ([
             ResponseJsonReturnTypeExtension::class => 'dynamicMethodReturnTypeExtension',
+            ResponseFactoryFacadeReturnTypeExtension::class => 'dynamicStaticMethodReturnTypeExtension',
             DataToResponseReturnTypeExtension::class => 'dynamicMethodReturnTypeExtension',
             DataTransformReturnTypeExtension::class => 'dynamicMethodReturnTypeExtension',
             ResourceCollectionTransformReturnTypeExtension::class => 'dynamicMethodReturnTypeExtension',

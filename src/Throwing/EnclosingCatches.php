@@ -7,6 +7,7 @@ namespace Docuccino\Inference\PhpStan\Throwing;
 use Closure;
 use PhpParser\Node;
 use PHPStan\Node\ClosureReturnStatementsNode;
+use PHPStan\Node\FunctionReturnStatementsNode;
 use PHPStan\Node\MethodReturnStatementsNode;
 
 /**
@@ -38,7 +39,7 @@ final class EnclosingCatches
      * @param  Keeps|null  $keeps
      * @return list<Node\Name> empty where the offset is unknown
      */
-    public static function of(MethodReturnStatementsNode|ClosureReturnStatementsNode $body, Node $node, ?Closure $keeps = null): array
+    public static function of(MethodReturnStatementsNode|FunctionReturnStatementsNode|ClosureReturnStatementsNode $body, Node $node, ?Closure $keeps = null): array
     {
         return self::around(self::statements($body), $node->getStartFilePos(), $keeps);
     }
@@ -51,7 +52,7 @@ final class EnclosingCatches
      * @param  Keeps|null  $keeps
      * @return list<Node\Expr\Throw_|Node\Expr\CallLike|Node\Expr\Assign|Node\Expr\AssignRef>
      */
-    public static function rethrowsAround(MethodReturnStatementsNode|ClosureReturnStatementsNode $body, Node $node, ?Closure $keeps = null): array
+    public static function rethrowsAround(MethodReturnStatementsNode|FunctionReturnStatementsNode|ClosureReturnStatementsNode $body, Node $node, ?Closure $keeps = null): array
     {
         return self::rethrowsAt(self::statements($body), $node->getStartFilePos(), $keeps);
     }
@@ -80,7 +81,7 @@ final class EnclosingCatches
      *
      * @return list<Node\Expr\CallLike|Node\Expr\Throw_>
      */
-    public static function guarded(MethodReturnStatementsNode|ClosureReturnStatementsNode $body): array
+    public static function guarded(MethodReturnStatementsNode|FunctionReturnStatementsNode|ClosureReturnStatementsNode $body): array
     {
         return self::guardedIn(self::statements($body));
     }
@@ -339,11 +340,11 @@ final class EnclosingCatches
     }
 
     /** @return array<Node\Stmt> */
-    private static function statements(MethodReturnStatementsNode|ClosureReturnStatementsNode $body): array
+    private static function statements(MethodReturnStatementsNode|FunctionReturnStatementsNode|ClosureReturnStatementsNode $body): array
     {
-        return $body instanceof MethodReturnStatementsNode
-            ? $body->getStatements()
-            : $body->getClosureExpr()->stmts;
+        return $body instanceof ClosureReturnStatementsNode
+            ? $body->getClosureExpr()->stmts
+            : $body->getStatements();
     }
 
     /**

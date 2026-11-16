@@ -29,7 +29,7 @@ function skippedDescentsUnder(string ...$roots): SkippedDescents
     return new SkippedDescents(new ProjectFilter(array_values($roots), static fn (string $path): string => $path));
 }
 
-function skippedDescentOf(string $class, string $method, string $calleeFile, string $file, int $line): SkippedDescent
+function skippedDescentOf(?string $class, string $method, string $calleeFile, string $file, int $line): SkippedDescent
 {
     return new SkippedDescent($class, $method, $calleeFile, new SourceLocation($file, $line));
 }
@@ -65,6 +65,23 @@ it('publishes one notice naming the callee, the call site and the file it stoppe
         // The remedy names the setting and the reader's two ways out of it.
         ->and($only->help)->toContain('engine.project_paths')
         ->and($only->help)->toContain('composer.json');
+});
+
+it('names a function it stopped at by the name it is called with', function (): void {
+    // A function has no class: the notice names it as the reader writes the call, not as `::name()`.
+    $records = skippedDescentsUnder('/checkout/modules');
+    $records->record(skippedDescentOf(
+        null,
+        'Modules\\Billing\\refuseLocked',
+        '/checkout/modules/Billing/helpers.php',
+        '/checkout/app/Http/Controllers/LedgerController.php',
+        52,
+    ));
+
+    $message = $records->diagnostics(new MessagePaths(new RootRelativeSourcePathResolver('/checkout')))[0]->message;
+
+    expect($message)->toStartWith('Modules\\Billing\\refuseLocked() can throw and is called at app/Http/Controllers/LedgerController.php:52')
+        ->and($message)->toContain('modules/Billing/helpers.php');
 });
 
 /**

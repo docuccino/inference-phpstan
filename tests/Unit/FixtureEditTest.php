@@ -107,6 +107,12 @@ it('leaves the engine suite no truncating write but the ones that own their file
         'inference-phpstan/tests/Unit/FixtureEditTest.php::file_put_contents called in editableFile',
         // A neon config the row writes into a temp directory of its own and hands to one analysis.
         'inference-phpstan/tests/Unit/GeneratedNeonTest.php::file_put_contents called in {file}',
+        // A class of helpers generated at a width, in a temp file named for the process and the width, loaded
+        // once and removed when the process ends. Never in the fixture tree.
+        'inference-phpstan/tests/Unit/StateKeepingCallsTest.php::file_put_contents called in keptLayers',
+        // The package manifest one runner invocation boots its applications with, in that invocation's own
+        // temp directory, removed when it ends. Never in the fixture tree.
+        'inference-phpstan/tests/bin/contract-builds.php::file_put_contents called in contractBuilds',
     ]);
 });
 

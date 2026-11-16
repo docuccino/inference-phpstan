@@ -30,13 +30,13 @@ use Docuccino\Core\Inference\SourceLocation;
 final readonly class SkippedDescent
 {
     /**
-     * @param  string  $calleeClass  the class declaring the method descent stopped at
-     * @param  string  $calleeMethod  its method name
+     * @param  ?string  $calleeClass  the class declaring the method descent stopped at, null for a function
+     * @param  string  $calleeMethod  its method name, or the function's name
      * @param  string  $calleeFile  the file whose body was not read
      * @param  SourceLocation  $site  where the call is written
      */
     public function __construct(
-        public string $calleeClass,
+        public ?string $calleeClass,
         public string $calleeMethod,
         public string $calleeFile,
         public SourceLocation $site,
@@ -48,7 +48,7 @@ final readonly class SkippedDescent
      */
     public function key(): string
     {
-        return $this->calleeFile."\0".$this->calleeClass."\0".$this->calleeMethod
+        return $this->calleeFile."\0".($this->calleeClass ?? '')."\0".$this->calleeMethod
             ."\0".$this->site->file."\0".$this->site->line;
     }
 
@@ -56,9 +56,8 @@ final readonly class SkippedDescent
     public function sentence(): string
     {
         return sprintf(
-            '%s::%s() can throw and is called at %s:%d, and its body was not read: %s is outside the directories inference descends into, so whatever it raises is not among the responses this build recovered.',
-            $this->calleeClass,
-            $this->calleeMethod,
+            '%s() can throw and is called at %s:%d, and its body was not read: %s is outside the directories inference descends into, so whatever it raises is not among the responses this build recovered.',
+            $this->calleeClass === null ? $this->calleeMethod : $this->calleeClass.'::'.$this->calleeMethod,
             $this->site->file,
             $this->site->line,
             $this->calleeFile,

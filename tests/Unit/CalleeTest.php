@@ -8,6 +8,9 @@ use Docuccino\Inference\PhpStan\Trace\CalleeResolver;
 use PhpParser\Node;
 use PHPStan\Analyser\Scope;
 use PHPStan\Reflection\ClassReflection;
+use PHPStan\Reflection\ExtendedParametersAcceptor;
+use PHPStan\Reflection\FunctionReflection;
+use PHPStan\Reflection\ParameterReflection;
 use PHPStan\Reflection\ReflectionProvider;
 use PHPStan\Type\ObjectType;
 
@@ -24,6 +27,45 @@ it('identifies a callee by its declaring class and method', function (): void {
         ->toBe($callee->key())
         // With no second file given, where the body is written is where the class is.
         ->and($callee->writtenIn())->toBe('/app/Exceptions/ProblemRenderer.php');
+});
+
+it('identifies a function by its name, which no method key can spell', function (): void {
+    // A function has no class, so its key is its fully-qualified name: two functions of one name in two
+    // namespaces are two bodies, and a method named like one is a third.
+    $callee = new Callee(null, 'App\\Support\\refuse', '/app/Support/helpers.php');
+
+    expect($callee->key())->toBe('App\\Support\\refuse()')
+        ->and($callee->key())->not->toBe((new Callee(null, 'refuse', '/app/helpers.php'))->key())
+        ->and($callee->key())->not->toBe((new Callee('App\\Support', 'refuse', '/app/Support.php'))->key())
+        ->and($callee->writtenIn())->toBe('/app/Support/helpers.php')
+        ->and($callee->label())->toBe('App\\Support\\refuse')
+        ->and((new Callee('App\\Http\\Controllers\\ExportController', 'refuse', '/app/ExportController.php'))->label())
+        ->toBe('ExportController::refuse');
+});
+
+it('reads a function\'s parameters by its name, and a method\'s off its class', function (): void {
+    $parameter = static function (string $name): ParameterReflection {
+        $parameter = test()->createStub(ParameterReflection::class);
+        $parameter->method('getName')->willReturn($name);
+
+        return $parameter;
+    };
+    $variant = test()->createStub(ExtendedParametersAcceptor::class);
+    $variant->method('getParameters')->willReturn([$parameter('fault')]);
+    $function = test()->createStub(FunctionReflection::class);
+    $function->method('getVariants')->willReturn([$variant]);
+
+    $provider = test()->createStub(ReflectionProvider::class);
+    $provider->method('hasFunction')->willReturnCallback(static fn (Node\Name $name): bool => $name->toString() === 'App\\Support\\fault');
+    $provider->method('getFunction')->willReturn($function);
+    $provider->method('hasClass')->willReturn(false);
+
+    $names = static fn (Callee $callee): array => array_map(static fn (ParameterReflection $p): string => $p->getName(), $callee->parameters($provider));
+
+    expect($names(new Callee(null, 'App\\Support\\fault', '/app/Support/helpers.php')))->toBe(['fault'])
+        // A function or class the analyser does not know has no parameters to bind, rather than a guess.
+        ->and($names(new Callee(null, 'App\\Support\\absent', '/app/Support/helpers.php')))->toBe([])
+        ->and($names(new Callee('App\\Nowhere', 'fault', '/app/Nowhere.php')))->toBe([]);
 });
 
 it('names the file a body was written in apart from the one its class is', function (): void {
@@ -118,3 +160,30 @@ it('finds no shadowed method for a call it cannot name, or on a class the analys
     'a static call on a class chosen at runtime' => [new Node\Expr\StaticCall(new Node\Expr\Variable('class'), new Node\Identifier('collection'))],
     'a function call' => [new Node\Expr\FuncCall(new Node\Name('collect'))],
 ]);
+
+it('resolves a function call to the function and the file it is written in', function (): void {
+    // A function is a callee like a method: its body is read where it is written, so it needs a file. One
+    // the analyser cannot find, one PHP itself provides (no file), and a call through a variable are
+    // terminals, as an unresolvable method is.
+    $written = test()->createStub(FunctionReflection::class);
+    $written->method('getName')->willReturn('App\\Support\\refuse');
+    $written->method('getFileName')->willReturn('/app/Support/helpers.php');
+    $internal = test()->createStub(FunctionReflection::class);
+    $internal->method('getFileName')->willReturn(null);
+
+    $provider = test()->createStub(ReflectionProvider::class);
+    $provider->method('hasFunction')->willReturnCallback(static fn (Node\Name $name): bool => in_array($name->toString(), ['refuse', 'strlen'], true));
+    $provider->method('getFunction')->willReturnCallback(static fn (Node\Name $name): FunctionReflection => $name->toString() === 'refuse' ? $written : $internal);
+
+    $resolver = new CalleeResolver($provider);
+    $scope = test()->createStub(Scope::class);
+
+    $callee = $resolver->resolve(new Node\Expr\FuncCall(new Node\Name('refuse')), $scope);
+
+    expect($callee?->class)->toBeNull()
+        ->and($callee?->method)->toBe('App\\Support\\refuse')
+        ->and($callee?->file)->toBe('/app/Support/helpers.php')
+        ->and($resolver->resolve(new Node\Expr\FuncCall(new Node\Name('strlen')), $scope))->toBeNull()
+        ->and($resolver->resolve(new Node\Expr\FuncCall(new Node\Name('absent')), $scope))->toBeNull()
+        ->and($resolver->resolve(new Node\Expr\FuncCall(new Node\Expr\Variable('refuse')), $scope))->toBeNull();
+});

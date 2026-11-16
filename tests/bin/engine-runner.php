@@ -15,6 +15,7 @@ declare(strict_types=1);
  * Usage (one mode per invocation — each maps 1:1 onto a FixtureRunner method):
  *   php engine-runner.php analyze                   <controllerFile> <class> <method>
  *   php engine-runner.php analyze-with-config       <controllerFile> <class> <method> <userNeon>
+ *   php engine-runner.php analyze-core-first        <controllerFile> <class> <method>
  *   php engine-runner.php analyze-repeat           <controllerFile> <class> <method> <otherMethod>
  *   php engine-runner.php analyze-many              <controllerFile> <class> <method,method,…>
  *   php engine-runner.php analyze-many-narrow       <controllerFile> <class> <method,method,…>
@@ -32,11 +33,14 @@ declare(strict_types=1);
  *   php engine-runner.php trace-pagination-terminal <controllerFile> <class> <method>
  *   php engine-runner.php trace-created-resource    <controllerFile> <class> <method>
  *   php engine-runner.php trace-wrapped-collection  <controllerFile> <class> <method> <collectionFqcn>
+ *   php engine-runner.php trace-resource-models     <controllerFile> <class> <method> <resourceFqcn>
+ *   php engine-runner.php trace-data-sources        <controllerFile> <class> <method> <dataFqcn>
  *   php engine-runner.php data-response-status      <dataFile>       <class[,class…]> <ignored>
  *   php engine-runner.php trace-file-responses      <controllerFile> <class> <method>
  *   php engine-runner.php trace-closure             <file> <ignored> <ignored> <line>
  *   php engine-runner.php analyze-closures          <file> <ignored> <line[,line…]>
  *   php engine-runner.php request-headers           <controllerFile> <class> <method> <formRequest>
+ *   php engine-runner.php contract-builds           <ignored>        <ignored> <document,document,…> [per-test]
  *
  * Dispatch stays a `match ($mode)` rather than a mode => factory table — each arm is a thin
  * visitor probe and a test-only harness doesn't warrant the indirection. Revisit if the mode
@@ -56,6 +60,7 @@ use Docuccino\Core\Inference\ActionRef;
 use Docuccino\Core\Inference\CallableRef;
 use Docuccino\Core\Inference\ClassRef;
 use Docuccino\Core\Support\AtomicFile;
+use Docuccino\Core\TypeGrammar\PhpDocParserStack;
 use Docuccino\Inference\PhpStan\Analysis\EngineConfig;
 use Docuccino\Inference\PhpStan\Analysis\PhpStanEngineFactory;
 use Docuccino\Inference\PhpStan\Analysis\PhpStanTypeEngineBuilder;
@@ -81,6 +86,9 @@ use Docuccino\Laravel\Integrations\QueryBuilder\QueryBuilderTraceVisitor;
 use Docuccino\Laravel\Integrations\QueryBuilder\ScopeParameterResolver;
 use Docuccino\Laravel\Integrations\SpatieData\DataResponseStatus;
 use Docuccino\Laravel\Integrations\Support\PaginationTerminalVisitor;
+use Docuccino\Laravel\Links\DataConstruction;
+use Docuccino\Laravel\Links\DataSourceVisitor;
+use Docuccino\Laravel\Links\ResourceModelVisitor;
 
 $repoRoot = dirname(__DIR__, 4);
 $app = $repoRoot.'/tests/fixture-app/app';
@@ -101,6 +109,11 @@ spl_autoload_register(static function (string $class) use ($repoRoot): void {
         // so the fixture app's phpstan/php-parser stays the only one in play — which is what makes
         // mapping all of `Docuccino\Laravel\` here sound.
         'Docuccino\\Laravel\\' => $repoRoot.'/php/laravel/src/',
+        // The JSON Schema validator a build checks its document with, which the fixture app does not
+        // install; it shares nothing with the analyser.
+        'Opis\\JsonSchema\\' => $repoRoot.'/vendor/opis/json-schema/src/',
+        'Opis\\String\\' => $repoRoot.'/vendor/opis/string/src/',
+        'Opis\\Uri\\' => $repoRoot.'/vendor/opis/uri/src/',
     ];
     foreach ($map as $prefix => $dir) {
         if (str_starts_with($class, $prefix)) {
@@ -157,6 +170,15 @@ register_shutdown_function(static function () use ($tmp): void {
     @rmdir($tmp);
 });
 
+// contract-builds boots no engine of its own: each document's build resolves one, as a test's does
+// (`contract-builds.php`).
+if ($mode === 'contract-builds') {
+    require __DIR__.'/contract-builds.php';
+    fwrite(STDOUT, "\n@@RESULT@@".json_encode(contractBuilds($app, $tmp, explode(',', $method), ($argv[5] ?? '') === 'per-test'), JSON_THROW_ON_ERROR)."\n");
+
+    exit(0);
+}
+
 // refine-pair and trace-qb-bounds drive the engine with a tiny per-analysis file budget (argv[2]) and
 // descent depth (argv[3]): the first so a shared helper truncates on a budget-spending path and has
 // headroom on a direct one (the ResponseShapeRefiner's memo-headroom guard), the second so the Tracer's
@@ -209,6 +231,12 @@ $adapterFactory = new class($countedAdapters) extends RuntimeAdapterFactory
     }
 };
 
+// analyze-core-first builds core's docblock parser before the engine exists, as a build does when it reads a
+// route's docblock before the first action is analysed.
+if ($mode === 'analyze-core-first') {
+    new PhpDocParserStack;
+}
+
 $scopes = new AnalysisScopes($app);
 $declaredPaths = $scopes->declared();
 $descendPaths = $mode === 'analyze-many-narrow'
@@ -253,6 +281,19 @@ $qbHarvest = static function () use ($engine, $ref): array {
 
 $result = match ($mode) {
     'analyze', 'analyze-with-config' => $engine->analyzeAction($ref)->toArray(),
+    // Which copy of phpdoc-parser each loaded class came from — the phar's or the application's.
+    'analyze-core-first' => [...$engine->analyzeAction($ref)->toArray(), 'phpDocParserCopies' => (static function (array $copies): array {
+        $copies = array_values(array_unique($copies));
+        sort($copies);
+
+        return $copies;
+    })(array_map(
+        static fn (string $class): string => str_starts_with((string) (new ReflectionClass($class))->getFileName(), 'phar://') ? 'phar' : 'vendor',
+        array_values(array_filter(
+            [...get_declared_classes(), ...get_declared_interfaces(), ...get_declared_traits()],
+            static fn (string $class): bool => str_starts_with($class, 'PHPStan\\PhpDocParser\\'),
+        )),
+    ))],
     // One engine, the same ActionRef twice — what every version document in an export run does. The
     // engine's per-ref memo has to serve the second ask the FIRST ask's own object (nothing else can
     // return an identical instance, since both the analysis and its failure arm always construct a new
@@ -650,6 +691,26 @@ $result = match ($mode) {
         $engine->trace($ref, $visitor);
 
         return ['created' => $visitor->created];
+    })(),
+    'trace-resource-models' => (static function () use ($engine, $ref, $argv): array {
+        // ResourceModelVisitor types what each construction of a resource is handed — which model a
+        // response link reads the resource's columns off.
+        $visitor = new ResourceModelVisitor;
+        $engine->trace($ref, $visitor);
+
+        return ['model' => $visitor->modelOf($argv[5] ?? ''), 'wrapped' => $visitor->wrappedModel($argv[5] ?? '')];
+    })(),
+    'trace-data-sources' => (static function () use ($engine, $ref, $argv): array {
+        // DataSourceVisitor types what each construction of a Data class is built from — which model's
+        // columns a response link reads the Data body's properties off.
+        $visitor = new DataSourceVisitor;
+        $engine->trace($ref, $visitor);
+        $constructions = $visitor->constructionsOf($argv[5] ?? '');
+
+        return ['constructions' => $constructions === null ? null : array_map(
+            static fn (DataConstruction $built): array => ['kind' => $built->kind, 'model' => $built->model, 'sources' => $built->sources],
+            $constructions,
+        )];
     })(),
     'trace-wrapped-collection' => (static function () use ($engine, $ref, $argv): array {
         // WrappedCollectionVisitor types what each construction of the collection is handed — the proof a

@@ -13,12 +13,12 @@ use ReflectionMethod;
  * The status a static factory builds its exception with, for the class that states none of its own.
  *
  * A class whose factories each choose a status genuinely has no one status — `duplicatePath()` is a 422 and
- * `cannotDeleteRoot()` a 403 on the same class — so {@see HttpExceptionStatus} is right to answer null for
+ * `cannotDeleteRoot()` a 403 on the same class — so {@see SubclassStatus} is right to answer null for
  * it, and the answer is one hop away: the `throw` names the factory, and the factory names the status. One
  * hop and no further; this is not constant propagation, it is reading the `new` the named factory makes.
  *
  * Every way the read could publish a status the code does not pass is a decline: a factory whose file is not
- * the application's own ({@see HttpExceptionStatus}'s docblock for what that scope is, and why it is not the
+ * the application's own ({@see SubclassStatus}'s docblock for what that scope is, and why it is not the
  * descend scope), a body that builds the class more than once and folds to two different statuses, a slot
  * nothing can be said about ({@see ConstructionStatus}), and a base's factory whose `new self(…)` builds the
  * base rather than this class.
@@ -39,7 +39,7 @@ final class FactoryStatus
     private array $cache = [];
 
     public function __construct(
-        private readonly HttpExceptionStatus $statuses,
+        private readonly SubclassStatus $statuses,
         private readonly ClassBodies $bodies,
         private readonly ProjectFilter $appFilter,
     ) {}
@@ -106,14 +106,17 @@ final class FactoryStatus
             StatusForwarding::constructionsOf($body, $fqcn, $declaring),
         );
 
+        $read = $this->statuses->statusRead($fqcn);
+
         return ConstructionStatus::agreedIn(
             $sites,
             $slot,
             $this->statuses->constructorSlot($fqcn, $slot),
-            function (Node\Expr $argument, ConstructionSite $site) use (&$files): ?int {
-                $files = [...$files, ...ConstantSource::files($argument, $site->declaringClass)];
+            function (Node\Expr $argument, ConstructionSite $site) use ($read, &$files): ?int {
+                $fold = $this->bodies->foldStatus($site->file, $argument, $site->construction, $read);
+                $files = [...$files, ...ConstantSource::files($argument, $site->declaringClass), ...$fold['files']];
 
-                return $this->bodies->foldInt($site->file, $argument, $site->construction);
+                return $fold['status'];
             },
         );
     }
@@ -123,7 +126,7 @@ final class FactoryStatus
      * method, or a name the class does not have.
      *
      * A factory a BASE declares is one of them: `X::unavailable()` is how the class is built whoever wrote
-     * the line, and the same rule {@see HttpExceptionStatus::agreed()} reads a hierarchy by says a base's
+     * the line, and the same rule {@see SubclassStatus::agreed()} reads a hierarchy by says a base's
      * `new static(…)` builds this class. What the base's `new self(…)` builds is the base, which is why
      * the declaring class travels with the body rather than being assumed to be this one.
      */

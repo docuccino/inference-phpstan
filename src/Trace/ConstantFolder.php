@@ -29,7 +29,7 @@ final class ConstantFolder
      *
      *   0. a bound parameter → the caller's value, before PHPStan is asked (it only knows the declared type);
      *   1. array literal → recurse per item, so factory calls inside survive as descriptors, with a
-     *      spread item left standing as one {@see ConstValue::spread()};
+     *      spread item left standing as one {@see ConstValue::spread()}, and the keys written beside them;
      *   2. factory static-call → a call descriptor {factory, args}, captured before asking PHPStan for the
      *      type (which would collapse it to the factory's return class);
      *   3. fluent method-call over a descriptor → the same descriptor with the call appended, so
@@ -55,6 +55,7 @@ final class ConstantFolder
         // 1. Array literal — every item is an ArrayItem in php-parser v5.
         if ($expr instanceof Node\Expr\Array_) {
             $items = [];
+            $keys = [];
             foreach ($expr->items as $item) {
                 // A spread item carries however many values its sequence holds, and readers pair these
                 // items with the WRITTEN ones one for one — so it stays one item, saying that values
@@ -62,9 +63,10 @@ final class ConstantFolder
                 $items[] = $item->unpack
                     ? ConstValue::spread('spread array item')
                     : self::fold($item->value, $scope, $bindings) ?? ConstValue::unknown('non-constant array item');
+                $keys = $keys === null ? null : self::key($item->key, $scope, $bindings, $keys);
             }
 
-            return ConstValue::array($items);
+            return ConstValue::array($items, $keys);
         }
 
         // 2. Factory static-call — capture the call, don't fold it to its type.
@@ -106,6 +108,27 @@ final class ConstantFolder
 
         // 5. Let PHPStan fold it.
         return self::ofType($scope->getType($expr));
+    }
+
+    /**
+     * The keys written so far with one more item's appended: null for an item written without one, or null
+     * for the whole array once a written key does not fold to a string or an int.
+     *
+     * @param  array<string, ConstValue>  $bindings
+     * @param  list<string|int|null>  $keys
+     * @return list<string|int|null>|null
+     */
+    private static function key(?Node\Expr $key, Scope $scope, array $bindings, array $keys): ?array
+    {
+        if ($key === null) {
+            return [...$keys, null];
+        }
+
+        $folded = self::fold($key, $scope, $bindings);
+
+        return $folded !== null && $folded->isScalar() && (is_string($folded->scalar) || is_int($folded->scalar))
+            ? [...$keys, $folded->scalar]
+            : null;
     }
 
     /**

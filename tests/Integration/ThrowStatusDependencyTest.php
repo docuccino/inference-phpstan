@@ -97,6 +97,37 @@ it('depends on the file a factory a TRAIT writes is written in', function (): vo
         ->toContain('ExportThrottledException.php');
 })->group('fixture');
 
+it('depends on the enum a status was read off', function (string $method, array $files): void {
+    // The status is written in the enum's `match ($this)`, which neither the throw nor the exception class
+    // names: moving an arm, or adding a case a runtime reason may be, changes what this route publishes.
+    $names = throwDependencyNames($method);
+
+    foreach ($files as $file) {
+        expect($names)->toContain($file);
+    }
+})->with([
+    'a case at the throw, read through the constructor' => ['enumReasonStatus', ['TokenRefusal.php', 'Refusal.php', 'Refused.php']],
+    'a case chosen at run time' => ['runtimeEnumReasonStatus', ['TokenRefusal.php', 'Refusal.php']],
+    'a case handed to abort()' => ['abortEnumStatus', ['TokenRefusal.php']],
+    'a case chosen in a named constructor' => ['enumReasonInFactory', ['TokenRefusal.php', 'RotationRefused.php']],
+    'a backing value read through the constructor' => ['enumValueStatus', ['ExportFault.php', 'ExportFaultException.php']],
+])->group('fixture');
+
+it('depends on the enum a case lookup was matched against', function (): void {
+    // Whether `ExportFault::from(410)` can throw is a fact of the enum's cases, which nothing else this
+    // route publishes reads: renumbering `Gone` turns the lookup into a ValueError.
+    expect(throwDependencyNames('enumLookedUp'))->toContain('ExportFault.php');
+})->group('fixture');
+
+it('depends on the enum that decides a construction or return is never reached', function (string $method): void {
+    // Adding a case backed by 999 makes the lookup complete, and then the refusal is built, or the
+    // response returned, after all.
+    expect(throwDependencyNames($method))->toContain('ExportFault.php');
+})->with([
+    'a refusal built from a value no case backs' => ['enumFromNoCase'],
+    'a response whose status no case backs' => ['enumFromNoCaseReturn'],
+])->group('fixture');
+
 it('depends on the file the factory was written in', function (): void {
     // The same soundness one hop on: the status this route publishes is now a fact of a factory body, so
     // that file has to be able to invalidate the route as well.
@@ -121,6 +152,8 @@ it('invalidates a cached fragment when a file the status was read from is edited
     // The body a `@throws` sent the status read into: which factory the guard names is what the route
     // publishes, so editing the guard has to make the entry stale.
     'the guard whose `@throws` surfaced the exception' => ['manifestStatusDeclaredByCallee', 'app/Services/ManifestDeclaredQuery.php'],
+    // The enum whose `match ($this)` the status was read from: neither the throw nor the class names it.
+    'the enum a reason\'s status is mapped in' => ['enumReasonStatus', 'app/Enums/TokenRefusal.php'],
 ])->group('fixture');
 
 it('invalidates a cached fragment when the helper a closure is relayed through is edited', function (): void {

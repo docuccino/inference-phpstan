@@ -6,28 +6,35 @@ namespace Docuccino\Inference\PhpStan\Throwing;
 
 use Closure;
 use Docuccino\Core\Diagnostics\Diagnostic;
+use Docuccino\Core\Extensions\Schema\DeclarationFiles;
+use Docuccino\Core\Inference\ArgumentSlots;
+use Docuccino\Core\Inference\ComponentDeclaration;
+use Docuccino\Core\Inference\DType\DType;
 use Docuccino\Core\Inference\Frame;
+use Docuccino\Core\Inference\ReturnSite;
 use Docuccino\Core\Inference\SourceLocation;
 use Docuccino\Core\Inference\ThrowConfidence;
 use Docuccino\Core\Inference\ThrowDisposition;
 use Docuccino\Core\Inference\ThrownException;
 use Docuccino\Core\Provenance\MessagePaths;
-use Docuccino\Core\Support\Fqcn;
 use Docuccino\Inference\PhpStan\Analysis\CallableBody;
 use Docuccino\Inference\PhpStan\Analysis\FileAnalyzer;
+use Docuccino\Inference\PhpStan\Analysis\ParamAccessor;
 use Docuccino\Inference\PhpStan\Support\ProjectFilter;
 use Docuccino\Inference\PhpStan\Trace\Callee;
 use Docuccino\Inference\PhpStan\Trace\CalleeResolver;
 use PhpParser\Node;
 use PHPStan\Analyser\Scope;
 use PHPStan\Node\ClosureReturnStatementsNode;
+use PHPStan\Node\FunctionReturnStatementsNode;
 use PHPStan\Node\MethodReturnStatementsNode;
 use PHPStan\Reflection\ClassReflection;
+use PHPStan\Reflection\FunctionReflection;
 use PHPStan\Reflection\ReflectionProvider;
-use PHPStan\Type\Constant\ConstantIntegerType;
 use PHPStan\Type\NeverType;
 use PHPStan\Type\ObjectType;
 use PHPStan\Type\Type;
+use PHPStan\Type\TypeCombinator;
 use Throwable;
 
 /**
@@ -43,10 +50,11 @@ use Throwable;
  *      gate, not depth, does the real containment.
  *
  * Every layer drops what a `catch` on the path takes, read off the source ({@see EnclosingCatches}) rather
- * than off a point's type, which for an undeclared call differs by PHPStan minor.
+ * than off a point's type, which for an undeclared call differs by PHPStan minor. A backed enum's `from()`
+ * handed a constant keeps only what that value can throw ({@see EnumLookup}).
  *
  * A status comes from {@see KnownThrowers} where a name-keyed entry has one, and otherwise from what an
- * `HttpException` subclass sets on itself ({@see HttpExceptionStatus}) or, for a class that sets none, from
+ * `HttpException` subclass sets on itself ({@see SubclassStatus}) or, for a class that sets none, from
  * the construction THIS throw makes — the arguments of a `throw new X(…)`, or the `new` inside the static
  * factory it names ({@see FactoryStatus}). A throw whose point carries no construction because a callee
  * DECLARED it is read one hop on, off that callee's own `throw` ({@see inDeclaringCallee()}): a `@throws`
@@ -55,6 +63,11 @@ use Throwable;
  * the class writes of itself agrees on. Only when none of them speaks is the answer the 500 that means
  * "not an HTTP error at all" — which is the fallback {@see ThrowSignal} reads to tell an API error from
  * vendor plumbing.
+ *
+ * An `HttpResponseException` the code builds — the framework's own or an application's subclass of it — and a
+ * response handed to `abort()`, are not errors to render: the framework sends the response they carry as it
+ * is, so that response is read as a return of the body the throw is written in would be
+ * ({@see carriedResponses()}) and no exception is reported for it.
  *
  * Result identity is `(fqcn, httpStatusHint)` — two aborts (403/404) are two responses, so never dedupe by
  * FQCN alone. Vendor-declared 500-class exceptions are demoted to `internal`; dropped bare-`Throwable`
@@ -67,8 +80,13 @@ use Throwable;
  */
 final class ThrowAnalyzer
 {
+    private const HTTP_RESPONSE_EXCEPTION = CarriedResponses::EXCEPTION;
+
     /** @var array<string, true> */
     private array $visitedFiles = [];
+
+    /** @var list<ReturnSite> the responses thrown for the framework to send as they are */
+    private array $carried = [];
 
     /** Throws whose status did not fold, and the notices they publish. */
     private UnreadStatuses $unreadStatuses;
@@ -78,6 +96,9 @@ final class ThrowAnalyzer
 
     /** The catches a callee writes around where it runs a closure it was handed. */
     private readonly CalleeCatches $calleeCatches;
+
+    /** What `throw_if()` and `throw_unless()` throw, off the argument they are handed. */
+    private readonly HandedException $handedException;
 
     public function __construct(
         private readonly ReflectionProvider $reflectionProvider,
@@ -93,8 +114,9 @@ final class ThrowAnalyzer
         private readonly FileAnalyzer $fileAnalyzer,
         private readonly KnownThrowers $knownThrowers,
         private readonly CalleeResolver $calleeResolver,
-        private readonly HttpExceptionStatus $httpExceptionStatus,
+        private readonly SubclassStatus $httpExceptionStatus,
         private readonly FactoryStatus $factoryStatus,
+        private readonly CaseStatus $caseStatus,
         // A diagnostic leaves here publishable, like every other one the engine composes: the file a
         // notice names is a raw analyser path, and an engine is a contract another host can call.
         private readonly MessagePaths $labels,
@@ -102,10 +124,15 @@ final class ThrowAnalyzer
         // was dead — the one construction always passes the config's — and it read as the real one, so
         // changing it moved nothing while looking like it had.
         private readonly int $maxDepth,
+        // How a returned expression is read as the response it is, so a carried one is read the same way.
+        /** @var Closure(Node\Expr, Scope): list<array{type: DType, component: ComponentDeclaration|null}> */
+        private readonly Closure $responseShapes,
+        private readonly CarriedResponses $carriedResponses,
     ) {
         $this->unreadStatuses = new UnreadStatuses;
         $this->skippedDescents = new SkippedDescents($this->declaredFilter);
         $this->calleeCatches = new CalleeCatches($this->reflectionProvider, $this->calleeResolver, $this->appFilter);
+        $this->handedException = new HandedException($this->reflectionProvider);
     }
 
     /**
@@ -143,6 +170,7 @@ final class ThrowAnalyzer
     private function begin(): void
     {
         $this->visitedFiles = [];
+        $this->carried = [];
         $this->unreadStatuses = new UnreadStatuses;
         $this->skippedDescents = new SkippedDescents($this->declaredFilter);
     }
@@ -153,6 +181,10 @@ final class ThrowAnalyzer
      * translation) is read. One grammar for a construction whether it is thrown or handed back: the status
      * read is {@see statusForType()} over the expression wrapped as the `throw` it stands for, so a local
      * assigned once, a static factory on the class and a pinned status all read here as they read at a throw.
+     *
+     * An `HttpResponseException` — or a subclass — is the response it carries ({@see carriesResponse()}), so it
+     * answers with that response beside the class; the status its class reads as stands for a response the
+     * adapter cannot read.
      *
      * Only classes a handler could be handed count: an instantiable `Throwable`. A return typed as an
      * interface or an abstract base names no class the response could be read from, and answers nothing.
@@ -178,10 +210,28 @@ final class ThrowAnalyzer
             }
 
             $status = $this->statusForType($reflection->getName(), null, $thrown, $scope, $frame)['status'];
-            $results[] = new ThrownException($reflection->getName(), $status, [$frame], ThrowConfidence::Certain, ThrowDisposition::Signal);
+
+            // One that carries a response is sent as that response, read as a `throw` of it would be.
+            $before = count($this->carried);
+            $responses = $this->carriesResponse($reflection->getName(), $thrown, $scope, $frame) ? array_slice($this->carried, $before) : [null];
+            foreach ($responses as $response) {
+                $results[] = new ThrownException($reflection->getName(), $status, [$frame], ThrowConfidence::Certain, ThrowDisposition::Signal, $response);
+            }
         }
 
         return $results;
+    }
+
+    /**
+     * The responses {@see analyze()} found thrown for the framework to send as they are, each read as a return
+     * written at its `throw`. Laravel renders an `HttpResponseException` by sending the response it carries,
+     * and `abort()` handed a response throws one, so the server answers with that response's status and body.
+     *
+     * @return list<ReturnSite>
+     */
+    public function carriedResponses(): array
+    {
+        return $this->carried;
     }
 
     /**
@@ -218,7 +268,7 @@ final class ThrowAnalyzer
      * @return list<ThrownException>
      */
     private function analyzeMethod(
-        MethodReturnStatementsNode|ClosureReturnStatementsNode $methodNode,
+        MethodReturnStatementsNode|FunctionReturnStatementsNode|ClosureReturnStatementsNode $methodNode,
         string $selfLabel,
         int $depth,
         array $visited,
@@ -291,7 +341,7 @@ final class ThrowAnalyzer
      *
      * @param  array<string, Type>  $pointed
      */
-    private function owedToRethrow(MethodReturnStatementsNode|ClosureReturnStatementsNode $body, Node $node, array $pointed, Scope $scope): bool
+    private function owedToRethrow(MethodReturnStatementsNode|FunctionReturnStatementsNode|ClosureReturnStatementsNode $body, Node $node, array $pointed, Scope $scope): bool
     {
         foreach (EnclosingCatches::rethrowsAround($body, $node, $this->keeps($scope)) as $rethrow) {
             if (! $rethrow instanceof Node\Expr\Throw_) {
@@ -308,10 +358,11 @@ final class ThrowAnalyzer
     }
 
     /**
-     * Whether the callee a catch hands its exception to provably keeps it: an application method whose body
-     * reads the parameter only through {@see EnclosingCatches::ACCESSORS}, by {@see EnclosingCatches::readsWhole()}
-     * — the grammar the catch's own hand-off is read with. Anything this build cannot read lets it out. The
-     * callee's files decide the answer either way, so they are dependencies whenever it resolves.
+     * Whether the callee a catch hands its exception to provably keeps it: an application method or function
+     * whose body reads the parameter only through {@see EnclosingCatches::ACCESSORS}, by
+     * {@see EnclosingCatches::readsWhole()} — the grammar the catch's own hand-off is read with. Anything this
+     * build cannot read lets it out. The callee's files decide the answer either way, so they are dependencies
+     * whenever it resolves.
      *
      * @return Closure(Node\Expr\CallLike, int): bool
      */
@@ -324,14 +375,15 @@ final class ThrowAnalyzer
             }
 
             $this->dependOn([$callee->file, $callee->writtenIn()]);
-            $body = $this->fileAnalyzer->method($callee->file, $callee->class, $callee->method);
+            $body = $this->fileAnalyzer->callee($callee);
             $argument = $call->getArgs()[$position] ?? null;
             if ($body === null || $argument === null) {
                 return false;
             }
 
+            $reflection = $body instanceof FunctionReturnStatementsNode ? $body->getFunctionReflection() : $body->getMethodReflection();
             $bound = null;
-            foreach (($body->getMethodReflection()->getVariants()[0] ?? null)?->getParameters() ?? [] as $index => $parameter) {
+            foreach (($reflection->getVariants()[0] ?? null)?->getParameters() ?? [] as $index => $parameter) {
                 if ($argument->name === null ? $index === $position : $parameter->getName() === $argument->name->toString()) {
                     $bound = $parameter;
                 }
@@ -389,6 +441,12 @@ final class ThrowAnalyzer
         Frame $frame,
         array $caught,
     ): array {
+        // A point an operand always throws ahead of is never reached: what leaves is that operand's own
+        // throw, read at its own point. The enum whose cases say so is a dependency either way.
+        if (Unreached::byOperand($node, $scope, fn (string $enum) => $this->dependOn(DeclarationFiles::of($enum)))) {
+            return [];
+        }
+
         $calleeName = $this->calleeResolver->name($node);
         $callee = $this->calleeResolver->resolve($node, $scope);
 
@@ -403,6 +461,41 @@ final class ThrowAnalyzer
             }
             $explicit = $declared !== null;
             $type = $declared ?? new ObjectType(Throwable::class);
+        } elseif ($explicit && $node instanceof Node\Expr\CallLike && $this->isBareThrowable($type)) {
+            // A callee that never returns and declares nothing gets an explicit bare `Throwable` from the
+            // analyser, which names nothing: it is the undeclared call it would be typed `void`, and is
+            // read as one, as {@see pointOutsideTry()} reads it. A declared `@throws` stays authoritative.
+            $explicit = $this->calleeResolver->reached($node, $scope)?->getThrowType() !== null;
+        }
+
+        // `throw_if()` and `throw_unless()` throw what they are handed, read as the `throw` written for it.
+        $handed = $this->handedThrows($node, $scope, $callee);
+        if ($handed !== null) {
+            $results = [];
+            foreach ($handed as [$throw, $throwScope, $thrownType]) {
+                foreach ($this->applyExplicit(null, $throw, $throwScope, $thrownType, $priorChain, $frame, $caught, []) as $result) {
+                    $results[] = $result;
+                }
+            }
+
+            return $results;
+        }
+
+        // `from()` on a backed enum handed a constant throws only what that value can. The enum's cases
+        // decide it, so its files are dependencies even where nothing is left to publish.
+        $certain = [];
+        $lookup = $explicit ? EnumLookup::of($node, $scope, $this->calleeResolver->reached($node, $scope)) : null;
+        if ($lookup !== null) {
+            [$enum, $outcomes] = $lookup;
+            $this->dependOn(DeclarationFiles::of($enum));
+
+            $kept = array_values(array_filter($type->getObjectClassNames(), static fn (string $class): bool => isset($outcomes[$class])));
+            if ($kept === []) {
+                return [];
+            }
+
+            $type = TypeCombinator::union(...array_map(static fn (string $class): Type => new ObjectType($class), $kept));
+            $certain = array_keys(array_filter($outcomes));
         }
 
         // Layer 2: KnownThrowers registry, keyed on the callee name — for callees we cannot read.
@@ -413,7 +506,7 @@ final class ThrowAnalyzer
 
         // Layer 1: explicit concrete type (literal throw, @throws, stub).
         if ($explicit && ! $this->isBareThrowable($type)) {
-            return $this->applyExplicit($callee, $node, $scope, $type, $priorChain, $frame, $caught);
+            return $this->applyExplicit($callee, $node, $scope, $type, $priorChain, $frame, $caught, $certain);
         }
 
         // Layer 3: implicit bare Throwable — descend, or drop it as noise.
@@ -457,6 +550,20 @@ final class ThrowAnalyzer
 
         if ($thrower === null || $this->readsCalleeBody($callee)) {
             return null;
+        }
+
+        if ($this->neverThrows($node, $scope)) {
+            return [];
+        }
+
+        // `abort()` handed a response rather than a status throws an `HttpResponseException` carrying it.
+        $response = $thrower->foldsStatusFromArgument() ? $this->handedResponse($node, $scope, $thrower->statusArgIndex) : null;
+        if ($response !== null) {
+            if (! $this->isCaught(self::HTTP_RESPONSE_EXCEPTION, $caught)) {
+                $this->carry($response, $scope, $frame);
+            }
+
+            return [];
         }
 
         if ($this->isCaught($thrower->exceptionFqcn, $caught)) {
@@ -526,12 +633,51 @@ final class ThrowAnalyzer
     {
         return $callee !== null
             && $this->projectFilter->isProjectFile($callee->file)
-            && $this->fileAnalyzer->method($callee->file, $callee->class, $callee->method) !== null;
+            && $this->fileAnalyzer->callee($callee) !== null;
+    }
+
+    /**
+     * The throws a call to Laravel's `throw_if()` or `throw_unless()` makes, each the `throw` of what it is
+     * handed ({@see HandedException}): none where its condition never throws, and null for any other call or
+     * one whose argument cannot be read, which its `@throws` then answers for. Gated on the callee as the
+     * registry is ({@see readsCalleeBody()}): an application's own `throw_if()` is read as its body says.
+     *
+     * @return list<array{Node\Expr\Throw_, Scope, Type}>|null
+     */
+    private function handedThrows(Node $node, Scope $scope, ?Callee $callee): ?array
+    {
+        if (! $node instanceof Node\Expr\FuncCall
+            || $callee === null
+            || ! HandedException::handles($callee->method)
+            || $this->readsCalleeBody($callee)
+        ) {
+            return null;
+        }
+
+        $function = $this->calleeResolver->reached($node, $scope);
+        if (! $function instanceof FunctionReflection) {
+            return null;
+        }
+
+        if (GuardCondition::neverThrows($function, $node, $scope)) {
+            return [];
+        }
+
+        return $this->handedException->of($node, $function, $scope, $this->closureArgument(...));
+    }
+
+    /** Whether a call is one of Laravel's conditional throwers handed a condition it never throws on. */
+    private function neverThrows(Node $node, Scope $scope): bool
+    {
+        $function = $node instanceof Node\Expr\FuncCall ? $this->calleeResolver->reached($node, $scope) : null;
+
+        return $function instanceof FunctionReflection && GuardCondition::neverThrows($function, $node, $scope);
     }
 
     /**
      * @param  list<Frame>  $priorChain
      * @param  list<string>  $caught
+     * @param  list<string>  $certain  classes a call is known to throw, not only declared to
      * @return list<ThrownException>
      */
     private function applyExplicit(
@@ -542,6 +688,7 @@ final class ThrowAnalyzer
         array $priorChain,
         Frame $frame,
         array $caught,
+        array $certain,
     ): array {
         // php-parser v5 models `throw` only as an expression.
         $isLiteral = $node instanceof Node\Expr\Throw_;
@@ -567,12 +714,16 @@ final class ThrowAnalyzer
                 continue;
             }
 
+            if ($this->carriesResponse($class, $node, $scope, $frame)) {
+                continue;
+            }
+
             $resolution = $this->statusForType($class, $callee, $node, $scope, $frame);
             $results[] = new ThrownException(
                 $class,
                 $resolution['status'],
                 [...$priorChain, $frame],
-                $isLiteral ? ThrowConfidence::Certain : ThrowConfidence::Declared,
+                $isLiteral || in_array($class, $certain, true) ? ThrowConfidence::Certain : ThrowConfidence::Declared,
                 ThrowSignal::disposition($isLiteral, $calleeIsApplication, $resolution['fellBack']),
             );
         }
@@ -623,16 +774,14 @@ final class ThrowAnalyzer
 
         // Both files: the harvest comes off the declaring class's, and a trait's body is written in another.
         $this->dependOn([$callee->file, $callee->writtenIn()]);
-        $childNode = $this->fileAnalyzer->method($callee->file, $callee->class, $callee->method);
+        $childNode = $this->fileAnalyzer->callee($callee);
         if ($childNode === null) {
             return [];
         }
 
-        $childLabel = Fqcn::short($callee->class).'::'.$callee->method;
-
         return $this->analyzeMethod(
             $childNode,
-            $childLabel,
+            $callee->label(),
             $depth + 1,
             [...$visited, $key],
             [...$priorChain, $frame],
@@ -772,7 +921,7 @@ final class ThrowAnalyzer
      *
      * @return list<string>
      */
-    private function catchesAround(MethodReturnStatementsNode|ClosureReturnStatementsNode $body, Node $node, Scope $scope): array
+    private function catchesAround(MethodReturnStatementsNode|FunctionReturnStatementsNode|ClosureReturnStatementsNode $body, Node $node, Scope $scope): array
     {
         return array_map(
             static fn (Node\Name $name): string => $scope->resolveName($name),
@@ -874,6 +1023,9 @@ final class ThrowAnalyzer
      * hands a function throw point the NORMALIZED call, so its named arguments already sit in the positions
      * the registry indexes, and `abort()` defaults no status to fall back on.
      *
+     * `$read` is how the slot's argument becomes the status where the class reads it through the enum case
+     * it holds ({@see SubclassStatus::statusRead()}); with none, the argument is the status itself.
+     *
      * @param  array{names: list<string>, default: int|null}  $constructor
      */
     private function foldStatusArg(
@@ -881,6 +1033,7 @@ final class ThrowAnalyzer
         Scope $scope,
         ?int $argIndex,
         array $constructor = ['names' => [], 'default' => null],
+        ?ParamAccessor $read = null,
     ): ?int {
         if ($argIndex === null || ! $node instanceof Node\Expr\CallLike) {
             return null;
@@ -890,14 +1043,14 @@ final class ThrowAnalyzer
             $node,
             $argIndex,
             $constructor,
-            function (Node\Expr $argument) use ($scope): ?int {
+            function (Node\Expr $argument) use ($scope, $read): ?int {
                 // A `throw new X(HttpStatus::CONFLICT)` takes its status from another file's declaration,
-                // which then decides what this route publishes ({@see ConstantSource}).
-                $this->dependOn(ConstantSource::files($argument, $scope->getClassReflection()?->getName()));
+                // which then decides what this route publishes ({@see ConstantSource}) — as does the enum a
+                // `throw new Refused(Reason::Gone)` reads its status off.
+                $fold = $this->caseStatus->of($argument, $scope, $read);
+                $this->dependOn([...ConstantSource::files($argument, $scope->getClassReflection()?->getName()), ...$fold['files']]);
 
-                $type = $scope->getType($argument);
-
-                return $type instanceof ConstantIntegerType ? $type->getValue() : null;
+                return $fold['status'];
             },
         );
     }
@@ -955,7 +1108,7 @@ final class ThrowAnalyzer
             }
         }
 
-        if ($this->httpExceptionStatus->isHttpException($fqcn)) {
+        if ($this->httpExceptionStatus->governs($fqcn)) {
             // `fellBack` states the rule {@see ThrowSignal} is written to, which is "no status anyone could
             // read" — not "the answer was the 500". Being an HttpException subclass is not itself a status:
             // a vendor `@throws` of one this build cannot read says no more about the API than any other
@@ -972,7 +1125,7 @@ final class ThrowAnalyzer
      * What an `HttpException` subclass's status is here: the one the class pins on every instance, else the
      * one THIS throw builds it with, else — where the throw is a call whose `@throws` is all this point
      * carries — the one the callee that declared it builds with ({@see inDeclaringCallee()}), and only then
-     * the one every construction the class writes of itself agrees on ({@see HttpExceptionStatus::agreed()}).
+     * the one every construction the class writes of itself agrees on ({@see SubclassStatus::agreed()}).
      * Where none of them reads, the answer is a recorded {@see UnreadStatus}, which is what
      * {@see diagnostics()} reports from.
      *
@@ -1075,7 +1228,7 @@ final class ThrowAnalyzer
      *
      * Reading a body is not walking into it: what descent bounds is which errors the document CARRIES, and
      * this changes only what the error it already carries says. So the gate is the application's own source
-     * ({@see HttpExceptionStatus} for the whole argument, and the priming that makes it cost nothing), not
+     * ({@see SubclassStatus} for the whole argument, and the priming that makes it cost nothing), not
      * the descend scope — a modular guard states its status as plainly as one in `app/`.
      *
      * `read` is the file whose expression gave up, for the actionability rule, and null where the callee
@@ -1091,7 +1244,7 @@ final class ThrowAnalyzer
             return ThrowSiteStatus::stated([]);
         }
 
-        $body = $this->fileAnalyzer->method($callee->file, $callee->class, $callee->method);
+        $body = $this->fileAnalyzer->callee($callee);
         if ($body === null) {
             return ThrowSiteStatus::stated([]);
         }
@@ -1103,14 +1256,17 @@ final class ThrowAnalyzer
         $readings = [];
         foreach ($body->getStatementResult()->getThrowPoints() as $throwPoint) {
             $node = $throwPoint->getNode();
-            if (! $node instanceof Node\Expr\Throw_
-                || ! in_array($fqcn, $this->concreteClasses($throwPoint->getType()), true)
-            ) {
-                continue;
-            }
-
             $scope = $this->fileAnalyzer->stableScope($throwPoint->getScope());
-            $readings[] = [...$this->atThrowSite($fqcn, $node, $scope), 'file' => $scope->getFile()];
+
+            // A `throw_if()` there is the `throw` of what it is handed, as it is at a call site.
+            $calleeHere = $node instanceof Node\Expr\FuncCall ? $this->calleeResolver->resolve($node, $scope) : null;
+            $sites = $this->handedThrows($node, $scope, $calleeHere) ?? [[$node, $scope, $throwPoint->getType()]];
+
+            foreach ($sites as [$site, $siteScope, $type]) {
+                if ($site instanceof Node\Expr\Throw_ && in_array($fqcn, $this->concreteClasses($type), true)) {
+                    $readings[] = [...$this->atThrowSite($fqcn, $site, $siteScope), 'file' => $siteScope->getFile()];
+                }
+            }
         }
 
         return ThrowSiteStatus::stated($readings);
@@ -1164,6 +1320,7 @@ final class ThrowAnalyzer
                     $scope,
                     $slot,
                     $this->httpExceptionStatus->constructorSlot($fqcn, $slot),
+                    $this->httpExceptionStatus->statusRead($fqcn),
                 ),
                 'spoke' => true,
                 'foldedHere' => $slot !== null,
@@ -1213,6 +1370,79 @@ final class ThrowAnalyzer
             : ($this->fileAnalyzer->localAssignments($scope->getFile())[$key][$expr->name] ?? null);
 
         return $assigned === null ? [$expr, $scope] : $assigned;
+    }
+
+    /**
+     * Whether this `throw` builds an `HttpResponseException` whose response can be read, which it then carries:
+     * the framework's own class or an application's subclass, built at the throw or by a static factory on the
+     * class ({@see CarriedResponses}).
+     */
+    private function carriesResponse(string $fqcn, Node $node, Scope $scope, Frame $frame): bool
+    {
+        if (! $node instanceof Node\Expr\Throw_ || ! $this->reflectionProvider->hasClass($fqcn)) {
+            return false;
+        }
+
+        $class = $this->reflectionProvider->getClass($fqcn);
+        if (! $class->is(self::HTTP_RESPONSE_EXCEPTION)) {
+            return false;
+        }
+
+        // A subclass's constructors decide what it carries, so its whole hierarchy keys the route.
+        if ($fqcn !== self::HTTP_RESPONSE_EXCEPTION) {
+            $this->dependOn($this->ancestryFiles($class));
+        }
+
+        [$thrown, $scope] = $this->localValue($node->expr, $scope);
+        $construction = $this->construction($thrown, $fqcn, $scope);
+        if ($construction !== null) {
+            $carried = $this->carriedResponses->constructed($construction, $fqcn, $scope);
+            $responses = $carried === null ? [] : [$carried];
+        } else {
+            $factory = $this->factoryName($thrown, $fqcn, $scope);
+            $read = $factory === null ? ['responses' => [], 'files' => []] : $this->carriedResponses->fromFactory($fqcn, $factory);
+            $this->dependOn($read['files']);
+            $responses = $read['responses'];
+        }
+
+        foreach ($responses as [$response, $at]) {
+            $this->carry($response, $at, $frame);
+        }
+
+        return $responses !== [];
+    }
+
+    /**
+     * The response an `abort()`-style call is handed where its status goes, or null where that argument
+     * is a status. The call is the normalized one, as {@see foldStatusArg()} reads it.
+     */
+    private function handedResponse(Node $node, Scope $scope, ?int $argIndex): ?Node\Expr
+    {
+        if ($argIndex === null || ! $node instanceof Node\Expr\CallLike || $node->isFirstClassCallable()) {
+            return null;
+        }
+
+        $argument = ArgumentSlots::of($node->getArgs())->at($argIndex);
+        if ($argument === null) {
+            return null;
+        }
+
+        $type = $scope->getType($argument);
+        foreach (['Symfony\\Component\\HttpFoundation\\Response', 'Illuminate\\Contracts\\Support\\Responsable'] as $handed) {
+            if ((new ObjectType($handed))->isSuperTypeOf($type)->yes()) {
+                return $argument;
+            }
+        }
+
+        return null;
+    }
+
+    /** Records the response a `throw` carries, read as a return written where the throw is. */
+    private function carry(Node\Expr $response, Scope $scope, Frame $frame): void
+    {
+        foreach (($this->responseShapes)($response, $scope) as $shape) {
+            $this->carried[] = new ReturnSite($shape['type'], $frame->location, $shape['component']);
+        }
     }
 
     /** The `new X(...)` a thrown expression is, where X is the exception the status is wanted for. */

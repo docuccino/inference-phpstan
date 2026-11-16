@@ -7,11 +7,13 @@ namespace Docuccino\Inference\PhpStan\Analysis;
 use PhpParser\Node;
 use PHPStan\Analyser\Scope;
 use PHPStan\Node\ClosureReturnStatementsNode;
+use PHPStan\Node\FunctionReturnStatementsNode;
 use PHPStan\Node\MethodReturnStatementsNode;
 use PHPStan\Node\ReturnStatementsNode;
+use PHPStan\Reflection\ParameterReflection;
 
 /**
- * One analysable callable body — a method, a closure or an arrow function — as the returns it can answer
+ * One analysable callable body — a method, a function, a closure or an arrow function — as the returns it can answer
  * with, each paired with its flow-refined scope, plus the nodes it is written in, its parameter names and
  * the node it was read off. An arrow function has no `return`: its one implicit return is its body
  * expression, in the scope inside it.
@@ -31,7 +33,7 @@ final readonly class CallableBody
         public array $returns,
         public array $nodes,
         public array $parameters,
-        public MethodReturnStatementsNode|ClosureReturnStatementsNode|Node\Expr\ArrowFunction $declaration,
+        public MethodReturnStatementsNode|FunctionReturnStatementsNode|ClosureReturnStatementsNode|Node\Expr\ArrowFunction $declaration,
     ) {}
 
     public static function ofMethod(MethodReturnStatementsNode $node): self
@@ -40,6 +42,13 @@ final readonly class CallableBody
         foreach ($node->getMethodReflection()->getVariants()[0]->getParameters() as $parameter) {
             $parameters[] = $parameter->getName();
         }
+
+        return new self(self::returnsOf($node), array_values($node->getStatements()), $parameters, $node);
+    }
+
+    public static function ofFunction(FunctionReturnStatementsNode $node): self
+    {
+        $parameters = array_map(static fn (ParameterReflection $parameter): string => $parameter->getName(), $node->getFunctionReflection()->getVariants()[0]->getParameters());
 
         return new self(self::returnsOf($node), array_values($node->getStatements()), $parameters, $node);
     }

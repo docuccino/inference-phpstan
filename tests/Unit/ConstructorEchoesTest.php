@@ -6,8 +6,10 @@ use Docuccino\Core\Inference\DType\LiteralT;
 use Docuccino\Inference\PhpStan\Analysis\AccessorKind;
 use Docuccino\Inference\PhpStan\Analysis\ConstructorEchoes;
 use Docuccino\Inference\PhpStan\Analysis\ParamAccessor;
+use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Echoes\ConstantParentEchoes;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Echoes\EchoedProblem;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Echoes\EchoingBase;
+use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Echoes\EchoingChild;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Echoes\InheritsEchoes;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Echoes\InlineEchoedProblem;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Echoes\OwnTableEchoes;
@@ -25,6 +27,7 @@ it('reads the members a constructor takes off its parameters, and only those PHP
     expect((new ConstructorEchoes(static function (string $file): void {}))->of($class))->toEqual($expected);
 })->with(function (): array {
     $status = new ParamAccessor('rendered', AccessorKind::Method, 'getStatusCode');
+    $handed = new ParamAccessor('response', AccessorKind::Method, 'getStatusCode');
 
     return [
         // `$this->status` is read at the value its own first write gave it, since reading it any earlier throws.
@@ -48,6 +51,14 @@ it('reads the members a constructor takes off its parameters, and only those PHP
         'the constructor a subclass inherits' => [InheritsEchoes::class, [
             'title' => ['accessor' => $status, 'text' => true, 'fallback' => new LiteralT('Error')],
         ]],
+        // The parent's reads arrive in the child's own parameter names, through the argument that hands them on;
+        // read back, the status is still that status, and its phrase is no longer a read of the response.
+        'what a parent constructor writes, handed the response' => [EchoingChild::class, [
+            'status' => ['accessor' => $handed, 'text' => false, 'fallback' => null],
+            'title' => ['accessor' => $handed, 'text' => true, 'fallback' => new LiteralT('Error')],
+            'code' => ['accessor' => $handed, 'text' => false, 'fallback' => null],
+        ]],
+        'what a parent constructor writes off a response of its own' => [ConstantParentEchoes::class, []],
         'writable, unreached, or keyed through a writable property' => [UnfixedEchoes::class, [
             'status' => ['accessor' => ParamAccessor::identity('status'), 'text' => false, 'fallback' => null],
         ]],
@@ -66,10 +77,21 @@ it('records every file the answer was read out of, each time it is asked', funct
     $echoes->of(InheritsEchoes::class);
     $echoes->of(InheritsEchoes::class);
 
-    // The subclass declares what the hierarchy says of each property; the base writes the constructor; and
-    // `self::$statusTexts` is Symfony's table because of what the base's hierarchy declares.
-    $once = ['InheritsEchoes.php', 'EchoingBase.php', 'Response.php', 'EchoingBase.php', 'EchoingBase.php', 'Response.php'];
+    // The subclass declares what the hierarchy says of each property; the base writes the constructor, and
+    // runs Symfony's through `parent::__construct()`; and `self::$statusTexts` is Symfony's table because of
+    // what the base's hierarchy declares.
+    $once = ['InheritsEchoes.php', 'EchoingBase.php', 'Response.php', 'EchoingBase.php', 'Response.php', 'EchoingBase.php', 'Response.php'];
     expect($touched)->toBe([...$once, ...$once]);
+});
+
+it('records the parent constructor a child runs as a file the answer was read out of', function (): void {
+    $touched = [];
+    (new ConstructorEchoes(static function (string $file) use (&$touched): void {
+        $touched[] = basename($file);
+    }))->of(EchoingChild::class);
+
+    // An edit to the parent's constructor can change what the child echoes, so it keys the answer itself.
+    expect(array_slice($touched, 0, 4))->toBe(['EchoingChild.php', 'EchoingParent.php', 'EchoingChild.php', 'EchoingParent.php']);
 });
 
 it('records the file a constant fallback is copied out of', function (): void {

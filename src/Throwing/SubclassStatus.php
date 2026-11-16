@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Docuccino\Inference\PhpStan\Throwing;
 
+use Docuccino\Core\Inference\ArgumentSlots;
+use Docuccino\Inference\PhpStan\Analysis\ParamAccessor;
 use Docuccino\Inference\PhpStan\Support\ProjectFilter;
 use PhpParser\Node;
 use ReflectionClass;
@@ -11,7 +13,11 @@ use ReflectionMethod;
 use ReflectionParameter;
 
 /**
- * The status an `HttpException` subclass pins on itself.
+ * The status a subclass pins on itself, where its ROOT takes the status as a constructor argument: an
+ * `HttpException` ({@see ofHttpExceptions()}), or one of the framework's response classes
+ * ({@see ofResponses()}), where `class GoneResponse extends Response` handing `parent::__construct('', 410)`
+ * is how an application says "this response IS a 410". Everything below is written about exceptions and holds
+ * for both; a response may also set its status in its own constructor ({@see setterCall()}).
  *
  * `HttpException` takes its status as a constructor argument, so a subclass that fixes one — which is how
  * an application says "this exception IS a 409" — states it in its own `parent::__construct()` call,
@@ -28,6 +34,11 @@ use ReflectionParameter;
  * parameter, {@see statusParameter()} names the slot so a construction the build can see — a
  * `throw new X(423, …)`, or the `new self(…)` inside the factory a `throw` names ({@see FactoryStatus}) —
  * can still be folded at its own site.
+ *
+ * A slot may also be read THROUGH the value it holds: `parent::__construct($reason->status(), …)` forwards
+ * the `$reason` slot, and the status is what the enum case a construction passes there maps to
+ * ({@see statusRead()}, folded by {@see CaseStatus}). A reason enum is how an application writes a refusal
+ * and its status in one place, and every construction reads exactly like one passing the number.
  *
  * A class only FORWARDS a parameter it hands over untouched. A constructor that writes the variable
  * anywhere in its body (`if ($errors === []) { $statusCode = 400; }`) gives the parent a value neither the
@@ -59,23 +70,31 @@ use ReflectionParameter;
  * Priming is also why the reads below cost the replay layer nothing, which is worth recording so it is not
  * re-litigated: the adapter primes the application's whole PSR-4 tree at boot, so every one of its
  * exception classes is already in the analysed set and reading one cannot grow it. Measured over one build
- * of the fixture app's throw corpus when it held 58 (it holds 94 throw actions now, and every one added
- * since depends only on files those already did, but for the nine helper rows, not re-measured), the
+ * of the fixture app's throw corpus when it held 58 (it holds 139 throw actions now, and every one added
+ * since depends only on files those already did, but for the nine helper rows and the seventeen reason-enum
+ * rows, whose enums and exception classes sit in the same primed tree, not re-measured), the
  * analysed-file count is the same whether the reads are scoped to the application or to the descend
  * paths — so no recording is ever discarded, and the modular root is no different because being primed
  * is the whole of what makes that true. What the wider scope costs is one more live file walk, for an
  * exception class nothing else opened.
  *
- * @phpstan-type StatusPin array{status: int|null, parameter: int|null, files: list<string>}
+ * @phpstan-type StatusPin array{status: int|null, parameter: int|null, read: ParamAccessor|null, files: list<string>}
  * @phpstan-type AgreedRead array{status: int|null, files: list<string>}
  * @phpstan-type ConstructorSlot array{names: list<string>, default: int|null}
+ * @phpstan-type RootSlot array{slot: int, default: int|null}
  *
  * @internal
  */
-final class HttpExceptionStatus
+final class SubclassStatus
 {
-    /** Argument 0 of `HttpException::__construct` is the status. */
-    private const STATUS_SLOT = 0;
+    /** Argument 0 of `HttpException::__construct` is the status, and it has no default. */
+    private const HTTP_EXCEPTION_SLOT = 0;
+
+    /** The framework's own responses, each taking its status at the parameter its constructor names this. */
+    private const RESPONSE_STATUS = 'status';
+
+    /** What a response's own constructor may set its status with after the parent's has run. */
+    private const RESPONSE_SETTER = 'setStatusCode';
 
     /**
      * Resolutions by FQCN. Seeded before the work so a hierarchy that cannot terminate answers rather than
@@ -94,14 +113,72 @@ final class HttpExceptionStatus
      */
     private array $agreed = [];
 
-    public function __construct(
+    /**
+     * @param  array<string, RootSlot>  $roots  each root class, the slot its constructor takes the status in,
+     *                                          and the status a call leaving that slot empty passes
+     * @param  string|null  $setter  the method a subclass's constructor may restate the status with
+     */
+    private function __construct(
         private readonly ClassBodies $bodies,
         private readonly ProjectFilter $appFilter,
+        private readonly array $roots,
+        private readonly ?string $setter = null,
     ) {}
 
-    public function isHttpException(string $fqcn): bool
+    public static function ofHttpExceptions(ClassBodies $bodies, ProjectFilter $appFilter): self
     {
-        return class_exists($fqcn) && is_a($fqcn, KnownThrowers::HTTP_EXCEPTION, true);
+        return new self($bodies, $appFilter, [KnownThrowers::HTTP_EXCEPTION => ['slot' => self::HTTP_EXCEPTION_SLOT, 'default' => null]]);
+    }
+
+    /**
+     * The response classes `$classes` names, each at the slot its INSTALLED constructor names `status`, with
+     * that parameter's default. Reflection evaluates the default, which is safe here and nowhere else: these
+     * are the framework's own constructors, whose status defaults are integer literals.
+     *
+     * @param  list<string>  $classes
+     */
+    public static function ofResponses(ClassBodies $bodies, ProjectFilter $appFilter, array $classes): self
+    {
+        $roots = [];
+        foreach ($classes as $class) {
+            $constructor = class_exists($class) ? (new ReflectionClass($class))->getConstructor() : null;
+            foreach ($constructor?->getParameters() ?? [] as $parameter) {
+                if ($parameter->getName() === self::RESPONSE_STATUS) {
+                    $default = $parameter->isDefaultValueAvailable() ? $parameter->getDefaultValue() : null;
+                    $roots[$class] = ['slot' => $parameter->getPosition(), 'default' => is_int($default) ? $default : null];
+                }
+            }
+        }
+
+        return new self($bodies, $appFilter, $roots, self::RESPONSE_SETTER);
+    }
+
+    /** Whether the class is a root or descends from one, so that this read is the one answering for it. */
+    public function governs(string $fqcn): bool
+    {
+        return $this->root($fqcn) !== null;
+    }
+
+    /** The status a root sends when its constructor is handed none. */
+    public function rootDefault(string $root): ?int
+    {
+        return $this->roots[$root]['default'] ?? null;
+    }
+
+    /** The nearest root the class is, or descends from; null for a class this read does not answer for. */
+    public function root(string $fqcn): ?string
+    {
+        if (! class_exists($fqcn)) {
+            return null;
+        }
+
+        for ($class = new ReflectionClass($fqcn); $class !== false; $class = $class->getParentClass()) {
+            if (isset($this->roots[$class->getName()])) {
+                return $class->getName();
+            }
+        }
+
+        return null;
     }
 
     /** The status the class states for every one of its instances, or null when none folded. */
@@ -118,6 +195,15 @@ final class HttpExceptionStatus
     public function statusParameter(string $fqcn): ?int
     {
         return $this->resolve($fqcn)['parameter'];
+    }
+
+    /**
+     * How the argument in {@see statusParameter()} becomes the status: null where it IS the status, and
+     * otherwise the read the constructor applies to it — `$reason->status()`, `$status->value`.
+     */
+    public function statusRead(string $fqcn): ?ParamAccessor
+    {
+        return $this->resolve($fqcn)['read'];
     }
 
     /**
@@ -162,7 +248,7 @@ final class HttpExceptionStatus
         }
 
         $files = [];
-        $status = $this->agreedOver($sites, $fqcn, $slot, $files);
+        $status = $this->agreedOver($sites, $fqcn, $slot, $this->statusRead($fqcn), $files);
 
         return $this->agreed[$fqcn] = ['status' => $status, 'files' => array_values(array_unique($files))];
     }
@@ -204,11 +290,11 @@ final class HttpExceptionStatus
             return $this->cache[$fqcn];
         }
 
-        $this->cache[$fqcn] = ['status' => null, 'parameter' => null, 'files' => []];
+        $this->cache[$fqcn] = ['status' => null, 'parameter' => null, 'read' => null, 'files' => []];
 
-        // Spelled out rather than asked of `isHttpException()`, which answers the same question: the
-        // `class_exists()` is what makes the name a class the reflection below may be handed.
-        if (! class_exists($fqcn) || ! is_a($fqcn, KnownThrowers::HTTP_EXCEPTION, true)) {
+        // The `class_exists()` is spelled out beside `governs()`, which checks it too: it is what makes the
+        // name a class the reflection below may be handed.
+        if (! class_exists($fqcn) || ! $this->governs($fqcn)) {
             return $this->cache[$fqcn];
         }
 
@@ -227,13 +313,14 @@ final class HttpExceptionStatus
         $file = $class->getFileName();
         $files = $file === false ? [] : [$file];
 
-        if ($class->getName() === KnownThrowers::HTTP_EXCEPTION) {
-            return ['status' => null, 'parameter' => self::STATUS_SLOT, 'files' => $files];
+        $root = $this->roots[$class->getName()] ?? null;
+        if ($root !== null) {
+            return ['status' => null, 'parameter' => $root['slot'], 'read' => null, 'files' => $files];
         }
 
         $parent = $class->getParentClass();
         if ($parent === false) {
-            return ['status' => null, 'parameter' => null, 'files' => $files];
+            return self::nothing($files);
         }
 
         $inherited = $this->resolve($parent->getName());
@@ -243,7 +330,7 @@ final class HttpExceptionStatus
 
         // No constructor of its own, so the parent's is what runs — and its answer is this class's.
         if ($constructor === null || $constructor->getDeclaringClass()->getName() !== $class->getName()) {
-            return ['status' => $inherited['status'], 'parameter' => $inherited['parameter'], 'files' => $files];
+            return [...$inherited, 'files' => $files];
         }
 
         return $this->readConstructor($class, $constructor, $parent, $inherited, $files);
@@ -280,43 +367,65 @@ final class HttpExceptionStatus
             return self::nothing($files);
         }
 
-        // A literal the parent pins is one no subclass can move: it reaches the parent's own
-        // `parent::__construct()` call, and this constructor only chooses the message beside it.
-        if ($inherited['status'] !== null) {
-            return ['status' => $inherited['status'], 'parameter' => null, 'files' => $files];
-        }
-
-        $slot = $inherited['parameter'];
-        if ($slot === null) {
+        // A status the constructor sets once its parent's has run replaces whatever the parent was handed.
+        $setter = $this->setterCall($class, $body, $call);
+        if ($setter === false) {
             return self::nothing($files);
         }
 
-        $argument = StatusForwarding::argumentAt($call, $slot, self::parameterNames($parent->getConstructor()));
-        if ($argument === null) {
-            return self::nothing($files);
+        if ($setter !== null) {
+            [$argument, $at, $read] = [...$setter, null];
+        } else {
+            // A literal the parent pins is one no subclass can move: it reaches the parent's own
+            // `parent::__construct()` call, and this constructor only chooses the message beside it.
+            if ($inherited['status'] !== null) {
+                return ['status' => $inherited['status'], 'parameter' => null, 'read' => null, 'files' => $files];
+            }
+
+            $slot = $inherited['parameter'];
+            if ($slot === null) {
+                return self::nothing($files);
+            }
+
+            $slots = ArgumentSlots::of($call->getArgs(), self::parameterNames($parent->getConstructor()));
+            $argument = $slots->at($slot);
+            [$at, $read] = [$call, $inherited['read']];
+
+            // A slot left empty passes the parent's default — but only a slot that IS the status; one read
+            // through an enum (`$reason->status()`) has no integer default to pass.
+            if ($argument === null) {
+                $default = $slots->knows($slot) && $read === null ? $this->slotDefault($parent, $slot) : null;
+
+                return $default === null ? self::nothing($files) : ['status' => $default, 'parameter' => null, 'read' => null, 'files' => $files];
+            }
         }
 
         // The declaration a `parent::__construct(HttpStatus::CONFLICT, …)` reads decides this class's
-        // status, so it joins the set whether or not the fold went on to succeed.
-        $files = [...$files, ...ConstantSource::files($argument, $class->getName())];
+        // status, so it joins the set whether or not the fold went on to succeed — and so does the enum a
+        // `parent::__construct(Reason::Gone->status(), …)` reads its status off.
+        $fold = $this->bodies->foldStatus($file, $argument, $at, $read);
+        $files = [...$files, ...ConstantSource::files($argument, $class->getName()), ...$fold['files']];
 
-        $folded = HttpStatusCode::folded($this->bodies->foldInt($file, $argument, $call));
+        $folded = HttpStatusCode::folded($fold['status']);
         if ($folded !== null) {
-            return ['status' => $folded, 'parameter' => null, 'files' => $files];
+            return ['status' => $folded, 'parameter' => null, 'read' => null, 'files' => $files];
         }
 
-        if (! $argument instanceof Node\Expr\Variable || ! is_string($argument->name)) {
+        $forwarded = StatusForwarding::forwarded($argument, $read);
+        if ($forwarded === null) {
             return self::nothing($files);
         }
+
+        [$variable, $read] = $forwarded;
 
         // A body that WRITES the variable it forwards hands the parent a value neither the caller nor the
         // default names — `if ($errors === []) { $statusCode = 400; }` really builds a 400 — so this class
         // forwards no slot at all, and a `throw new X(409, …)` cannot be read off one either.
-        if (StatusForwarding::reassigns($body, $argument->name)) {
+        if (StatusForwarding::reassigns($body, $variable)) {
             return self::nothing($files);
         }
 
-        $index = array_search($argument->name, self::parameterNames($constructor), true);
+        $index = array_search($variable, self::parameterNames($constructor), true);
         if (! is_int($index)) {
             return self::nothing($files);
         }
@@ -329,9 +438,9 @@ final class HttpExceptionStatus
             $files[] = $default;
         }
 
-        $status = $this->forwardedDefault($class, $constructor, $index, $file, $files);
+        $status = $this->forwardedDefault($class, $constructor, $index, $read, $file, $files);
 
-        return ['status' => $status, 'parameter' => $index, 'files' => $files];
+        return ['status' => $status, 'parameter' => $index, 'read' => $read, 'files' => $files];
     }
 
     /**
@@ -345,7 +454,57 @@ final class HttpExceptionStatus
      */
     private static function nothing(array $files): array
     {
-        return ['status' => null, 'parameter' => null, 'files' => $files];
+        return ['status' => null, 'parameter' => null, 'read' => null, 'files' => $files];
+    }
+
+    /**
+     * The status argument of the `$this->setStatusCode(…)` a constructor makes once its parent's has run, and
+     * the call it is written in; null where it makes none. `false` where it makes one this cannot place —
+     * several, one inside a branch, or one before the parent's — since the status sent is then not one
+     * expression's.
+     *
+     * @param  ReflectionClass<object>  $class
+     * @param  array<array-key, Node\Stmt>  $body
+     * @return array{Node\Expr, Node\Expr\MethodCall}|false|null
+     */
+    private function setterCall(ReflectionClass $class, array $body, Node\Expr\StaticCall $parentCall): array|false|null
+    {
+        if ($this->setter === null || ! $class->hasMethod($this->setter)) {
+            return null;
+        }
+
+        $calls = StatusForwarding::selfCalls($body, $this->setter);
+        if ($calls === []) {
+            return null;
+        }
+
+        $statements = array_values($body);
+        $parentAt = StatusForwarding::statementOf($statements, $parentCall);
+        $setterAt = count($calls) === 1 ? StatusForwarding::statementOf($statements, $calls[0]) : null;
+        if ($parentAt === null || $setterAt === null || $setterAt < $parentAt) {
+            return false;
+        }
+
+        $names = self::parameterNames($class->getMethod($this->setter));
+        $argument = ArgumentSlots::of($calls[0]->getArgs(), $names)->at(0);
+
+        return $argument === null ? false : [$argument, $calls[0]];
+    }
+
+    /**
+     * The status a call leaving `$slot` of `$parent`'s constructor empty passes: a root's own default, or the
+     * constant default of the application constructor that declares it.
+     *
+     * @param  ReflectionClass<object>  $parent
+     */
+    private function slotDefault(ReflectionClass $parent, int $slot): ?int
+    {
+        $constructor = $parent->getConstructor();
+        $root = $this->roots[$constructor?->getDeclaringClass()->getName() ?? $parent->getName()] ?? null;
+
+        return $root !== null
+            ? ($root['slot'] === $slot ? HttpStatusCode::folded($root['default']) : null)
+            : $this->constantDefault($constructor, $slot);
     }
 
     /**
@@ -365,6 +524,7 @@ final class HttpExceptionStatus
         ReflectionClass $class,
         ReflectionMethod $constructor,
         int $index,
+        ?ParamAccessor $read,
         string $file,
         array &$files,
     ): ?int {
@@ -378,27 +538,30 @@ final class HttpExceptionStatus
             $this->constructionsIn($class->getName(), $class->getName(), $file),
             $class->getName(),
             $index,
+            $read,
             $files,
         );
     }
 
     /**
      * The one status a set of the class's own constructions folds to, each at the site it is written.
-     * `$files` collects the declarations the folds read, for the dependency set.
+     * `$read` is how the slot's argument becomes the status ({@see statusRead()}), and `$files` collects
+     * the declarations the folds read, for the dependency set.
      *
      * @param  list<ConstructionSite>  $sites
      * @param  list<string>  $files
      */
-    private function agreedOver(array $sites, string $class, int $slot, array &$files): ?int
+    private function agreedOver(array $sites, string $class, int $slot, ?ParamAccessor $read, array &$files): ?int
     {
         return ConstructionStatus::agreedIn(
             $sites,
             $slot,
             $this->constructorSlot($class, $slot),
-            function (Node\Expr $argument, ConstructionSite $site) use (&$files): ?int {
-                $files = [...$files, ...ConstantSource::files($argument, $site->declaringClass)];
+            function (Node\Expr $argument, ConstructionSite $site) use ($read, &$files): ?int {
+                $fold = $this->bodies->foldStatus($site->file, $argument, $site->construction, $read);
+                $files = [...$files, ...ConstantSource::files($argument, $site->declaringClass), ...$fold['files']];
 
-                return $this->bodies->foldInt($site->file, $argument, $site->construction);
+                return $fold['status'];
             },
         );
     }
@@ -410,7 +573,7 @@ final class HttpExceptionStatus
      * A construction the class makes of ITSELF is one written in its own declared code OR in a class it
      * inherits from: `new static(…)` in a base builds the subclass as surely as `new self(…)` in the
      * subclass does, and reading only the subclass's own answers a status for a class that has two. So
-     * the walk is the hierarchy, up to `HttpException`, whose own constructor takes the status and builds
+     * the walk is the hierarchy, up to the root, whose own constructor takes the status and builds
      * no subclass. Read them all or read none: an ancestor written in a file this build cannot open — one a
      * package declares, whose bodies PHPStan strips — or one using a TRAIT, whose methods live in a file
      * this read never opens, leaves a construction unseen, and a partial set is a status the class may not
@@ -426,7 +589,7 @@ final class HttpExceptionStatus
 
         for (
             $declaring = $class;
-            $declaring !== false && $declaring->getName() !== KnownThrowers::HTTP_EXCEPTION;
+            $declaring !== false && ! isset($this->roots[$declaring->getName()]);
             $declaring = $declaring->getParentClass()
         ) {
             $file = $declaring->getFileName();

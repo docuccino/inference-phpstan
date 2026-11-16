@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Docuccino\Inference\PhpStan\Tests\Support;
 
+use Docuccino\Inference\PhpStan\Analysis\ParamAccessor;
 use Docuccino\Inference\PhpStan\Throwing\ClassBodies;
 use PhpParser\Node;
 
@@ -24,11 +25,11 @@ final class RecordingBodies implements ClassBodies
         return $this->inner->methods($file, $class);
     }
 
-    public function foldInt(string $file, Node\Expr $expr, Node\Expr\New_|Node\Expr\StaticCall $at): ?int
+    public function foldStatus(string $file, Node\Expr $expr, Node\Expr\New_|Node\Expr\StaticCall|Node\Expr\MethodCall $at, ?ParamAccessor $read): array
     {
         $this->folded[] = $at instanceof Node\Expr\New_ ? 'construction' : 'parent-call';
 
-        return $this->inner->foldInt($file, $expr, $at);
+        return $this->inner->foldStatus($file, $expr, $at, $read);
     }
 
     public function intDefault(string $file, string $class, string $method, int $index): ?int

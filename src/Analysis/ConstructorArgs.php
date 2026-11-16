@@ -7,7 +7,7 @@ namespace Docuccino\Inference\PhpStan\Analysis;
 use PhpParser\Node;
 
 /**
- * Names the arguments of a `new Foo(...)`, pairing positional ones with the constructor's parameter names
+ * Names the arguments of a `new Foo(...)` (or a `parent::__construct(...)`), pairing positional ones with the constructor's parameter names
  * so a written `new Foo($a, $b)` and a written `new Foo(b: $b, a: $a)` describe the same members. A spread
  * (`...$args`) names nothing, so the arguments after it are left out rather than mis-attributed.
  *
@@ -21,12 +21,12 @@ final class ConstructorArgs
      * @param  list<string>  $paramNames  the constructor's parameter names, in declaration order
      * @return array<string, Node\Expr>
      */
-    public static function named(Node\Expr\New_ $new, array $paramNames): array
+    public static function named(Node\Expr\New_|Node\Expr\StaticCall $call, array $paramNames): array
     {
         $named = [];
         $position = 0;
 
-        foreach ($new->getArgs() as $arg) {
+        foreach ($call->getArgs() as $arg) {
             if ($arg->unpack) {
                 break;
             }

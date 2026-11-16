@@ -6,7 +6,6 @@ namespace Docuccino\Inference\PhpStan\Runtime;
 
 use Composer\InstalledVersions;
 use Docuccino\Inference\PhpStan\Runtime\V2_2\RuntimeAdapter as V2_2Adapter;
-use OutOfRangeException;
 
 /**
  * Selects the {@see RuntimeAdapter} for the installed PHPStan minor — the seam where a new per-minor adapter
@@ -52,13 +51,30 @@ class RuntimeAdapterFactory
 
     private function detectVersion(): string
     {
-        try {
-            $version = InstalledVersions::getPrettyVersion('phpstan/phpstan');
-        } catch (OutOfRangeException) {
-            $version = null;
+        return self::installedVersion(InstalledVersions::getAllRawData(), 'phpstan/phpstan') ?? 'unknown';
+    }
+
+    /**
+     * The version the application installed of a package: the first installed set that installs it, not
+     * merely the first that names it. Once PHPStan's phar has loaded, its own Composer metadata joins the
+     * process AHEAD of the application's, and there `phpstan/phpstan` is only replaced by the source
+     * package, with no version: a read that stopped there would find none, and every engine booted in the
+     * process after the first would refuse to start.
+     *
+     * @param  list<mixed>  $installed  {@see InstalledVersions::getAllRawData()}
+     */
+    public static function installedVersion(array $installed, string $package): ?string
+    {
+        foreach ($installed as $set) {
+            $version = is_array($set) && is_array($set['versions'] ?? null) && is_array($set['versions'][$package] ?? null)
+                ? ($set['versions'][$package]['pretty_version'] ?? null)
+                : null;
+            if (is_string($version)) {
+                return $version;
+            }
         }
 
-        return $version ?? 'unknown';
+        return null;
     }
 
     /**

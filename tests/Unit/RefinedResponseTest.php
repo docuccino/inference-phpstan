@@ -346,6 +346,49 @@ it('carries the declared component through every other rewrite', function (): vo
         ->and((new RefinedResponse)->component)->toBeNull();
 });
 
+it('emits a stream, file or redirect as its own class, never as a JsonResponse', function (): void {
+    // The status is all that is read of one; its body is a stream or a file whose media type the call site
+    // names, and a JsonResponse would claim a JSON body it does not have.
+    $streamed = 'Symfony\\Component\\HttpFoundation\\StreamedResponse';
+    $status = RefinedResponse::transported($streamed, new LiteralT(202), null);
+
+    expect($status->toClassT(ResponseShapeRefiner::CANONICAL_RESPONSE))->toEqual(new ClassT($streamed, [new UnknownT('payload not folded'), new LiteralT(202)]))
+        ->and(RefinedResponse::transported($streamed, null, null)->withUnreadStatus()->toClassT(ResponseShapeRefiner::CANONICAL_RESPONSE))
+        ->toEqual(new ClassT($streamed, [new UnknownT('payload not folded'), new UnknownT('status not folded')]))
+        // The class alone says nothing the bare type does not.
+        ->and(RefinedResponse::transported($streamed, null, null)->toClassT(ResponseShapeRefiner::CANONICAL_RESPONSE))->toBeNull();
+});
+
+it('carries the class of a stream, file or redirect through every other rewrite', function (): void {
+    // A helper's status is bound, re-homed, re-labelled and named on its way out; losing the class at any of
+    // them would publish the stream as a JSON body.
+    $redirect = 'Illuminate\\Http\\RedirectResponse';
+    $base = RefinedResponse::transported($redirect, null, ParamAccessor::identity('status'));
+
+    expect($base->withBoundStatus(new LiteralT(301))->transport)->toBe($redirect)
+        ->and($base->withStatusSource(ParamAccessor::identity('outer'))->transport)->toBe($redirect)
+        ->and($base->withUnreadStatus()->transport)->toBe($redirect)
+        ->and($base->withContentType('text/csv')->transport)->toBe($redirect)
+        ->and($base->withComponent(new ComponentDeclaration('Moved', 'X::y'))->transport)->toBe($redirect)
+        ->and($base->withPayload(null, [])->transport)->toBe($redirect)
+        ->and($base->withoutStatusEchoes()->transport)->toBe($redirect)
+        ->and($base->withUnreadBody()->transport)->toBe($redirect)
+        ->and((new RefinedResponse)->transport)->toBeNull();
+});
+
+it('recognises the stream, file and redirect classes it reads a status for', function (string $fqcn, bool $expected): void {
+    expect(ResponseShapeRefiner::isTransportFqcn($fqcn))->toBe($expected);
+})->with([
+    'a stream' => ['Symfony\\Component\\HttpFoundation\\StreamedResponse', true],
+    'a JSON stream' => ['Symfony\\Component\\HttpFoundation\\StreamedJsonResponse', true],
+    'a file' => ['Symfony\\Component\\HttpFoundation\\BinaryFileResponse', true],
+    'Symfony\'s redirect' => ['Symfony\\Component\\HttpFoundation\\RedirectResponse', true],
+    'Laravel\'s redirect' => ['Illuminate\\Http\\RedirectResponse', true],
+    // A JSON or plain response is read by its own fold, and a subclass is not one of these.
+    'a JSON response' => ['Illuminate\\Http\\JsonResponse', false],
+    'an application\'s stream' => ['App\\Http\\CsvResponse', false],
+]);
+
 it('recognises the bare response class names it should try to enrich', function (): void {
     expect(ResponseShapeRefiner::isResponseFqcn('Illuminate\\Http\\JsonResponse'))->toBeTrue()
         ->and(ResponseShapeRefiner::isResponseFqcn('Illuminate\\Http\\Response'))->toBeTrue()
@@ -384,6 +427,48 @@ it('claims no status where the code replaced one it could not read', function ()
         ->and($read->withBoundStatus(new LiteralT(503))->statusUnread)->toBeFalse()
         // The payload's own status cannot stand either: the code replaced it.
         ->and(RefinedResponse::renderedBy(new ClassT('App\\Http\\Resources\\WidgetResource'))->withUnreadStatus()->toClassT(ResponseShapeRefiner::CANONICAL_RESPONSE)?->typeArgs)->toHaveCount(2);
+});
+
+it('claims no body where something the build cannot read may have rewritten it', function (): void {
+    // `$this->accept($response)` between building the response and returning it: the body it was built with,
+    // its members and what they read from may all be gone, so none of them is published; what else is known
+    // of the response stays.
+    $declaration = new ComponentDeclaration('Queued', 'X::y');
+    $built = withMembers(['type'], ['type' => ParamAccessor::identity('type')])
+        ->withBoundStatus(new LiteralT(202))
+        ->withContentType('application/problem+json')
+        ->withComponent($declaration)
+        ->withUnreadBody();
+
+    expect($built->payload)->toBeNull()
+        ->and($built->payloadMembers)->toBeNull()
+        ->and($built->payloadParamProvenance)->toBe([])
+        ->and($built->toClassT(ResponseShapeRefiner::CANONICAL_RESPONSE)?->typeArgs)
+        ->toEqual([new UnknownT('payload not folded'), new LiteralT(202), new LiteralT('application/problem+json')])
+        ->and($built->component)->toBe($declaration);
+});
+
+it('documents the body something replaced it with, and nothing read off the one before', function (): void {
+    // `->setData($rows)` after the response was built: the members, the status echoes and the component that
+    // named the old body are gone, while the status and media type it was sent with stay.
+    $declaration = new ComponentDeclaration('Queued', 'X::y');
+    $rows = new ArrayShapeT([new ArrayShapeField('accepted', new LiteralT(true))]);
+    $replaced = withMembers(['type'], ['type' => ParamAccessor::identity('type')])
+        ->withBoundStatus(new LiteralT(202))
+        ->withContentType('application/problem+json')
+        ->withComponent($declaration)
+        ->withBody($rows);
+
+    expect($replaced->payload)->toBe($rows)
+        ->and($replaced->payloadMembers)->toBeNull()
+        ->and($replaced->payloadParamProvenance)->toBe([])
+        ->and($replaced->component)->toBeNull()
+        ->and($replaced->toClassT(ResponseShapeRefiner::CANONICAL_RESPONSE)?->typeArgs)
+        ->toEqual([$rows, new LiteralT(202), new LiteralT('application/problem+json')])
+        // A status the old body decided was the old body's to decide, and nothing the new one says.
+        ->and(RefinedResponse::renderedBy(new ClassT('App\\Http\\Resources\\WidgetResource'))->withBody($rows)->toClassT(ResponseShapeRefiner::CANONICAL_RESPONSE)?->typeArgs)
+        ->toEqual([$rows, new UnknownT('status not folded')])
+        ->and(RefinedResponse::transported('Illuminate\\Http\\RedirectResponse', null, null)->withBody($rows)->transport)->toBe('Illuminate\\Http\\RedirectResponse');
 });
 
 it('marks a table read at the status accessor as its reason phrase, and leaves one at any other key as read', function (): void {

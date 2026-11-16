@@ -12,6 +12,7 @@ use Docuccino\Core\Inference\DType\ClassT;
 use Docuccino\Core\Inference\DType\DType;
 use Docuccino\Core\Inference\DType\EnumT;
 use Docuccino\Core\Inference\DType\IntersectionT;
+use Docuccino\Core\Inference\DType\LiteralT;
 use Docuccino\Core\Inference\DType\UnionT;
 use Docuccino\Core\Inference\DType\UnknownT;
 use Docuccino\Core\Inference\PropertyMetadata;
@@ -44,6 +45,9 @@ final class ClassMetadataFactory
     /** @var array<string, array<string, array{type: string, description: ?string}>> class → its constructor tags. */
     private array $params = [];
 
+    /** @var array<string, array{values: array<string, LiteralT>, files: list<string>}> */
+    private array $exact = [];
+
     public function __construct(
         private readonly DocBlockReader $docBlocks = new DocBlockReader,
         private readonly NativeTypeMapper $typeMapper = new NativeTypeMapper,
@@ -60,6 +64,42 @@ final class ClassMetadataFactory
         }
 
         return $this->cache[$class->fqcn] = $this->build($class->fqcn);
+    }
+
+    /**
+     * The value each public member holds on an instance built as exactly this class, as one built by its
+     * name is: what {@see FixedPropertyValues} pins with the class's finality set aside, read against the
+     * same declared type the class's metadata is. With the files a value was copied out of beyond the
+     * class's own hierarchy.
+     *
+     * @return array{values: array<string, LiteralT>, files: list<string>}
+     */
+    public function exactValues(string $fqcn): array
+    {
+        if (isset($this->exact[$fqcn])) {
+            return $this->exact[$fqcn];
+        }
+
+        if (! class_exists($fqcn)) {
+            return $this->exact[$fqcn] = ['values' => [], 'files' => []];
+        }
+
+        $values = [];
+        $files = [];
+        $reflection = new ReflectionClass($fqcn);
+        foreach ($reflection->getProperties(ReflectionProperty::IS_PUBLIC) as $property) {
+            if ($property->isStatic()) {
+                continue;
+            }
+            $docComment = $property->getDocComment();
+            $fixed = $this->fixedValues->of($reflection, $property, $this->propertyType($property, $docComment === false ? null : $docComment), exact: true);
+            if ($fixed !== null) {
+                $values[$property->getName()] = $fixed['type'];
+                $files = [...$files, ...$fixed['files']];
+            }
+        }
+
+        return $this->exact[$fqcn] = ['values' => $values, 'files' => array_values(array_unique($files))];
     }
 
     private function build(string $fqcn): ClassMetadata

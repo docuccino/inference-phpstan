@@ -6,6 +6,7 @@ namespace Docuccino\Inference\PhpStan\Analysis;
 
 use Docuccino\Core\Diagnostics\Diagnostic;
 use Docuccino\Core\Diagnostics\Severity;
+use Docuccino\Core\Extensions\Schema\DeclarationFiles;
 use Docuccino\Core\Inference\ActionAnalysis;
 use Docuccino\Core\Inference\ActionRef;
 use Docuccino\Core\Inference\CallableRef;
@@ -13,6 +14,7 @@ use Docuccino\Core\Inference\CallCondition;
 use Docuccino\Core\Inference\ClassMetadata;
 use Docuccino\Core\Inference\ClassRef;
 use Docuccino\Core\Inference\ComponentDeclaration;
+use Docuccino\Core\Inference\ConditionTree;
 use Docuccino\Core\Inference\DType\ClassT;
 use Docuccino\Core\Inference\DType\DType;
 use Docuccino\Core\Inference\DType\NullT;
@@ -34,11 +36,14 @@ use Docuccino\Inference\PhpStan\Runtime\RuntimeAdapter;
 use Docuccino\Inference\PhpStan\Support\ProjectFilter;
 use Docuccino\Inference\PhpStan\Support\SourceOrder;
 use Docuccino\Inference\PhpStan\Throwing\AnalyzedBodies;
+use Docuccino\Inference\PhpStan\Throwing\CarriedResponses;
+use Docuccino\Inference\PhpStan\Throwing\CaseStatus;
 use Docuccino\Inference\PhpStan\Throwing\ClassBodies;
 use Docuccino\Inference\PhpStan\Throwing\FactoryStatus;
-use Docuccino\Inference\PhpStan\Throwing\HttpExceptionStatus;
 use Docuccino\Inference\PhpStan\Throwing\ReturnedExceptions;
+use Docuccino\Inference\PhpStan\Throwing\SubclassStatus;
 use Docuccino\Inference\PhpStan\Throwing\ThrowAnalyzer;
+use Docuccino\Inference\PhpStan\Throwing\Unreached;
 use Docuccino\Inference\PhpStan\Trace\CalleeResolver;
 use Docuccino\Inference\PhpStan\Trace\ReturnValueFolder;
 use Docuccino\Inference\PhpStan\Trace\Tracer;
@@ -49,6 +54,7 @@ use PhpParser\Node\Expr\Variable;
 use PHPStan\Analyser\Scope;
 use PHPStan\Node\ClosureReturnStatementsNode;
 use PHPStan\Node\InArrowFunctionNode;
+use PHPStan\Node\MethodReturnStatementsNode;
 use PHPStan\Type\ObjectType;
 use Throwable;
 
@@ -58,7 +64,7 @@ use Throwable;
  * method is total — a failure becomes `UnknownT` plus a warning diagnostic, never an exception.
  *
  * @phpstan-type Probes array{calls: list<Node\Expr\MethodCall>, tests: list<Node\Expr\Instanceof_>}
- * @phpstan-type NarrowedSite array{pos: int, line: int, type: DType, component: ComponentDeclaration|null, guard: list<list<string>>, delegates: bool, echoes: string|null, conditions: list<CallCondition>, typeConditions: list<TypeCondition>, scope: Scope|null, expr: Node\Expr|null, foldScope: Scope}
+ * @phpstan-type NarrowedSite array{pos: int, line: int, type: DType, component: ComponentDeclaration|null, guard: list<list<string>>, delegates: bool, echoes: string|null, conditions: list<CallCondition>, typeConditions: list<TypeCondition>, reachedWhen: ConditionTree|null, scope: Scope|null, expr: Node\Expr|null, foldScope: Scope}
  *
  * @internal
  */
@@ -99,11 +105,26 @@ final class PhpStanTypeEngine implements TypeEngine
      * function of the class — or of the class and one factory name — alone, which is what makes the memo
      * sound across routes.
      */
-    private ?HttpExceptionStatus $httpExceptionStatus = null;
+    private ?SubclassStatus $httpExceptionStatus = null;
 
     private ?FactoryStatus $factoryStatus = null;
 
+    /** Memoises each subclass's constructor walk the same way. */
+    private ?CarriedResponses $carriedResponses = null;
+
     private ?ClassBodies $classBodies = null;
+
+    private ?CaseStatus $caseStatus = null;
+
+    private ?CalleeResolver $callees = null;
+
+    /**
+     * The helpers a narrowed harvest is inside, outermost first: how deep it has followed the exception, and
+     * which helper handing it back on would never end ({@see forwarded()}).
+     *
+     * @var list<string>
+     */
+    private array $forwarding = [];
 
     /**
      * The publishable form of a ref's label. Both {@see ActionRef::symbol()} and
@@ -201,10 +222,13 @@ final class PhpStanTypeEngine implements TypeEngine
             );
         }
 
-        $returns = $this->harvestReturns($body, $action->file);
+        $harvest = $this->harvestReturns($body, $action->file);
+        $returns = $harvest['returns'];
 
         $throwAnalyzer = $this->makeThrowAnalyzer();
         $throws = $throwAnalyzer->analyze($body, $this->selfLabel($action));
+        // A response thrown for the framework to send as it is answers the request as a returned one does.
+        $returns = [...$returns, ...$throwAnalyzer->carriedResponses()];
 
         $truncation = $this->refinerTruncation($this->label($action));
         $diagnostics = $throwAnalyzer->diagnostics();
@@ -213,7 +237,7 @@ final class PhpStanTypeEngine implements TypeEngine
             returns: $returns,
             throws: $throws,
             diagnostics: $truncation === null ? $diagnostics : [...$diagnostics, $truncation],
-            dependencyFiles: [$action->file, ...$throwAnalyzer->visitedFiles(), ...$this->drainRefinerFiles()],
+            dependencyFiles: [$action->file, ...$harvest['files'], ...$throwAnalyzer->visitedFiles(), ...$this->drainRefinerFiles()],
         );
     }
 
@@ -253,16 +277,25 @@ final class PhpStanTypeEngine implements TypeEngine
     }
 
     /**
-     * Every return a body can answer with, the arrow function's one implicit return included.
+     * Every return a body can answer with, the arrow function's one implicit return included — but not one
+     * whose value always throws before it is returned ({@see Unreached}), with the files of the enums that
+     * decided so.
      *
-     * @return list<ReturnSite>
+     * @return array{returns: list<ReturnSite>, files: list<string>}
      */
     private function harvestReturns(CallableBody $body, string $file): array
     {
         $returns = [];
+        $files = [];
+        $read = static function (string $enum) use (&$files): void {
+            $files = [...$files, ...DeclarationFiles::of($enum)];
+        };
         foreach ($body->returns as $return) {
             $location = new SourceLocation($file, $return['at']->getStartLine());
             $scope = $this->fileAnalyzer->stableScope($return['scope']);
+            if ($return['expr'] !== null && Unreached::alwaysThrows($return['expr'], $scope, $read)) {
+                continue;
+            }
             // One return statement can be several responses: an application's `toResponse()` answering a
             // guard arm beside the framework's rendering ({@see ResponseShapeRefiner::refineArms()}).
             foreach ($this->siteShapes($return['expr'], $scope) as $shape) {
@@ -270,7 +303,7 @@ final class PhpStanTypeEngine implements TypeEngine
             }
         }
 
-        return $returns;
+        return ['returns' => $returns, 'files' => $files];
     }
 
     /**
@@ -300,6 +333,15 @@ final class PhpStanTypeEngine implements TypeEngine
         $type = $this->translator->translate($scope->getType($expr));
         if (! $type instanceof ClassT) {
             return [['type' => $type, 'component' => null]];
+        }
+        if (ResponseShapeRefiner::isTransportFqcn($type->fqcn)) {
+            // A file, stream or redirect: the status its call states, on the class it already is.
+            return ResponseArms::sites($this->refiner()->refineArms($expr, $scope), $type, $type->fqcn);
+        }
+        if ($this->refiner()->isResponseSubclass($type->fqcn)) {
+            // A response class the application derives: the status and body its constructor hands the
+            // framework's, emitted as that framework class would be.
+            return ResponseArms::sites($this->refiner()->refineArms($expr, $scope), $type, ResponseShapeRefiner::CANONICAL_RESPONSE);
         }
         if (! ResponseShapeRefiner::isResponseFqcn($type->fqcn)) {
             // The router sends a returned Responsable as its `toResponse()`, so an application-written one
@@ -426,6 +468,7 @@ final class PhpStanTypeEngine implements TypeEngine
             dependencyFiles: [
                 $callable->file,
                 ...($entryFile === null ? [] : [$entryFile]),
+                ...$narrowed['files'],
                 ...$returned['files'],
                 ...$this->drainRefinerFiles(),
             ],
@@ -500,9 +543,13 @@ final class PhpStanTypeEngine implements TypeEngine
      * comes back, in source order, each carrying the parameter it returns unchanged and the literal
      * parameter calls and `instanceof` tests its scope proves ({@see ParameterUse}).
      *
-     * `sites` are the harvested sites behind `returns`, for a reader that needs the expression itself.
+     * A site handing the narrowed exception on to a project helper answers with what that helper answers
+     * for it ({@see forwarded()}), so the narrowing reaches a `match` written inside the helper.
      *
-     * @return array{returns: list<ReturnSite>, diagnostics: list<Diagnostic>, sites: list<NarrowedSite>}
+     * `sites` are the harvested sites behind `returns`, for a reader that needs the expression itself, and
+     * `files` the helpers' files those answers were read in.
+     *
+     * @return array{returns: list<ReturnSite>, diagnostics: list<Diagnostic>, sites: list<NarrowedSite>, files: list<string>}
      */
     private function harvestNarrowed(CallableBody $body, CallableRef $callable): array
     {
@@ -543,7 +590,20 @@ final class PhpStanTypeEngine implements TypeEngine
         }
 
         if ($subject === null || $narrowTo === null) {
-            return ['returns' => $this->returnSites($sites, $callable), 'diagnostics' => [], 'sites' => $sites];
+            return ['returns' => $this->returnSites($sites, $callable), 'diagnostics' => [], 'sites' => $sites, 'files' => []];
+        }
+
+        $forwardedDiagnostics = [];
+        $forwardedFiles = [];
+        if (! $every && $subject instanceof Variable) {
+            foreach ($sites as $index => $site) {
+                $forwarded = $this->forwarded($site, $subject, $narrowTo, $body);
+                if ($forwarded !== null) {
+                    $sites[$index] = $forwarded['site'];
+                    $forwardedDiagnostics = [...$forwardedDiagnostics, ...$forwarded['diagnostics']];
+                    $forwardedFiles = [...$forwardedFiles, ...$forwarded['files']];
+                }
+            }
         }
 
         // Control-flow order, then every arm the narrowed type satisfies (empty guard = default branch).
@@ -556,23 +616,105 @@ final class PhpStanTypeEngine implements TypeEngine
         if ($every) {
             // Reaching every site means asking each one, and PHPStan's own type for the parameter there is the
             // better answer where it has one: after `if ($e instanceof A) { return …; }` it says `$e` is
-            // anything BUT an A, which no guard of required classes can spell.
-            $admitted = array_values(array_filter(
-                $satisfiable,
-                fn (array $candidate): bool => $candidate['scope'] === null
-                    || ! $candidate['scope']->getType($subject)->isSuperTypeOf(new ObjectType($narrowTo))->no(),
-            ));
+            // anything BUT an A, which no guard of required classes can spell. Where a guard joins its test
+            // with another condition the scope proves neither, so the test is answered here, by the same reading.
+            $admitted = [];
+            foreach ($satisfiable as $candidate) {
+                $candidate['reachedWhen'] = self::answerSubject($candidate['reachedWhen'], $subject, $narrowTo);
+                if ($candidate['reachedWhen']?->evaluate(static fn (): ?bool => null) === false) {
+                    continue;
+                }
+                if ($candidate['scope'] === null || ! $candidate['scope']->getType($subject)->isSuperTypeOf(new ObjectType($narrowTo))->no()) {
+                    $admitted[] = $candidate;
+                }
+            }
 
-            return ['returns' => $this->returnSites($admitted, $callable), 'diagnostics' => [], 'sites' => $admitted];
+            return ['returns' => $this->returnSites($admitted, $callable), 'diagnostics' => [], 'sites' => $admitted, 'files' => []];
         }
 
         $chosen = $this->chooseNarrowedSite($satisfiable, $narrowTo);
 
         return [
             'returns' => $this->returnSites($chosen === null ? [] : [$chosen], $callable),
-            'diagnostics' => $this->narrowingAmbiguity($satisfiable, $chosen, $narrowTo, $callable),
+            'diagnostics' => [...$forwardedDiagnostics, ...$this->narrowingAmbiguity($satisfiable, $chosen, $narrowTo, $callable)],
             'sites' => $chosen === null ? [] : [$chosen],
+            'files' => $forwardedFiles,
         ];
+    }
+
+    /**
+     * A site handing the narrowed exception on to a project helper — `return Problems::for($e);`, or
+     * `->toResponse()` on what such a helper builds — answers with what that helper answers for the same
+     * exception: its own return sites, harvested narrowed on the parameter the exception lands in and chosen
+     * by the same rules. The site keeps its own position and guard, which decide whether it is reached at
+     * all, and the helper's `#[ErrorComponent]` names the body over any below it, as a descended hop's does.
+     *
+     * Null, and the site stands as it was read, where it hands nothing on — the exception rebound first, or
+     * passed anywhere but whole to one parameter — where the helper is not the application's, where the walk
+     * is past its depth or back inside a helper it is already in, or where the helper reaches nothing for the
+     * type.
+     *
+     * @param  NarrowedSite  $site
+     * @return array{site: NarrowedSite, diagnostics: list<Diagnostic>, files: list<string>}|null
+     */
+    private function forwarded(array $site, Variable $subject, string $narrowTo, CallableBody $body): ?array
+    {
+        $expr = $site['expr'];
+        $scope = $site['foldScope'];
+        $name = $subject->name;
+        if ($expr === null || ! is_string($name) || ParameterUse::heldAt($expr, [$name], $body->nodes) === []) {
+            return null;
+        }
+
+        $call = ForwardedSite::call($expr, fn (Node\Expr $receiver): bool => $this->rendersOwnResponse($receiver, $scope));
+        $callee = $call === null ? null : ($this->callees ??= new CalleeResolver($this->adapter->reflectionProvider()))->resolve($call, $scope);
+        if ($call === null
+            || $callee === null
+            || ! $this->appFilter->isProjectFile($callee->file)
+            || in_array($callee->key(), $this->forwarding, true)
+            || count($this->forwarding) >= $this->config->traceDepth
+        ) {
+            return null;
+        }
+
+        $parameter = HeldArguments::receiving(HeldArguments::parameters($callee->parameters($this->adapter->reflectionProvider())), $call->getArgs(), $name);
+        $node = $parameter === null ? null : $this->fileAnalyzer->callee($callee);
+        if ($parameter === null || $node === null) {
+            return null;
+        }
+        $calleeBody = $node instanceof MethodReturnStatementsNode ? CallableBody::ofMethod($node) : CallableBody::ofFunction($node);
+
+        $this->forwarding[] = $callee->key();
+        try {
+            $inner = $this->harvestNarrowed($calleeBody, new CallableRef($callee->file, $callee->class, $callee->method, narrowParameter: $parameter, narrowType: $narrowTo));
+        } finally {
+            array_pop($this->forwarding);
+        }
+
+        $chosen = $inner['sites'][0] ?? null;
+        if ($chosen === null) {
+            return null;
+        }
+
+        $files = [$callee->file, $callee->writtenIn(), ...$inner['files']];
+        $declared = null;
+        if ($callee->class !== null) {
+            $files[] = $this->declarations()->fileFor($callee->class, $callee->method) ?? $callee->file;
+            $declared = $this->declarations()->on($callee->class, $callee->method);
+        }
+
+        return ['site' => ForwardedSite::answeredBy($site, $chosen, $declared), 'diagnostics' => $inner['diagnostics'], 'files' => $files];
+    }
+
+    /** Whether the one class an object is has a `toResponse()` the application wrote. */
+    private function rendersOwnResponse(Node\Expr $object, Scope $scope): bool
+    {
+        $classes = $scope->getType($object)->getObjectClassNames();
+        $provider = $this->adapter->reflectionProvider();
+
+        return count($classes) === 1
+            && $provider->hasClass($classes[0])
+            && ResponsableRendering::of($provider->getClass($classes[0])->getNativeReflection(), ResponsableRendering::TO_RESPONSE, $this->appFilter->isProjectFile(...)) === ResponsableRendering::APPLICATION;
     }
 
     /**
@@ -582,7 +724,7 @@ final class PhpStanTypeEngine implements TypeEngine
     private function returnSites(array $sites, CallableRef $callable): array
     {
         return array_map(
-            static fn (array $s): ReturnSite => new ReturnSite($s['type'], new SourceLocation($callable->file, $s['line']), $s['component'], $s['echoes'], $s['conditions'], $s['typeConditions']),
+            static fn (array $s): ReturnSite => new ReturnSite($s['type'], new SourceLocation($callable->file, $s['line']), $s['component'], $s['echoes'], $s['conditions'], $s['typeConditions'], $s['reachedWhen']),
             $sites,
         );
     }
@@ -609,6 +751,29 @@ final class PhpStanTypeEngine implements TypeEngine
             ...$this->branches($expr->if, $truthy, $file),
             ...$this->branches($expr->else, $falsey, $file),
         ];
+    }
+
+    /**
+     * `$guard` with each test of the narrowed parameter answered for a value of `$narrowTo`: true where every
+     * such value passes, false where none can, and left for the host where a subclass may go either way.
+     */
+    private static function answerSubject(?ConditionTree $guard, Node\Expr $subject, string $narrowTo): ?ConditionTree
+    {
+        if ($guard === null || ! $subject instanceof Variable) {
+            return $guard;
+        }
+
+        $answered = $guard->answered(static function (CallCondition|TypeCondition $leaf) use ($subject, $narrowTo): ?bool {
+            if (! $leaf instanceof TypeCondition || $leaf->parameter !== $subject->name) {
+                return null;
+            }
+
+            $passes = (new ObjectType($leaf->class))->isSuperTypeOf(new ObjectType($narrowTo));
+
+            return $passes->maybe() ? null : $passes->yes();
+        });
+
+        return $answered->constrains() ? $answered : null;
     }
 
     /**
@@ -677,6 +842,7 @@ final class PhpStanTypeEngine implements TypeEngine
             'echoes' => $every ? ParameterUse::echoed($expr, $body->parameters, $body->nodes) : null,
             'conditions' => ParameterUse::conditionsAt($scope, $probes['calls'], $held),
             'typeConditions' => ParameterUse::typeConditionsAt($scope, $probes['tests'], $held),
+            'reachedWhen' => $every ? ParameterUse::reachedWhen($positioned, $scope, $body->parameters, $body->nodes) : null,
             'scope' => $typesParameter && ! $rebound ? $scope : null,
             'expr' => $expr,
             'foldScope' => $scope,
@@ -912,12 +1078,13 @@ final class PhpStanTypeEngine implements TypeEngine
 
     private function makeThrowAnalyzer(): ThrowAnalyzer
     {
-        $bodies = $this->classBodies ??= new AnalyzedBodies($this->fileAnalyzer);
+        $cases = $this->caseStatus();
+        $bodies = $this->classBodies ??= new AnalyzedBodies($this->fileAnalyzer, $cases);
         // Application scope for the two status READS, descend scope for the analyzer's own walk: how far
         // this build may descend is `project_paths`' question, and whether a declaration is the
         // application's is not. An exception class in a modular root is the application's, its file is
         // primed, and reading it grows no analysed set.
-        $statuses = $this->httpExceptionStatus ??= new HttpExceptionStatus($bodies, $this->appFilter);
+        $statuses = $this->httpExceptionStatus ??= SubclassStatus::ofHttpExceptions($bodies, $this->appFilter);
 
         return new ThrowAnalyzer(
             $this->adapter->reflectionProvider(),
@@ -929,14 +1096,23 @@ final class PhpStanTypeEngine implements TypeEngine
             new CalleeResolver($this->adapter->reflectionProvider()),
             $statuses,
             $this->factoryStatus ??= new FactoryStatus($statuses, $bodies, $this->appFilter),
+            $cases,
             $this->labels,
             $this->config->throwDepth,
+            $this->siteShapes(...),
+            $this->carriedResponses ??= new CarriedResponses(new ParentArgument($bodies, $this->appFilter), $bodies, $this->fileAnalyzer, $this->appFilter),
         );
     }
 
     private function declarations(): ComponentDeclarations
     {
         return $this->declarations ??= new ComponentDeclarations($this->adapter->reflectionProvider());
+    }
+
+    /** One fold for a status read off an enum case, shared by the throw and response tiers. */
+    private function caseStatus(): CaseStatus
+    {
+        return $this->caseStatus ??= new CaseStatus($this->fileAnalyzer, $this->appFilter);
     }
 
     private function refiner(): ResponseShapeRefiner
@@ -951,6 +1127,8 @@ final class PhpStanTypeEngine implements TypeEngine
             // Vendor still never folds.
             $this->appFilter,
             $this->adapter->reflectionProvider(),
+            $this->caseStatus(),
+            $this->classMetadataFactory,
             $this->config->traceDepth,
             $this->config->fileBudget,
         );

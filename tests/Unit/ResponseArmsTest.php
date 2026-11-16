@@ -5,6 +5,7 @@ declare(strict_types=1);
 use Docuccino\Core\Inference\DType\ArrayShapeField;
 use Docuccino\Core\Inference\DType\ArrayShapeT;
 use Docuccino\Core\Inference\DType\ClassT;
+use Docuccino\Core\Inference\DType\DType;
 use Docuccino\Core\Inference\DType\LiteralT;
 use Docuccino\Core\Inference\DType\PayloadStatusT;
 use Docuccino\Core\Inference\DType\ScalarT;
@@ -22,7 +23,7 @@ use PhpParser\ParserFactory;
  * whole of what the server can send for it, so a response set is either every arm or nothing at all: a
  * subset published as the whole marks the missing arm as a response the endpoint never sends.
  */
-function armChain(?int $status = null, ?string $contentType = null, bool $unknown = false, bool $statusUnknown = false): array
+function armChain(?int $status = null, ?string $contentType = null, bool $unknown = false, bool $statusUnknown = false, ?DType $body = null, bool $bodyUnknown = false): array
 {
     return [
         'receiver' => new Node\Expr\Variable('response'),
@@ -30,6 +31,8 @@ function armChain(?int $status = null, ?string $contentType = null, bool $unknow
         'statusUnknown' => $statusUnknown,
         'contentType' => $contentType,
         'contentTypeUnknown' => $unknown,
+        'body' => $body,
+        'bodyUnknown' => $bodyUnknown,
     ];
 }
 
@@ -69,6 +72,20 @@ it('lays a chain over every arm, and loses them all when it leaves one saying no
         ->and(ResponseArms::laid(new RefinedResponse, armChain(contentType: 'application/problem+json'))?->contentType)->toBe('application/problem+json')
         // A header it cannot read clears the media type and leaves the payload's own status standing.
         ->and(ResponseArms::laid($resource->withContentType('text/plain'), armChain(unknown: true))?->toClassT('Illuminate\\Http\\JsonResponse')?->typeArgs[1])->toBeInstanceOf(PayloadStatusT::class);
+});
+
+it('lays a body a chain set or touched over the one the response was built with, and leaves the rest', function (): void {
+    // `->setData([...])` is the body sent; `->setContent($unread)` leaves none that can be named; either way the
+    // 202 the response was built with is still the status it is sent with.
+    $built = new RefinedResponse(new ArrayShapeT([new ArrayShapeField('queued', new LiteralT(true))]), new LiteralT(202));
+    $rows = new ArrayShapeT([new ArrayShapeField('accepted', new LiteralT(true))]);
+
+    expect(ResponseArms::laid($built, armChain(body: $rows))?->toClassT('Illuminate\\Http\\JsonResponse'))
+        ->toEqual(new ClassT('Illuminate\\Http\\JsonResponse', [$rows, new LiteralT(202)]))
+        ->and(ResponseArms::laid($built, armChain(bodyUnknown: true))?->toClassT('Illuminate\\Http\\JsonResponse'))
+        ->toEqual(new ClassT('Illuminate\\Http\\JsonResponse', [new UnknownT('payload not folded'), new LiteralT(202)]))
+        // A body nobody can read over a response nothing else was read of still says nothing.
+        ->and(ResponseArms::laid(new RefinedResponse, armChain(bodyUnknown: true)))->toBeNull();
 });
 
 it('gives a one-shape reader the arm only when there is exactly one', function (): void {
@@ -122,6 +139,21 @@ it('publishes a return site once per arm, and as the resolved type when nothing 
         ->and(ResponseArms::sites([RefinedResponse::delegation()], $resolved, $json)[0]['type'])->toBeInstanceOf(VoidT::class)
         // Nothing documentable in the arm keeps what the analyser resolved.
         ->and(ResponseArms::sites([new RefinedResponse], $resolved, $json)[0]['type'])->toBe($resolved);
+});
+
+it('publishes a stream, file or redirect arm as its own class whatever the site resolved to', function (): void {
+    // A helper declared `: Response` that returns `response()->stream($cb, 202)` sends a stream, not JSON.
+    $json = 'Illuminate\\Http\\JsonResponse';
+    $streamed = 'Symfony\\Component\\HttpFoundation\\StreamedResponse';
+    $arm = RefinedResponse::transported($streamed, new LiteralT(202), null);
+
+    expect(ResponseArms::sites([$arm], new ClassT('Symfony\\Component\\HttpFoundation\\Response'), $json)[0]['type'])
+        ->toEqual(new ClassT($streamed, [new UnknownT('payload not folded'), new LiteralT(202)]))
+        // A chain's status over a stream keeps the stream.
+        ->and(ResponseArms::laid(RefinedResponse::transported($streamed, null, null), armChain(202))?->toClassT($json))
+        ->toEqual(new ClassT($streamed, [new UnknownT('payload not folded'), new LiteralT(202)]))
+        // A chain that states nothing over a stream that carries nothing leaves the bare class to answer.
+        ->and(ResponseArms::laid(RefinedResponse::transported($streamed, null, null), armChain()))->toBeNull();
 });
 
 it('takes the status echoes out of a body whose status a chain restates, and only then', function (array $chain, bool $echoes): void {

@@ -1,0 +1,38 @@
+<?php
+
+namespace Illuminate\Support;
+
+use Illuminate\Contracts\Support\Jsonable;
+use Illuminate\Contracts\Support\MessageBag as MessageBagContract;
+use Illuminate\Contracts\Support\MessageProvider;
+use JsonSerializable;
+use Stringable;
+
+/**
+ * Docuccino stub: each of these returns the bag's messages, each field to the list of its messages, but a
+ * release may declare `toArray()` and `jsonSerialize()` a bare `array`, which reads as a list of anything.
+ * Declared as what they return on every release, a body built from any of them is published as the same
+ * errors map. A subclass overriding one keeps its own declaration.
+ */
+class MessageBag implements Jsonable, JsonSerializable, MessageBagContract, MessageProvider, Stringable
+{
+    /**
+     * @return array<string, array<string>>
+     */
+    public function messages() {}
+
+    /**
+     * @return array<string, array<string>>
+     */
+    public function getMessages() {}
+
+    /**
+     * @return array<string, array<string>>
+     */
+    public function toArray() {}
+
+    /**
+     * @return array<string, array<string>>
+     */
+    public function jsonSerialize(): array {}
+}
