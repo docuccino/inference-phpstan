@@ -7,6 +7,39 @@ User-facing changes to `docuccino/inference-phpstan` — features, fixes, perfor
 taken from the commit messages scoped `inference-phpstan`. Entries begin after v0.1.2; older history is in
 the [repository](https://github.com/docuccino/docuccino) git log.
 
+## v0.24.0
+
+### Bug fixes
+
+- publish ValidationException::errors() as the field-keyed map the server sends ([#796](https://github.com/docuccino/docuccino/pull/796))
+- a response reassigned from itself no longer recurses until memory runs out ([#795](https://github.com/docuccino/docuccino/pull/795))
+- a real-time facade no longer fails the analysis of every action in its file ([#793](https://github.com/docuccino/docuccino/pull/793))
+- a construction, call or return an argument always throws ahead of is not documented ([#791](https://github.com/docuccino/docuccino/pull/791))
+- a call through a root-namespace facade alias reads as the facade it names ([#785](https://github.com/docuccino/docuccino/pull/785))
+- a plain response handed content that may be JSON or text documents any media type, at every status ([#784](https://github.com/docuccino/docuccino/pull/784))
+- a document built after another in one process keeps the responses the engine reads ([#783](https://github.com/docuccino/docuccino/pull/783))
+- a render callback that hands the exception to a helper documents the problem the helper's arm builds, not its status alone ([#782](https://github.com/docuccino/docuccino/pull/782))
+- a fluent chain documents what each link changes, on any response the application builds ([#781](https://github.com/docuccino/docuccino/pull/781))
+- a status or media type set on its own line on a returned response documents what it sets ([#780](https://github.com/docuccino/docuccino/pull/780))
+- read one copy of phpdoc-parser, so an application's newer one no longer fails every action ([#779](https://github.com/docuccino/docuccino/pull/779))
+- a response thrown inside an application's own HttpResponseException subclass documents that response rather than a 500 ([#777](https://github.com/docuccino/docuccino/pull/777))
+- a request refused through throw_if() or throw_unless() documents the exception it is handed ([#770](https://github.com/docuccino/docuccino/pull/770))
+- a helper written as a function documents what it throws and returns, as a method does ([#768](https://github.com/docuccino/docuccino/pull/768))
+- a guard helper that returns never documents what it throws, as one returning void does ([#765](https://github.com/docuccino/docuccino/pull/765))
+- a response thrown in an HttpResponseException, or handed to abort(), documents that response rather than a 500 ([#763](https://github.com/docuccino/docuccino/pull/763))
+- a plain response handed a string documents it as text, not JSON ([#758](https://github.com/docuccino/docuccino/pull/758))
+- a response class whose constructor hands its parent a status documents that status ([#756](https://github.com/docuccino/docuccino/pull/756))
+- a stream, file or redirect made with a status documents that status ([#753](https://github.com/docuccino/docuccino/pull/753))
+- a response made through the Response facade documents its status and body ([#751](https://github.com/docuccino/docuccino/pull/751))
+- a helper reading ->value off the case it is handed documents that case's status ([#748](https://github.com/docuccino/docuccino/pull/748))
+- a plain response made with a status documents that status instead of 200 ([#737](https://github.com/docuccino/docuccino/pull/737))
+- a response's status read off an enum case documents the status the case maps to ([#735](https://github.com/docuccino/docuccino/pull/735))
+- a backed enum's from() handed a value a case backs publishes no 500 ([#732](https://github.com/docuccino/docuccino/pull/732))
+- show the value a problem constructor pins in its example wherever the problem is built by its own class name, final or not ([#722](https://github.com/docuccino/docuccino/pull/722))
+- title an error example with its reason phrase when a parent constructor writes it, or the response is read again after the body is built ([#721](https://github.com/docuccino/docuccino/pull/721))
+- a thrown exception documents the status its reason enum maps the case to ([#718](https://github.com/docuccino/docuccino/pull/718))
+- analyse a closure route's action, arrow function or not ([#696](https://github.com/docuccino/docuccino/pull/696))
+
 ## v0.21.0
 
 ### Breaking changes
