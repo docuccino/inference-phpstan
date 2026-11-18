@@ -29,9 +29,29 @@ final class GuardCondition
 
     public static function neverThrows(FunctionReflection $function, Node\Expr\CallLike $call, Scope $scope): bool
     {
+        $guard = self::of($function, $call);
+        if ($guard === null) {
+            return false;
+        }
+
+        [$condition, $truthy] = $guard;
+        $value = $scope->getNativeType($condition)->toBoolean();
+
+        return $truthy ? $value->isFalse()->yes() : $value->isTrue()->yes();
+    }
+
+    /**
+     * The condition a call to one of the helpers is handed, and the value it holds wherever the call throws:
+     * true for `throw_if()`, false for `throw_unless()`. Null for any other call, or one whose condition is
+     * not written at it.
+     *
+     * @return array{Node\Expr, bool}|null
+     */
+    public static function of(FunctionReflection $function, Node\Expr\CallLike $call): ?array
+    {
         $truthy = self::THROWS_WHEN_TRUTHY[strtolower($function->getName())] ?? null;
         if ($truthy === null || $call->isFirstClassCallable()) {
-            return false;
+            return null;
         }
 
         $names = [];
@@ -40,12 +60,7 @@ final class GuardCondition
         }
 
         $condition = ArgumentSlots::of($call->getArgs(), $names)->at(0);
-        if ($condition === null) {
-            return false;
-        }
 
-        $value = $scope->getNativeType($condition)->toBoolean();
-
-        return $truthy ? $value->isFalse()->yes() : $value->isTrue()->yes();
+        return $condition === null ? null : [$condition, $truthy];
     }
 }

@@ -21,9 +21,9 @@ it('answers the same status whether the construction is at the throw or one hop 
     // 409 against nothing at all. The rule is stated here rather than asked of the code:
     // `new ExportBlockedException` leaves the status slot empty, PHP fills it with the 409 written on the
     // constructor, and where the same `new` sits is not a fact about the response.
-    expect(signalThrows('defaultedHttpStatusAtThrowSite'))
-        ->toBe(signalThrows('defaultedHttpStatusInFactory'))
-        ->and(signalThrows('defaultedHttpStatusAtThrowSite'))->toBe(['ExportBlockedException@409']);
+    expect(reportedThrows('defaultedHttpStatusAtThrowSite'))
+        ->toBe(reportedThrows('defaultedHttpStatusInFactory'))
+        ->and(reportedThrows('defaultedHttpStatusAtThrowSite'))->toBe(['ExportBlockedException@409']);
 })->group('fixture');
 
 it('answers the same status whether the throw is written inline or inside a closure', function (): void {
@@ -31,10 +31,10 @@ it('answers the same status whether the throw is written inline or inside a clos
     // The rule is stated here rather than read off the code — where a `throw` is written is not a fact
     // about the response, so a closure the method hands to a callee that runs it owes the same answer the
     // method's own body would.
-    expect(signalThrows('closureThrownStatus'))
-        ->toBe(signalThrows('httpStatusAtThrowSite'))
-        ->and(signalThrows('closureThrownStatus'))->toBe(['ExportLockedException@423'])
-        ->and(signalThrows('heldClosureThrownStatus'))->toBe(signalThrows('closureThrownStatus'));
+    expect(reportedThrows('closureThrownStatus'))
+        ->toBe(reportedThrows('httpStatusAtThrowSite'))
+        ->and(reportedThrows('closureThrownStatus'))->toBe(['ExportLockedException@423'])
+        ->and(reportedThrows('heldClosureThrownStatus'))->toBe(reportedThrows('closureThrownStatus'));
 })->group('fixture');
 
 it('answers the same status whether or not the callee DECLARES what it throws', function (): void {
@@ -43,9 +43,9 @@ it('answers the same status whether or not the callee DECLARES what it throws', 
     // document publishes for it. The same factory is named at the action's own `throw` and behind a callee
     // that declares it, and those two answered 404 against nothing at all — the placeholder 500 that
     // filed a documented guard's rejection as a server failure.
-    expect(signalThrows('manifestStatusDeclaredNotFound'))
-        ->toBe(signalThrows('manifestStatusAtAction'))
-        ->and(signalThrows('manifestStatusDeclaredNotFound'))->toBe(['ManifestRejectedException@404']);
+    expect(reportedThrows('manifestStatusDeclaredNotFound'))
+        ->toBe(reportedThrows('manifestStatusAtAction'))
+        ->and(reportedThrows('manifestStatusDeclaredNotFound'))->toBe(['ManifestRejectedException@404']);
 })->group('fixture');
 
 it('answers the same status whichever source root the declared guard is written in', function (): void {
@@ -53,8 +53,8 @@ it('answers the same status whichever source root the declared guard is written 
     // `project_paths`, and whose declaration a file IS is not. Both guards are declared, both name the
     // same factory of their own class, and one is written outside the descend scope — so a difference
     // here would be the directory deciding what an API publishes.
-    expect(signalThrows('modularDeclaredStatus'))->toBe(['LedgerRejectedException@409'])
-        ->and(signalThrows('manifestStatusDeclaredByCallee'))->toBe(['ManifestRejectedException@409']);
+    expect(reportedThrows('modularDeclaredStatus'))->toBe(['LedgerRejectedException@409'])
+        ->and(reportedThrows('manifestStatusDeclaredByCallee'))->toBe(['ManifestRejectedException@409']);
 })->group('fixture');
 
 it('names the closure the throw was written in', function (): void {

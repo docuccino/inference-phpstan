@@ -23,8 +23,11 @@ use Docuccino\Inference\PhpStan\Analysis\ParamAccessor;
 use Docuccino\Inference\PhpStan\Support\ProjectFilter;
 use Docuccino\Inference\PhpStan\Trace\Callee;
 use Docuccino\Inference\PhpStan\Trace\CalleeResolver;
+use LogicException;
 use PhpParser\Node;
+use PhpParser\NodeFinder;
 use PHPStan\Analyser\Scope;
+use PHPStan\Analyser\ThrowPoint;
 use PHPStan\Node\ClosureReturnStatementsNode;
 use PHPStan\Node\FunctionReturnStatementsNode;
 use PHPStan\Node\MethodReturnStatementsNode;
@@ -68,6 +71,10 @@ use Throwable;
  * response handed to `abort()`, are not errors to render: the framework sends the response they carry as it
  * is, so that response is read as a return of the body the throw is written in would be
  * ({@see carriedResponses()}) and no exception is reported for it.
+ *
+ * A throw with no status that the application raises only where its own guarantees fail — PHP's
+ * `LogicException` family, or one reached only past a failed type test ({@see Assertions}) — is an
+ * `assertion`, whether it is written at the action, in a helper it descends into, or handed to `throw_if()`.
  *
  * Result identity is `(fqcn, httpStatusHint)` — two aborts (403/404) are two responses, so never dedupe by
  * FQCN alone. Vendor-declared 500-class exceptions are demoted to `internal`; dropped bare-`Throwable`
@@ -148,7 +155,7 @@ final class ThrowAnalyzer
             $body = CallableBody::ofArrow($body->declaration, $this->fileAnalyzer->stableScope($body->returns[0]['scope']));
         }
 
-        return $this->deduped($this->bodyPoints($body, $selfLabel, 0, [], [], []));
+        return $this->deduped($this->bodyPoints($body, $selfLabel, 0, [], [], [], false));
     }
 
     /**
@@ -158,13 +165,14 @@ final class ThrowAnalyzer
      * @param  list<string>  $visited
      * @param  list<Frame>  $priorChain
      * @param  list<string>  $caught
+     * @param  bool  $asserted  whether the path into the body already passed a failed type test ({@see Assertions})
      * @return list<ThrownException>
      */
-    private function bodyPoints(CallableBody $body, string $selfLabel, int $depth, array $visited, array $priorChain, array $caught): array
+    private function bodyPoints(CallableBody $body, string $selfLabel, int $depth, array $visited, array $priorChain, array $caught, bool $asserted): array
     {
         return $body->declaration instanceof Node\Expr\ArrowFunction
-            ? $this->arrowPoints($body->declaration, $body->returns[0]['scope'], $selfLabel, $depth, $visited, $priorChain, $caught)
-            : $this->analyzeMethod($body->declaration, $selfLabel, $depth, $visited, $priorChain, $caught);
+            ? $this->arrowPoints($body->declaration, $body->returns[0]['scope'], $selfLabel, $depth, $visited, $priorChain, $caught, $asserted)
+            : $this->analyzeMethod($body->declaration, $selfLabel, $depth, $visited, $priorChain, $caught, $asserted);
     }
 
     private function begin(): void
@@ -261,6 +269,8 @@ final class ThrowAnalyzer
     /**
      * `$caught` is every class a `catch` on the path here names — the catches around each call descended
      * through, and around each closure's call — since what this body raises reaches those catches first.
+     * `$asserted` is the same for the guards on the path: a body reached only past a failed type test raises
+     * nothing a request reaches with its own type tests passed ({@see Assertions}).
      *
      * @param  list<string>  $visited
      * @param  list<Frame>  $priorChain
@@ -274,6 +284,7 @@ final class ThrowAnalyzer
         array $visited,
         array $priorChain,
         array $caught,
+        bool $asserted,
     ): array {
         $results = [];
         /** @var array<string, Type> $pointed what each node with a throw point of its own throws, by start and end offset */
@@ -295,14 +306,15 @@ final class ThrowAnalyzer
             $scope = $this->fileAnalyzer->stableScope($throwPoint->getScope());
             $frame = $this->frame($selfLabel, $scope, $node);
             $caughtHere = [...$caught, ...$this->catchesAround($methodNode, $node, $scope)];
+            $behind = $asserted || Assertions::behind($methodNode, $node);
 
             // Layer 3': a closure handed to the callee. Ahead of the layers, because the callee's own
             // answer says nothing about what the closure it runs throws.
-            foreach ($this->applyClosures($node, $scope, $selfLabel, $depth, $visited, $priorChain, $frame, $caughtHere) as $result) {
+            foreach ($this->applyClosures($node, $scope, $selfLabel, $depth, $visited, $priorChain, $frame, $caughtHere, $behind) as $result) {
                 $results[] = $result;
             }
 
-            foreach ($this->applyLayers($node, $scope, $type, $throwPoint->isExplicit(), $depth, $visited, $priorChain, $frame, $caughtHere) as $result) {
+            foreach ($this->applyLayers($node, $scope, $type, $throwPoint->isExplicit(), $depth, $visited, $priorChain, $frame, $caughtHere, $behind) as $result) {
                 $results[] = $result;
             }
         }
@@ -316,7 +328,8 @@ final class ThrowAnalyzer
 
             $frame = $this->frame($selfLabel, $scope, $site);
             $caughtHere = [...$caught, ...$this->catchesAround($methodNode, $site, $scope)];
-            foreach ($this->applyClosures($site, $scope, $selfLabel, $depth, $visited, $priorChain, $frame, $caughtHere) as $result) {
+            $behind = $asserted || Assertions::behind($methodNode, $site);
+            foreach ($this->applyClosures($site, $scope, $selfLabel, $depth, $visited, $priorChain, $frame, $caughtHere, $behind) as $result) {
                 $results[] = $result;
             }
 
@@ -326,7 +339,7 @@ final class ThrowAnalyzer
             $point = $this->owedToRethrow($methodNode, $site, $pointed, $scope) ? $this->pointOutsideTry($site, $scope) : null;
             if ($point !== null) {
                 [$type, $explicit] = $point;
-                foreach ($this->applyLayers($site, $scope, $type, $explicit, $depth, $visited, $priorChain, $frame, $caughtHere) as $result) {
+                foreach ($this->applyLayers($site, $scope, $type, $explicit, $depth, $visited, $priorChain, $frame, $caughtHere, $behind) as $result) {
                     $results[] = $result;
                 }
             }
@@ -440,6 +453,7 @@ final class ThrowAnalyzer
         array $priorChain,
         Frame $frame,
         array $caught,
+        bool $asserted,
     ): array {
         // A point an operand always throws ahead of is never reached: what leaves is that operand's own
         // throw, read at its own point. The enum whose cases say so is a dependency either way.
@@ -471,9 +485,11 @@ final class ThrowAnalyzer
         // `throw_if()` and `throw_unless()` throw what they are handed, read as the `throw` written for it.
         $handed = $this->handedThrows($node, $scope, $callee);
         if ($handed !== null) {
+            // The helper throws only where its condition says so, which is a guard like any other on the path.
+            $guarded = $asserted || $this->handedAsserts($node, $scope);
             $results = [];
             foreach ($handed as [$throw, $throwScope, $thrownType]) {
-                foreach ($this->applyExplicit(null, $throw, $throwScope, $thrownType, $priorChain, $frame, $caught, []) as $result) {
+                foreach ($this->applyExplicit(null, $throw, $throwScope, $thrownType, $priorChain, $frame, $caught, [], $guarded) as $result) {
                     $results[] = $result;
                 }
             }
@@ -506,11 +522,11 @@ final class ThrowAnalyzer
 
         // Layer 1: explicit concrete type (literal throw, @throws, stub).
         if ($explicit && ! $this->isBareThrowable($type)) {
-            return $this->applyExplicit($callee, $node, $scope, $type, $priorChain, $frame, $caught, $certain);
+            return $this->applyExplicit($callee, $node, $scope, $type, $priorChain, $frame, $caught, $certain, $asserted);
         }
 
         // Layer 3: implicit bare Throwable — descend, or drop it as noise.
-        return $explicit ? [] : ($this->applyDescent($callee, $depth, $visited, $priorChain, $frame, $caught) ?? []);
+        return $explicit ? [] : ($this->applyDescent($callee, $depth, $visited, $priorChain, $frame, $caught, $asserted) ?? []);
     }
 
     /**
@@ -674,6 +690,18 @@ final class ThrowAnalyzer
         return $function instanceof FunctionReflection && GuardCondition::neverThrows($function, $node, $scope);
     }
 
+    /** Whether a `throw_if()` or `throw_unless()` throws only where the condition it is handed fails a type test. */
+    private function handedAsserts(Node $node, Scope $scope): bool
+    {
+        if (! $node instanceof Node\Expr\FuncCall) {
+            return false;
+        }
+
+        $function = $this->calleeResolver->reached($node, $scope);
+
+        return $function instanceof FunctionReflection && Assertions::handed($function, $node);
+    }
+
     /**
      * @param  list<Frame>  $priorChain
      * @param  list<string>  $caught
@@ -689,6 +717,7 @@ final class ThrowAnalyzer
         Frame $frame,
         array $caught,
         array $certain,
+        bool $asserted,
     ): array {
         // php-parser v5 models `throw` only as an expression.
         $isLiteral = $node instanceof Node\Expr\Throw_;
@@ -719,12 +748,13 @@ final class ThrowAnalyzer
             }
 
             $resolution = $this->statusForType($class, $callee, $node, $scope, $frame);
+            $fellBack = $resolution['fellBack'];
             $results[] = new ThrownException(
                 $class,
                 $resolution['status'],
                 [...$priorChain, $frame],
                 $isLiteral || in_array($class, $certain, true) ? ThrowConfidence::Certain : ThrowConfidence::Declared,
-                ThrowSignal::disposition($isLiteral, $calleeIsApplication, $resolution['fellBack']),
+                ThrowSignal::disposition($isLiteral, $calleeIsApplication, $fellBack, $fellBack && ($asserted || $this->signalsDefect($class))),
             );
         }
 
@@ -744,6 +774,7 @@ final class ThrowAnalyzer
         array $priorChain,
         Frame $frame,
         array $caught,
+        bool $asserted,
     ): ?array {
         // Depth first, and that ORDER is the notice's actionability below: a hop the budget would have
         // stopped at anyway is not one widening the scope recovers, so it must not be reported as one.
@@ -786,6 +817,7 @@ final class ThrowAnalyzer
             [...$visited, $key],
             [...$priorChain, $frame],
             $caught,
+            $asserted,
         );
     }
 
@@ -819,6 +851,7 @@ final class ThrowAnalyzer
         array $priorChain,
         Frame $frame,
         array $caught,
+        bool $asserted,
     ): array {
         if ($depth >= $this->maxDepth
             || ! $node instanceof Node\Expr\CallLike
@@ -848,7 +881,7 @@ final class ThrowAnalyzer
             // and the depth it spends is what bounds it. What it must not do is lose the callees the path
             // has already descended into, which is what that list is.
             foreach ($inCallee['sites'] ?? [[]] as $site) {
-                $read = $this->bodyPoints($closure, $selfLabel.'::{closure}', $depth + 1, $visited, [...$priorChain, $frame], [...$caught, ...$site]);
+                $read = $this->bodyPoints($closure, $selfLabel.'::{closure}', $depth + 1, $visited, [...$priorChain, $frame], [...$caught, ...$site], $asserted);
                 foreach ($read as $result) {
                     $results[] = $result;
                 }
@@ -896,17 +929,19 @@ final class ThrowAnalyzer
         array $visited,
         array $priorChain,
         array $caught,
+        bool $asserted,
     ): array {
         $results = [];
         foreach (EnclosingCatches::pointsIn([$arrow->expr]) as $node) {
             $frame = $this->frame($selfLabel, $scope, $node);
-            foreach ($this->applyClosures($node, $scope, $selfLabel, $depth, $visited, $priorChain, $frame, $caught) as $result) {
+            $behind = $asserted || Assertions::behindIn([$arrow->expr], $node);
+            foreach ($this->applyClosures($node, $scope, $selfLabel, $depth, $visited, $priorChain, $frame, $caught, $behind) as $result) {
                 $results[] = $result;
             }
 
             $point = $this->pointOutsideTry($node, $scope);
             if ($point !== null) {
-                foreach ($this->applyLayers($node, $scope, $point[0], $point[1], $depth, $visited, $priorChain, $frame, $caught) as $result) {
+                foreach ($this->applyLayers($node, $scope, $point[0], $point[1], $depth, $visited, $priorChain, $frame, $caught, $behind) as $result) {
                     $results[] = $result;
                 }
             }
@@ -964,6 +999,23 @@ final class ThrowAnalyzer
     }
 
     /**
+     * Whether a class is one PHP defines as a defect in the program — `LogicException` and its family, which
+     * "should lead directly to a fix in your code" — so no request reaches it in an application without one.
+     * The class's ancestry decides it, so those files join the dependency set.
+     */
+    private function signalsDefect(string $fqcn): bool
+    {
+        if (! $this->reflectionProvider->hasClass($fqcn)) {
+            return false;
+        }
+
+        $class = $this->reflectionProvider->getClass($fqcn);
+        $this->dependOn($this->ancestryFiles($class));
+
+        return $class->is(LogicException::class);
+    }
+
+    /**
      * The files a class, its parents and its interfaces are declared in — everything `is()` reads. A
      * built-in class has no file of its own, only a stub the analyser may reach by more than one path.
      *
@@ -983,8 +1035,9 @@ final class ThrowAnalyzer
     }
 
     /**
-     * One throw per identity, the most confident kept, in status-then-class order — for {@see analyze()} and
-     * for throws gathered by {@see returned()}.
+     * One throw per identity, in status-then-class order — for {@see analyze()} and for throws gathered by
+     * {@see returned()}. The one kept is the one the document hears most from ({@see ThrowDisposition::rank()}),
+     * then the most confident: a class one site raises as an error and another as an assertion is an error.
      *
      * @param  list<ThrownException>  $raw
      * @return list<ThrownException>
@@ -994,8 +1047,9 @@ final class ThrowAnalyzer
         $byIdentity = [];
         foreach ($raw as $throw) {
             $key = $throw->identityKey();
-            if (! isset($byIdentity[$key])
-                || $throw->confidence->rank() > $byIdentity[$key]->confidence->rank()
+            $kept = $byIdentity[$key] ?? null;
+            if ($kept === null
+                || [$throw->disposition->rank(), $throw->confidence->rank()] > [$kept->disposition->rank(), $kept->confidence->rank()]
             ) {
                 $byIdentity[$key] = $throw;
             }
@@ -1254,7 +1308,7 @@ final class ThrowAnalyzer
         $this->dependOn([$callee->file, $callee->writtenIn()]);
 
         $readings = [];
-        foreach ($body->getStatementResult()->getThrowPoints() as $throwPoint) {
+        foreach ($this->writtenByCallee($callee, $body) as $throwPoint) {
             $node = $throwPoint->getNode();
             $scope = $this->fileAnalyzer->stableScope($throwPoint->getScope());
 
@@ -1270,6 +1324,38 @@ final class ThrowAnalyzer
         }
 
         return ThrowSiteStatus::stated($readings);
+    }
+
+    /**
+     * The throw points of the code the declaring callee writes itself: its body, the closures written inside
+     * it — a `transaction()` callback is still the callee's own guard, though the analyser hands its throws
+     * to whoever calls it — and the private methods of its own class it calls, which no subclass can stand
+     * in for. Read, not walked into: one hop, and nothing a helper calls in turn.
+     *
+     * @return list<ThrowPoint>
+     */
+    private function writtenByCallee(Callee $callee, MethodReturnStatementsNode|FunctionReturnStatementsNode $body): array
+    {
+        $points = array_values($body->getStatementResult()->getThrowPoints());
+        $statements = $body->getStatements();
+        $finder = new NodeFinder;
+
+        $closures = $this->fileAnalyzer->closures($callee->writtenIn());
+        foreach ($finder->findInstanceOf($statements, Node\Expr\Closure::class) as $closure) {
+            $written = $closures[$closure->getStartFilePos()] ?? null;
+            if ($written !== null) {
+                $points = [...$points, ...array_values($written->getStatementResult()->getThrowPoints())];
+            }
+        }
+
+        foreach ($callee->class === null ? [] : PrivateHelpers::called($callee->class, $statements) as $helper) {
+            $written = $this->fileAnalyzer->method($callee->file, $callee->class, $helper);
+            if ($written !== null) {
+                $points = [...$points, ...array_values($written->getStatementResult()->getThrowPoints())];
+            }
+        }
+
+        return $points;
     }
 
     /**

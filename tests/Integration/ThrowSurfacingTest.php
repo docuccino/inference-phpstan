@@ -15,10 +15,13 @@ beforeEach(function (): void {
     ensureFixtureAvailable(FixtureRunner::available());
 });
 
+// The catch rows throw a `LogicException` from the catch or beside the try, as a class that is plainly not
+// the one the try raised. It still leaves exactly as before; PHP calls the class a defect in the program, so
+// it is filed as an assertion, which the document carries only at a status the application renders it with.
 it('surfaces exactly the expected API errors', function (string $method, array $expected): void {
     sort($expected);
 
-    expect(signalThrows($method))->toBe($expected);
+    expect(reportedThrows($method))->toBe($expected);
 })->with([
     'abort + abort_if, both statuses folded' => ['abortAction', ['HttpException@403', 'HttpException@404']],
     // The same two calls with the status named rather than counted. PHPStan hands throw points the
@@ -51,10 +54,10 @@ it('surfaces exactly the expected API errors', function (string $method, array $
     // `@throws` is the `@throws` minus the catch, which is nothing here, as `deepDeclared` publishes only the
     // declared class. Descending anyway would answer the hidden RuntimeException on PHPStan 2.3, which keeps
     // a point for the residue, and nothing on 2.2, which does not.
-    'caught across a declaring call that hides more' => ['caughtDeclaredWithResidue', ['LogicException@500']],
-    'caught by a base class of both' => ['caughtUndeclaredByParent', ['LogicException@500']],
-    'caught by an interface of both' => ['caughtUndeclaredByInterface', ['LogicException@500']],
-    'caught by a multi-catch naming both' => ['caughtUndeclaredMulti', ['LogicException@500']],
+    'caught across a declaring call that hides more' => ['caughtDeclaredWithResidue', ['LogicException@500 (assertion)']],
+    'caught by a base class of both' => ['caughtUndeclaredByParent', ['LogicException@500 (assertion)']],
+    'caught by an interface of both' => ['caughtUndeclaredByInterface', ['LogicException@500 (assertion)']],
+    'caught by a multi-catch naming both' => ['caughtUndeclaredMulti', ['LogicException@500 (assertion)']],
     // What a catch does next is its own throw point, read where it is written: a rethrow still leaves, and a
     // translation leaves as the class it translates to.
     'caught and rethrown' => ['caughtUndeclaredRethrown', ['OutOfStockException@500', 'RuntimeException@500']],
@@ -74,13 +77,13 @@ it('surfaces exactly the expected API errors', function (string $method, array $
     'caught around a declaring call, handed to a helper that rethrows' => ['caughtDeclaredHandedToRethrower', ['OutOfStockException@500']],
     'caught and handed to a static helper that rethrows' => ['caughtHandedToStaticRethrower', ['OutOfStockException@500', 'RuntimeException@500']],
     // …and a helper whose body reads it only for its message keeps it, so the catch takes what it names.
-    'caught and handed to a helper that only logs' => ['caughtHandedToLogger', ['LogicException@500']],
+    'caught and handed to a helper that only logs' => ['caughtHandedToLogger', ['LogicException@500 (assertion)']],
     // A class either side of the test cannot reflect is kept: a catch whose class no file declares takes
     // nothing, and a thrown class no file declares cannot be shown to be an instance of the catch.
     'a catch of an unknown class' => ['caughtUnknownClass', ['OutOfStockException@500', 'RuntimeException@500']],
     'an unknown class thrown under a catch' => ['caughtUnknownThrown', ['NoSuchThrownException@500']],
-    'caught and translated' => ['caughtUndeclaredTranslated', ['LogicException@500', 'RuntimeException@500']],
-    'caught by nested tries, one each' => ['caughtUndeclaredNested', ['LogicException@500']],
+    'caught and translated' => ['caughtUndeclaredTranslated', ['LogicException@500 (assertion)', 'RuntimeException@500']],
+    'caught by nested tries, one each' => ['caughtUndeclaredNested', ['LogicException@500 (assertion)']],
     // The two shapes that take nothing: a `finally` alone, and a catch of a SUBCLASS of what is thrown — the
     // thrown class is not an instance of it, so the catch may take some instances and the rest still leave.
     'a finally with no catch' => ['undeclaredInFinallyOnly', ['OutOfStockException@500', 'RuntimeException@500']],
@@ -93,10 +96,10 @@ it('surfaces exactly the expected API errors', function (string $method, array $
     'caught around a registry-read call' => ['caughtFindOrFail', ['HttpException@410']],
     // A catch the CALLEE writes around its own call of the work it was handed takes what that work throws,
     // as one around the call to the callee would: PHP hands it everything the try's statements raise.
-    'swallowed by rescue()' => ['rescuedClosure', ['LogicException@500']],
-    "swallowed by the app's own helper" => ['swallowedByHelper', ['LogicException@500']],
-    "swallowed by the app's own helper, on an instance" => ['swallowedByHelperOnInstance', ['LogicException@500']],
-    "swallowed by the app's own helper function" => ['swallowedByHelperFunction', ['LogicException@500']],
+    'swallowed by rescue()' => ['rescuedClosure', ['LogicException@500 (assertion)']],
+    "swallowed by the app's own helper" => ['swallowedByHelper', ['LogicException@500 (assertion)']],
+    "swallowed by the app's own helper, on an instance" => ['swallowedByHelperOnInstance', ['LogicException@500 (assertion)']],
+    "swallowed by the app's own helper function" => ['swallowedByHelperFunction', ['LogicException@500 (assertion)']],
     // …and only what it takes: a catch that rethrows takes nothing, a narrower one takes its class alone, and
     // a run of the work from inside the catch is one no catch is around.
     'reported and rethrown by a helper' => ['rethrownByHelper', ['OutOfStockException@500', 'RuntimeException@500']],

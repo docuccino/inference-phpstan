@@ -47,13 +47,14 @@ function listedCollectionType(string $method): string
     return $type->fqcn.($args === [] ? '' : '<'.implode(',', $args).'>');
 }
 
-/** @return list<string> the API errors an action publishes, as `Short@status` */
+/** @return list<string> what an action hands the document, as `Short@status`, an assertion marked so */
 function listedCollectionSignals(string $method): array
 {
     $out = [];
     foreach (ActionAnalysis::fromArray(listedCollectionAnalyses()[$method])->throws as $throw) {
-        if ($throw->disposition->value === 'signal') {
-            $out[] = substr((string) strrchr('\\'.$throw->exceptionFqcn, '\\'), 1).'@'.($throw->httpStatusHint ?? 'null');
+        if ($throw->disposition->value === 'signal' || $throw->disposition->value === 'assertion') {
+            $out[] = substr((string) strrchr('\\'.$throw->exceptionFqcn, '\\'), 1).'@'.($throw->httpStatusHint ?? 'null')
+                .($throw->disposition->value === 'assertion' ? ' (assertion)' : '');
         }
     }
     sort($out);
@@ -93,7 +94,8 @@ it('publishes no error for a @method tag naming a real method, and keeps the for
     'a static tag over an inherited static method' => ['declared', []],
     // The request's __call() declares it too; user() is a real method of the request.
     'an instance tag over an inherited method' => ['account', []],
-    // Neither names a method the class has, so PHP forwards them and the forward can fail.
-    'a static tag naming a macro' => ['featured', ['BadMethodCallException@500']],
-    'an instance tag naming a macro' => ['export', ['BadMethodCallException@500']],
+    // Neither names a method the class has, so PHP forwards them and the forward can fail — only where the
+    // macro was never registered, which PHP's `BadMethodCallException` calls a defect: an assertion.
+    'a static tag naming a macro' => ['featured', ['BadMethodCallException@500 (assertion)']],
+    'an instance tag naming a macro' => ['export', ['BadMethodCallException@500 (assertion)']],
 ])->group('fixture');

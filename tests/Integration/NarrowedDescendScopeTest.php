@@ -28,22 +28,21 @@ beforeEach(function (): void {
 });
 
 it('says nothing at the scope the application declares', function (): void {
+    $codes = [];
     foreach (throwCorpusControllers() as $relPath => $class) {
-        $analyses = FixtureRunner::analyzeMany($relPath, $class, throwActionMethods($relPath));
-
-        $codes = [];
-        foreach ($analyses as $analysis) {
+        foreach (FixtureRunner::analyzeMany($relPath, $class, throwActionMethods($relPath)) as $analysis) {
             /** @var array{diagnostics: list<array{code?: string}>} $analysis */
             foreach ($analysis['diagnostics'] as $diagnostic) {
                 $codes[] = (string) ($diagnostic['code'] ?? '');
             }
         }
-
-        // The corpus really reported things, so this is a silence about ONE code rather than an analysis
-        // that said nothing at all — which would pass this assertion forever.
-        expect($codes)->not->toBeEmpty()
-            ->and($codes)->not->toContain('inference.descend-scope-narrowed');
     }
+
+    // The corpus really reported things, so this is a silence about ONE code rather than an analysis that
+    // said nothing at all — which would pass this assertion forever. Held of the corpus, not of each
+    // controller: one whose every action reads cleanly reports nothing, rightly.
+    expect($codes)->not->toBeEmpty()
+        ->and($codes)->not->toContain('inference.descend-scope-narrowed');
 })->group('fixture');
 
 it('names every call a pinned scope kept it out of, and nothing the reader cannot act on', function (): void {

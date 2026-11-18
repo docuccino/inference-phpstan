@@ -50,6 +50,9 @@ final class HttpProbeRows
             // …while the base itself, public, may be handed any status: its default is no status of its own.
             'a public base forwarding a defaulted status' => [self::NAMESPACE.'ProbeDefaultingBase', null, 1, null],
             'a literal pinned by a class that also has a factory' => [self::NAMESPACE.'ProbePinsWithFactory', 410, null, null],
+            // A framework fixed-status exception's subclass: its constructor only chooses the message.
+            'a framework fixed-status parent, below a constructor of its own' => [self::NAMESPACE.'ProbeFrameworkParent', 422, null, null],
+            'a framework fixed-status parent, with no constructor of its own' => [self::NAMESPACE.'ProbeFrameworkParentInherited', 409, null, null],
 
             // A private constructor with no factory writing the slot: the default is what every instance
             // carries. The slot is still named, so a construction that fills it can be folded at its site.

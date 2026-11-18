@@ -8,6 +8,8 @@ use Docuccino\Inference\PhpStan\Support\ProjectFilter;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Http\ProbeBranchingFactory;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Http\ProbeConstructedDefault;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Http\ProbeFactory;
+use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Http\ProbeFrameworkParent;
+use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Http\ProbeFrameworkParentInherited;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Http\ProbeInherited;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Http\ProbeNoConstructor;
 use Docuccino\Inference\PhpStan\Tests\Support\Fixtures\Http\ProbeOutOfRangeConstantPin;
@@ -24,6 +26,7 @@ use Docuccino\Inference\PhpStan\Throwing\SubclassStatus;
 use PhpParser\Node;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
+use Symfony\Component\HttpKernel\Exception\UnprocessableEntityHttpException;
 
 /**
  * The status read over REAL exception classes — the hierarchy, the visibility and the parse are all real,
@@ -67,6 +70,23 @@ it('reads what a class states about its status', function (string $fqcn, ?int $p
     'a vendor subclass pinning its own' => [NotFoundHttpException::class, 404, null, null],
     'a name no class answers to' => ['App\\Nope\\NoSuchException', null, null, null],
 ]);
+
+/**
+ * An application's subclass of one of the framework's fixed-status exceptions is that status, read off the
+ * framework's installed constructor where the gate keeps the analyser out of vendor: no constructor the
+ * subclass writes reaches the number the framework passes on as a literal. The framework class asked for
+ * itself stays unread behind the gate, as a package's `@throws` of it is plumbing.
+ */
+it('reads the status an application subclass inherits from a framework fixed-status exception', function (): void {
+    // The build sees the application's files and not vendor's, which is the gate the engine applies.
+    $statuses = SubclassStatus::ofHttpExceptions(new ParsedBodies, new ProjectFilter([dirname((string) (new ReflectionClass(ProbeFrameworkParent::class))->getFileName())], static fn (string $file): string => $file));
+
+    expect($statuses->pinned(ProbeFrameworkParent::class))->toBe(422)
+        ->and($statuses->pinned(ProbeFrameworkParentInherited::class))->toBe(409)
+        ->and($statuses->pinned(UnprocessableEntityHttpException::class))->toBeNull()
+        // An application class whose parent is no framework class pins nothing it does not state itself.
+        ->and($statuses->pinned(ProbeNoConstructor::class))->toBeNull();
+});
 
 it('reads one class\'s own constructions once, however many routes throw it', function (): void {
     // The memo holds its NULLS too, which a return value cannot show: a class that agrees on nothing is

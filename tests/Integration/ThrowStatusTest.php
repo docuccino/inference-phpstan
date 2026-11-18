@@ -20,7 +20,7 @@ beforeEach(function (): void {
 it('publishes the status each construction shape writes', function (string $method, array $expected): void {
     sort($expected);
 
-    expect(signalThrows($method))->toBe($expected);
+    expect(reportedThrows($method))->toBe($expected);
 })->with([
     // An exception that IS an HTTP status states it in its own constructor, where no name-keyed table can
     // see it. Each row is one of the shapes an application writes that in, and 500 — the answer a lookup
@@ -70,6 +70,14 @@ it('publishes the status each construction shape writes', function (string $meth
     'the same factory two undeclared calls away' => ['manifestStatusTwoCallsAway', ['ManifestRejectedException@404']],
     'a factory behind a callee that DECLARES the throw' => ['manifestStatusDeclaredByCallee', ['ManifestRejectedException@409']],
     'the same declared callee naming another factory' => ['manifestStatusDeclaredNotFound', ['ManifestRejectedException@404']],
+    // The declaring callee's own code is more than its top level: a guard written inside the transaction it
+    // runs, and one kept in a private method of its own class, state their factory as plainly.
+    'a declared callee throwing inside its own transaction closure' => ['manifestStatusDeclaredInTransaction', ['ManifestRejectedException@404']],
+    'a declared callee throwing from its own private guard' => ['manifestStatusDeclaredInPrivateGuard', ['ManifestRejectedException@409']],
+    // An application exception extending one of the framework's fixed-status exceptions is that status:
+    // its own constructor only chooses the message, and the framework's passes its literal on.
+    'a subclass of a framework fixed-status exception, thrown with new' => ['fixedStatusSubclass', ['ManifestDeferredException@422']],
+    'the same subclass through throw_if()\'s class-string form' => ['fixedStatusSubclassThrownIf', ['ManifestDeferredException@422']],
     // And the same four facts where the code lives outside the descend scope: reading a status is not
     // walking into a body, so a modular guard states one as plainly as a guard in `app/`.
     'a modular class thrown from inside the descend scope' => ['modularExceptionClassStatus', ['LedgerRejectedException@404']],
@@ -147,7 +155,7 @@ it('publishes the status each construction shape writes', function (string $meth
 
 it('reads a case looked up by its value as that case', function (): void {
     // `ExportFault::from(423)` is the case whose value is 423, so the refusal is a 423.
-    expect(signalThrows('enumFromStatus'))->toContain('ExportFaultException@423');
+    expect(reportedThrows('enumFromStatus'))->toContain('ExportFaultException@423');
 })->group('fixture');
 
 it('publishes what a case lookup can throw for the value it is handed', function (string $method, array $expected): void {
@@ -185,7 +193,7 @@ it('publishes only what an operand that always throws lets out', function (strin
     // built. What the server sends is that argument's own error. Documenting the construction as well
     // publishes a response the route cannot give: the 404 below is never sent, and the refusals with no
     // status would be filed under a status nothing answers with.
-    expect(signalThrows($method))->toBe($expected)
+    expect(reportedThrows($method))->toBe($expected)
         ->and(unreadStatusDiagnostics($method))->toBe([]);
 })->with([
     // `from(999)`: 999 backs no case, so PHP throws a ValueError (the manual's documented failure).
@@ -195,7 +203,7 @@ it('publishes only what an operand that always throws lets out', function (strin
     'abort() handed the lookup\'s value as its status' => ['enumFromNoCaseAbort', ['ValueError@500']],
     'abort() handed the lookup\'s name beside a 404' => ['enumFromNoCaseMessage', ['ValueError@500']],
     // A `throw` expression always throws, so the refusal it is handed to is never built.
-    'a refusal handed a throw expression' => ['throwExpressionArgument', ['LogicException@500']],
+    'a refusal handed a throw expression' => ['throwExpressionArgument', ['LogicException@500 (assertion)']],
     // The boundary: a lookup a case backs completes, so the refusal is built and thrown.
     'a refusal built from a value a case backs' => ['enumFromStatus', ['ExportFaultException@423']],
 ])->group('fixture');
@@ -206,5 +214,5 @@ it('documents no response for a return whose value always throws first', functio
     $analysis = throwsAnalysis('enumFromNoCaseReturn');
 
     expect($analysis['returns'])->toBe([])
-        ->and(signalThrows('enumFromNoCaseReturn'))->toBe(['ValueError@500']);
+        ->and(reportedThrows('enumFromNoCaseReturn'))->toBe(['ValueError@500']);
 })->group('fixture');

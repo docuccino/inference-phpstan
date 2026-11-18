@@ -165,6 +165,6 @@ it('invalidates a cached fragment when the helper a closure is relayed through i
     /** @var list<string> $dependencies */
     $dependencies = $analysis['dependencyFiles'];
 
-    expect(signalThrows('relayedByHelperFunction'))->toBe(['OutOfStockException@500', 'RuntimeException@500'])
+    expect(reportedThrows('relayedByHelperFunction'))->toBe(['OutOfStockException@500', 'RuntimeException@500'])
         ->and(fragmentAcrossDependencyEdit($dependencies, 'app/Support/helpers.php'))->toBe(['warm' => true, 'staleAfterEdit' => true]);
 })->group('fixture');

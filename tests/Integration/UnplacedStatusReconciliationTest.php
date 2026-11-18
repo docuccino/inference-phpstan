@@ -158,22 +158,6 @@ function fixtureAutoloadedFiles(array $paths): array
 }
 
 /**
- * The controllers the sweep covers, by relative path => FQCN. Two, and which two is the point: one inside
- * the descend scope the fixture runs with (`app/`) and one outside it in a primed `Modules\…` root, which
- * is where a modular application writes most of its actions. A corpus of the first alone cannot see
- * anything the second does differently, and every defect this file guards against has a modular spelling.
- *
- * @return array<string, string>
- */
-function throwCorpusControllers(): array
-{
-    return [
-        'app/Http/Controllers/ThrowsController.php' => 'App\\Http\\Controllers\\ThrowsController',
-        'modules/Billing/LedgerThrowsController.php' => 'Modules\\Billing\\LedgerThrowsController',
-    ];
-}
-
-/**
  * Every action one controller declares, name → its source, read off the file rather than listed here: a
  * new action whose unplaced status goes unreported has to fail this guard, and it cannot if the guard only
  * knows the actions somebody remembered to add.
@@ -279,19 +263,19 @@ function fixtureNamesIn(string $relPath, string $snippet): array
 }
 
 /**
- * One sweep of both controllers, decoded into the four columns this file compares. Keyed by
+ * One sweep of both controllers, decoded into the five columns this file compares. Keyed by
  * `Class::method` — an action's identity now that the corpus spans two classes — and holding, per action:
  * the classes a notice named, the throws the document publishes with no status of their own, the throws it
- * demoted and so carries nowhere, and how many throws the analysis surfaced at all (zero being its own
- * population).
+ * demoted and so carries nowhere, the throws it files as assertions, and how many throws the analysis
+ * surfaced at all (zero being its own population).
  *
- * @return array<string, array{named: array<string, true>, unplaced: array<string, list<string>>, demoted: array<string, true>, surfaced: int}>
+ * @return array<string, array{named: array<string, true>, unplaced: array<string, list<string>>, demoted: array<string, true>, demotedThrows: int, asserted: array<string, true>, assertedThrows: int, surfaced: int}>
  */
 function unplacedSweep(): array
 {
     // Every test below reads the same sweep, and it is a real-engine analysis of both controllers in a
     // subprocess — so it is taken once per process rather than once per test.
-    /** @var array<string, array{named: array<string, true>, unplaced: array<string, list<string>>, demoted: array<string, true>, demotedThrows: int, surfaced: int}>|null $memo */
+    /** @var array<string, array{named: array<string, true>, unplaced: array<string, list<string>>, demoted: array<string, true>, demotedThrows: int, asserted: array<string, true>, assertedThrows: int, surfaced: int}>|null $memo */
     static $memo = null;
     if ($memo !== null) {
         return $memo;
@@ -319,7 +303,17 @@ function unplacedSweep(): array
             // Throws, not classes: `demoted` dedupes by FQCN, so holding it against `surfaced` would
             // read two demoted throws of one class as one and call an all-demoted action partly placed.
             $demotedThrows = 0;
+            $asserted = [];
+            $assertedThrows = 0;
             foreach ($analysis['throws'] as $throw) {
+                // An assertion has no status to place, and is not plumbing either: it is counted on its own.
+                if (($throw['disposition'] ?? null) === 'assertion') {
+                    $asserted[(string) $throw['exceptionFqcn']] = true;
+                    $assertedThrows++;
+
+                    continue;
+                }
+
                 // Only a SIGNAL reaches the document. One that does not is carried nowhere, so there is
                 // no response for a reader to be unable to explain — and no response at all, which is
                 // its own defect and gets its own column rather than being dropped here.
@@ -346,6 +340,8 @@ function unplacedSweep(): array
                 'unplaced' => $unplaced,
                 'demoted' => $demoted,
                 'demotedThrows' => $demotedThrows,
+                'asserted' => $asserted,
+                'assertedThrows' => $assertedThrows,
                 'surfaced' => count($analysis['throws']),
             ];
         }
@@ -356,7 +352,7 @@ function unplacedSweep(): array
 
 /**
  * The actions the analysis surfaces NO throw for, with the boundary that swallowed it. A row here is the
- * worst outcome of the four: the application really raises an error and the document says nothing, so a
+ * worst outcome of the five: the application really raises an error and the document says nothing, so a
  * consumer cannot even see that the endpoint can fail. Each excuse is checked below, so a new one cannot
  * be closed by pasting a sentence. Empty: no action in the sweep crosses a boundary that swallows a throw.
  *
@@ -379,6 +375,52 @@ function demotedThrowActions(): array
     return [
         'App\\Http\\Controllers\\ThrowsController::anyThrowableNoise' => 'Psr\\SimpleCache\\InvalidArgumentException',
         'App\\Http\\Controllers\\ThrowsController::vendorDeclaredHttpStatus' => 'Symfony\\Component\\HttpKernel\\Exception\\UnauthorizedHttpException',
+    ];
+}
+
+/**
+ * The actions whose every throw is an assertion, by action, with the class and what makes it one: `defect`
+ * for a class of PHP's `LogicException` family, which PHP defines as a defect in the program, and `guard` for
+ * one reached only past a failed type test. The document carries none of them at the 500 they fall back to —
+ * only at a status the framework or the application renders the class with, as it does the
+ * `AuthenticationException` row's. Each reason is checked below, not trusted.
+ *
+ * @return array<string, array{string, 'defect'|'guard'}>
+ */
+function assertedThrowActions(): array
+{
+    // The catch actions throw a `LogicException` beside what the catch takes, as a class plainly not the
+    // one the try raised, and the throw-expression action hands one to an argument.
+    return [
+        'App\\Http\\Controllers\\AssertionGuardController::listWithNeverHelper' => [\LogicException::class, 'defect'],
+        'App\\Http\\Controllers\\AssertionGuardController::listWithVoidHelper' => [\LogicException::class, 'defect'],
+        'App\\Http\\Controllers\\AssertionGuardController::listWithRuntimeHelper' => [\RuntimeException::class, 'guard'],
+        'App\\Http\\Controllers\\AssertionGuardController::unlessUser' => [\RuntimeException::class, 'guard'],
+        'App\\Http\\Controllers\\AssertionGuardController::ifNoUser' => [\RuntimeException::class, 'guard'],
+        'App\\Http\\Controllers\\AssertionGuardController::unlessUuid' => [\LogicException::class, 'defect'],
+        'App\\Http\\Controllers\\AssertionGuardController::coalesceUser' => [\RuntimeException::class, 'guard'],
+        'App\\Http\\Controllers\\AssertionGuardController::ifNotUser' => [\RuntimeException::class, 'guard'],
+        'App\\Http\\Controllers\\AssertionGuardController::earlyReturnUser' => [\RuntimeException::class, 'guard'],
+        'App\\Http\\Controllers\\AssertionGuardController::orThrowUser' => [\RuntimeException::class, 'guard'],
+        'App\\Http\\Controllers\\AssertionGuardController::voidHelperBehindGuard' => [\RuntimeException::class, 'guard'],
+        'App\\Http\\Controllers\\AssertionGuardController::neverHelperBehindGuard' => [\RuntimeException::class, 'guard'],
+        'App\\Http\\Controllers\\AssertionGuardController::closureBehindGuard' => [\RuntimeException::class, 'guard'],
+        'App\\Http\\Controllers\\AssertionGuardController::arrowWithOwnGuard' => [\RuntimeException::class, 'guard'],
+        'App\\Http\\Controllers\\AssertionGuardController::logicBehindValue' => [\InvalidArgumentException::class, 'defect'],
+        'App\\Http\\Controllers\\AssertionGuardController::misconfiguredListing' => ['App\\Exceptions\\ListingMisconfiguredException', 'defect'],
+        'App\\Http\\Controllers\\AssertionGuardController::radiusOutOfRange' => ['App\\Exceptions\\UnsupportedRadiusException', 'defect'],
+        'App\\Http\\Controllers\\AssertionGuardController::unlessUserAuthenticated' => ['Illuminate\\Auth\\AuthenticationException', 'guard'],
+        'App\\Http\\Controllers\\ThrowsController::caughtDeclaredWithResidue' => [\LogicException::class, 'defect'],
+        'App\\Http\\Controllers\\ThrowsController::caughtUndeclaredByParent' => [\LogicException::class, 'defect'],
+        'App\\Http\\Controllers\\ThrowsController::caughtUndeclaredByInterface' => [\LogicException::class, 'defect'],
+        'App\\Http\\Controllers\\ThrowsController::caughtUndeclaredMulti' => [\LogicException::class, 'defect'],
+        'App\\Http\\Controllers\\ThrowsController::caughtHandedToLogger' => [\LogicException::class, 'defect'],
+        'App\\Http\\Controllers\\ThrowsController::caughtUndeclaredNested' => [\LogicException::class, 'defect'],
+        'App\\Http\\Controllers\\ThrowsController::rescuedClosure' => [\LogicException::class, 'defect'],
+        'App\\Http\\Controllers\\ThrowsController::swallowedByHelper' => [\LogicException::class, 'defect'],
+        'App\\Http\\Controllers\\ThrowsController::swallowedByHelperOnInstance' => [\LogicException::class, 'defect'],
+        'App\\Http\\Controllers\\ThrowsController::swallowedByHelperFunction' => [\LogicException::class, 'defect'],
+        'App\\Http\\Controllers\\ThrowsController::throwExpressionArgument' => [\LogicException::class, 'defect'],
     ];
 }
 
@@ -513,13 +555,13 @@ it('sweeps a controller in a modular root as well as in app/', function (): void
 })->group('fixture');
 
 /**
- * The union of the four columns against the domain they divide. Every swept action either publishes a
+ * The union of the five columns against the domain they divide. Every swept action either publishes a
  * status, publishes one nothing read, publishes nothing because every throw was demoted, or surfaces no
  * throw at all — and the two directions above only see the second. An action owing no answer to them
  * therefore has to land in a column that DOES ask something of it, rather than in the gap between two
  * scans that each cover their own subset.
  *
- * So the union is asserted as MEMBERSHIP of the four named columns, and every classification the four
+ * So the union is asserted as MEMBERSHIP of the five named columns, and every classification the five
  * do not cover is given a name of its own rather than a `default` that absorbs it. Counting instead
  * proves nothing: `array_sum(array_count_values($x)) === count($x)` is arithmetic, true of every input,
  * and stays true when a fifth column appears.
@@ -532,7 +574,7 @@ it('lands every swept action in exactly one column', function (): void {
 
     $named = unplacedColumnNames();
 
-    // The union against the domain: every swept action, in one of the four columns the guards above
+    // The union against the domain: every swept action, in one of the five columns the guards above
     // divide it into, and the offenders named rather than counted.
     expect(array_keys(array_diff($columns, $named)))->toBe([])
         ->and(array_keys($columns))->toBe(array_keys(unplacedSweep()));
@@ -540,17 +582,45 @@ it('lands every swept action in exactly one column', function (): void {
     $counts = array_count_values($columns);
 
     // Each column with a population really holds something: a classification nothing lands in proves
-    // nothing about it. `unsurfaced` is the worst of the four and is held to its ledger, empty, below.
+    // nothing about it. `unsurfaced` is the worst of the five and is held to its ledger, empty, below.
     expect($counts['placed'] ?? 0)->toBeGreaterThan(10)
         ->and($counts['unplaced'] ?? 0)->toBeGreaterThan(10)
-        ->and($counts['demoted'] ?? 0)->toBeGreaterThan(0);
+        ->and($counts['demoted'] ?? 0)->toBeGreaterThan(0)
+        ->and($counts['asserted'] ?? 0)->toBeGreaterThan(0);
 
     // And the two columns with a ledger hold exactly it — a new member fails until somebody writes down
     // why the document may carry nothing for that action.
     expect(array_keys(array_filter($columns, static fn (string $column): bool => $column === 'unsurfaced')))
         ->toBe(array_keys(unsurfacedThrowActions()))
         ->and(array_keys(array_filter($columns, static fn (string $column): bool => $column === 'demoted')))
-        ->toBe(array_keys(demotedThrowActions()));
+        ->toBe(array_keys(demotedThrowActions()))
+        ->and(array_keys(array_filter($columns, static fn (string $column): bool => $column === 'asserted')))
+        ->toBe(array_keys(assertedThrowActions()));
+
+    // Each asserted row's reason is checked rather than believed: what the action really throws, a class of
+    // PHP's defect family for `defect`, and for `guard` a class outside it — so the guard is the only reason
+    // there is — behind a type test the action's own source writes.
+    $sweep = unplacedSweep();
+    $sources = [];
+    foreach (throwCorpusControllers() as $relPath => $controller) {
+        foreach (throwActionMethods($relPath) as $method) {
+            $sources[$controller.'::'.$method] = throwActionSource($relPath, $method);
+        }
+    }
+    foreach (assertedThrowActions() as $action => [$class, $reason]) {
+        // A fixture application's class does not load here, so its parent is read off its own file: the
+        // fixture's exceptions extend a built-in class directly.
+        $declared = fixtureDeclarationFile($class);
+        $family = $declared === null
+            ? $class
+            : (preg_match('/\bextends\s+\\\\?(\w+)/', (string) file_get_contents(FixtureRunner::path($declared)), $parent) === 1 ? $parent[1] : '');
+
+        expect($sweep[$action]['asserted'])->toHaveKey($class, $action)
+            ->and(is_a($family, \LogicException::class, true))->toBe($reason === 'defect', $action);
+        if ($reason === 'guard') {
+            expect(preg_match('/instanceof|\bis_[a-z]+\(|=== null|\?\?/', $sources[$action]))->toBe(1, $action);
+        }
+    }
 })->group('fixture');
 
 /**

@@ -68,8 +68,8 @@ function guardFacts(array $analysis): array
 it('documents what a never guard throws, as its void twin does', function (string $method, array $expected): void {
     sort($expected);
 
-    expect(signalThrows($method))->toBe($expected)
-        ->and(signalThrows(str_replace('never', 'void', $method)))->toBe($expected);
+    expect(reportedThrows($method))->toBe($expected)
+        ->and(reportedThrows(str_replace('never', 'void', $method)))->toBe($expected);
 })->with([
     'an HttpException, private' => ['neverHelperHttp', ['HttpException@409']],
     'an HttpException, static' => ['neverStaticHelperHttp', ['HttpException@409']],
@@ -84,7 +84,7 @@ it('documents what a never guard throws, as its void twin does', function (strin
 ])->group('fixture');
 
 it('documents what a never guard throws however it says it never returns', function (string $method): void {
-    expect(signalThrows($method))->toBe(['ExportLockedException@423']);
+    expect(reportedThrows($method))->toBe(['ExportLockedException@423']);
 })->with([
     // A never helper that calls another refuses with what that one throws.
     'through another never helper' => ['neverHelperNested'],
@@ -96,7 +96,7 @@ it('documents what a never guard throws however it says it never returns', funct
 ])->group('fixture');
 
 it('drops what a catch around a never guard takes, and keeps what it lets out', function (): void {
-    expect(signalThrows('neverHelperCaught'))->toBe(['HttpException@410']);
+    expect(reportedThrows('neverHelperCaught'))->toBe(['HttpException@410']);
 })->group('fixture');
 
 it('documents a guard written outside the controller as its void twin, wherever it is written', function (): void {

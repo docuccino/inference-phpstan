@@ -195,6 +195,31 @@ final class ParameterUse
      */
     public static function reachedWhen(Node $at, Scope $scope, array $parameters, array $body): ?ConditionTree
     {
+        $tree = ConditionTree::all(array_map(
+            static function (array $guard) use ($scope, $parameters, $body): ConditionTree {
+                $condition = self::condition($guard[0], $scope, $parameters, $body);
+
+                return $guard[1] ? $condition : ConditionTree::not($condition);
+            },
+            self::guardsTo($at, $body),
+        ));
+
+        return $tree->constrains() ? $tree : null;
+    }
+
+    /**
+     * Every condition on the way to `$at`, each with the value it holds there: the condition of each `if`
+     * branch and ternary arm around it, the negated condition of each `if` before it whose every branch leaves
+     * the function, and the left of a short circuit whose right it is in — `$a ?? <at>` holds `$a === null`,
+     * `$a || <at>` holds `$a` false, `$a && <at>` holds it true. The one grammar for what a path requires,
+     * whether a return or a throw is asked about. `$at` must be a node of `$body` itself; a nested function's
+     * path is its own.
+     *
+     * @param  list<Node>  $body
+     * @return list<array{Node\Expr, bool}>
+     */
+    public static function guardsTo(Node $at, array $body): array
+    {
         [$root, $parents] = self::connected($body);
 
         /** @var list<array{Node\Expr, bool}> $guards */
@@ -202,12 +227,19 @@ final class ParameterUse
         $node = $at;
         while (isset($parents[spl_object_id($node)])) {
             [$parent, $slot] = $parents[spl_object_id($node)];
+            if ($parent instanceof Node\FunctionLike) {
+                break;
+            }
 
             array_push($guards, ...match (true) {
                 $parent instanceof Node\Stmt\If_ && $slot === 'stmts', $parent instanceof Node\Stmt\ElseIf_ && $slot === 'stmts' => [[$parent->cond, true]],
                 $parent instanceof Node\Stmt\If_ && ($slot === 'elseifs' || $slot === 'else') => self::passedOver($parent, $node),
                 $parent instanceof Node\Expr\Ternary && $slot === 'if' => [[$parent->cond, true]],
                 $parent instanceof Node\Expr\Ternary && $slot === 'else' => [[$parent->cond, false]],
+                $parent instanceof Node\Expr\BinaryOp\Coalesce && $slot === 'right' => [[self::isNull($parent->left), true]],
+                $parent instanceof Node\Expr\AssignOp\Coalesce && $slot === 'expr' => [[self::isNull($parent->var), true]],
+                ($parent instanceof Node\Expr\BinaryOp\BooleanOr || $parent instanceof Node\Expr\BinaryOp\LogicalOr) && $slot === 'right' => [[$parent->left, false]],
+                ($parent instanceof Node\Expr\BinaryOp\BooleanAnd || $parent instanceof Node\Expr\BinaryOp\LogicalAnd) && $slot === 'right' => [[$parent->left, true]],
                 default => [],
             });
 
@@ -223,16 +255,13 @@ final class ParameterUse
             $node = $parent;
         }
 
-        $tree = ConditionTree::all(array_map(
-            static function (array $guard) use ($scope, $parameters, $body): ConditionTree {
-                $condition = self::condition($guard[0], $scope, $parameters, $body);
+        return $guards;
+    }
 
-                return $guard[1] ? $condition : ConditionTree::not($condition);
-            },
-            $guards,
-        ));
-
-        return $tree->constrains() ? $tree : null;
+    /** `$expr === null`, the test a `??` makes of its left, positioned where the left is. */
+    private static function isNull(Node\Expr $expr): Node\Expr\BinaryOp\Identical
+    {
+        return new Node\Expr\BinaryOp\Identical($expr, new Node\Expr\ConstFetch(new Node\Name('null')), $expr->getAttributes());
     }
 
     /**

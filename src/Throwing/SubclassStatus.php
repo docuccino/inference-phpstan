@@ -8,6 +8,12 @@ use Docuccino\Core\Inference\ArgumentSlots;
 use Docuccino\Inference\PhpStan\Analysis\ParamAccessor;
 use Docuccino\Inference\PhpStan\Support\ProjectFilter;
 use PhpParser\Node;
+use PhpParser\Node\Expr\StaticCall;
+use PhpParser\Node\Name;
+use PhpParser\Node\Scalar\Int_;
+use PhpParser\Node\Stmt\ClassMethod;
+use PhpParser\NodeFinder;
+use PhpParser\ParserFactory;
 use ReflectionClass;
 use ReflectionMethod;
 use ReflectionParameter;
@@ -70,9 +76,11 @@ use ReflectionParameter;
  * Priming is also why the reads below cost the replay layer nothing, which is worth recording so it is not
  * re-litigated: the adapter primes the application's whole PSR-4 tree at boot, so every one of its
  * exception classes is already in the analysed set and reading one cannot grow it. Measured over one build
- * of the fixture app's throw corpus when it held 58 (it holds 139 throw actions now, and every one added
- * since depends only on files those already did, but for the nine helper rows and the seventeen reason-enum
- * rows, whose enums and exception classes sit in the same primed tree, not re-measured), the
+ * of the fixture app's throw corpus when it held 58 (it holds 168 throw actions now, and every one added
+ * since depends only on files those already did, but for the nine helper rows, the seventeen reason-enum
+ * rows, the twenty-five assertion rows and the four reading a framework parent, a transaction closure or
+ * a private guard, whose enums, exception classes and services sit in the same primed tree, not
+ * re-measured), the
  * analysed-file count is the same whether the reads are scoped to the application or to the descend
  * paths — so no recording is ever discarded, and the modular root is no different because being primed
  * is the whole of what makes that true. What the wider scope costs is one more live file walk, for an
@@ -89,6 +97,16 @@ final class SubclassStatus
 {
     /** Argument 0 of `HttpException::__construct` is the status, and it has no default. */
     private const HTTP_EXCEPTION_SLOT = 0;
+
+    /** The packages whose own `HttpException` children pin a status an application subclass inherits. */
+    private const FRAMEWORK_NAMESPACES = ['Symfony\\Component\\HttpKernel\\', 'Illuminate\\'];
+
+    /**
+     * {@see frameworkPin()} by FQCN, the declines included.
+     *
+     * @var array<string, int|null>
+     */
+    private array $frameworkPins = [];
 
     /** The framework's own responses, each taking its status at the parameter its constructor names this. */
     private const RESPONSE_STATUS = 'status';
@@ -324,6 +342,18 @@ final class SubclassStatus
         }
 
         $inherited = $this->resolve($parent->getName());
+
+        // An application's subclass of one of the framework's fixed-status exceptions inherits that status:
+        // no `parent::__construct()` it writes reaches the number, which the framework's own constructor
+        // passes on as a literal. Only where the APPLICATION declares the subclass — the vendor class asked
+        // for itself is still unread, so a package's `@throws` of one stays the plumbing it was.
+        if ($inherited['status'] === null && $file !== false && $this->appFilter->isProjectFile($file)) {
+            $pin = $this->frameworkPin($parent);
+            if ($pin !== null) {
+                $inherited = ['status' => $pin, 'parameter' => null, 'read' => null, 'files' => $inherited['files']];
+            }
+        }
+
         $files = [...$files, ...$inherited['files']];
 
         $constructor = $class->getConstructor();
@@ -444,6 +474,49 @@ final class SubclassStatus
     }
 
     /**
+     * The literal status one of the framework's own `HttpException` children pins, read off its installed
+     * source: the class extends `HttpException` directly and its constructor hands `parent::__construct()`
+     * an integer as the status. Read with php-parser and not through the analyser, so asking primes nothing
+     * and discards no recorded walk ({@see self} for why the analyser is not asked); and read off what the
+     * application RESOLVED, so the number is that version's. Anything else — a package outside the
+     * framework, a grandchild, a status that is not a literal — is null.
+     *
+     * @param  ReflectionClass<object>  $class
+     */
+    private function frameworkPin(ReflectionClass $class): ?int
+    {
+        $name = $class->getName();
+        if (array_key_exists($name, $this->frameworkPins)) {
+            return $this->frameworkPins[$name];
+        }
+
+        $this->frameworkPins[$name] = null;
+
+        $root = $class->getParentClass();
+        $file = $class->getFileName();
+        $framework = array_filter(self::FRAMEWORK_NAMESPACES, static fn (string $prefix): bool => str_starts_with($name, $prefix)) !== [];
+        if (! $framework || $root === false || $root->getName() !== KnownThrowers::HTTP_EXCEPTION || ! isset($this->roots[$root->getName()]) || $file === false) {
+            return null;
+        }
+
+        $code = @file_get_contents($file);
+        $statements = $code === false ? null : (new ParserFactory)->createForNewestSupportedVersion()->parse($code);
+        $finder = new NodeFinder;
+        $constructor = $finder->findFirst($statements ?? [], static fn (Node $node): bool => $node instanceof ClassMethod && $node->name->toLowerString() === '__construct');
+        $call = $constructor === null ? null : $finder->findFirst(
+            $constructor,
+            static fn (Node $node): bool => $node instanceof StaticCall && $node->class instanceof Name && $node->class->toLowerString() === 'parent'
+                && $node->name instanceof Node\Identifier && $node->name->toLowerString() === '__construct',
+        );
+
+        $first = $call instanceof StaticCall && ! $call->isFirstClassCallable() ? ($call->getArgs()[0] ?? null) : null;
+
+        return $this->frameworkPins[$name] = $first !== null && $first->name === null && $first->value instanceof Int_
+            ? HttpStatusCode::folded($first->value->value)
+            : null;
+    }
+
+    /**
      * A class that states nothing, answering with the files the read had already gone through to find
      * that out. Spelled as a function of the live set rather than captured once at the top of a body: a
      * declaration a fold READ decided this class's status whether or not the fold went on to succeed, and
@@ -467,7 +540,7 @@ final class SubclassStatus
      * @param  array<array-key, Node\Stmt>  $body
      * @return array{Node\Expr, Node\Expr\MethodCall}|false|null
      */
-    private function setterCall(ReflectionClass $class, array $body, Node\Expr\StaticCall $parentCall): array|false|null
+    private function setterCall(ReflectionClass $class, array $body, StaticCall $parentCall): array|false|null
     {
         if ($this->setter === null || ! $class->hasMethod($this->setter)) {
             return null;
