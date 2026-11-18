@@ -380,12 +380,13 @@ function demotedThrowActions(): array
 
 /**
  * The actions whose every throw is an assertion, by action, with the class and what makes it one: `defect`
- * for a class of PHP's `LogicException` family, which PHP defines as a defect in the program, and `guard` for
- * one reached only past a failed type test. The document carries none of them at the 500 they fall back to —
+ * for a class of PHP's `LogicException` family, which PHP defines as a defect in the program, `guard` for
+ * one reached only past a failed type test, and `stored` for a backed enum's `from()` handed a value read off
+ * one of the application's models. The document carries none of them at the 500 they fall back to —
  * only at a status the framework or the application renders the class with, as it does the
  * `AuthenticationException` row's. Each reason is checked below, not trusted.
  *
- * @return array<string, array{string, 'defect'|'guard'}>
+ * @return array<string, array{string, 'defect'|'guard'|'stored'}>
  */
 function assertedThrowActions(): array
 {
@@ -421,6 +422,8 @@ function assertedThrowActions(): array
         'App\\Http\\Controllers\\ThrowsController::swallowedByHelperOnInstance' => [\LogicException::class, 'defect'],
         'App\\Http\\Controllers\\ThrowsController::swallowedByHelperFunction' => [\LogicException::class, 'defect'],
         'App\\Http\\Controllers\\ThrowsController::throwExpressionArgument' => [\LogicException::class, 'defect'],
+        'App\\Http\\Controllers\\ThrowsController::enumFromStoredAttribute' => [\ValueError::class, 'stored'],
+        'App\\Http\\Controllers\\ThrowsController::enumFromStoredThroughModel' => [\ValueError::class, 'stored'],
     ];
 }
 
@@ -599,12 +602,15 @@ it('lands every swept action in exactly one column', function (): void {
 
     // Each asserted row's reason is checked rather than believed: what the action really throws, a class of
     // PHP's defect family for `defect`, and for `guard` a class outside it — so the guard is the only reason
-    // there is — behind a type test the action's own source writes.
+    // there is — behind a type test the action's own source writes. A `stored` row is the error a backed
+    // enum's `from()` throws, in an action that names one of the application's Eloquent models.
     $sweep = unplacedSweep();
     $sources = [];
+    $files = [];
     foreach (throwCorpusControllers() as $relPath => $controller) {
         foreach (throwActionMethods($relPath) as $method) {
             $sources[$controller.'::'.$method] = throwActionSource($relPath, $method);
+            $files[$controller.'::'.$method] = $relPath;
         }
     }
     foreach (assertedThrowActions() as $action => [$class, $reason]) {
@@ -619,6 +625,19 @@ it('lands every swept action in exactly one column', function (): void {
             ->and(is_a($family, \LogicException::class, true))->toBe($reason === 'defect', $action);
         if ($reason === 'guard') {
             expect(preg_match('/instanceof|\bis_[a-z]+\(|=== null|\?\?/', $sources[$action]))->toBe(1, $action);
+        }
+        if ($reason === 'stored') {
+            $models = array_filter(
+                fixtureNamesIn($files[$action], $sources[$action]),
+                static function (string $named): bool {
+                    $declared = fixtureDeclarationFile($named);
+
+                    return $declared !== null && preg_match('/\bextends\s+Model\b/', (string) file_get_contents(FixtureRunner::path($declared))) === 1;
+                },
+            );
+
+            expect($class)->toBeIn([\ValueError::class, \TypeError::class], $action)
+                ->and($models)->not->toBeEmpty($action);
         }
     }
 })->group('fixture');

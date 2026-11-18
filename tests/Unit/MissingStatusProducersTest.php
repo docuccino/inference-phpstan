@@ -132,9 +132,12 @@ it('reads the package it guards, and the shape alias that package declares', fun
         $texts[$src.'/'.$file] = (string) file_get_contents($src.'/'.$file);
     }
 
+    $producers = MissingStatusProducers::in($texts, $src.'/Throwing/ThrowAnalyzer.php');
+
     expect(MissingStatusProducers::aliases($texts))->toHaveKey('StatedRead')
-        // The method the alias made invisible, and one whose answer is a missing status with no alias in
-        // sight — so the reading is not resting on either half alone.
-        ->and(MissingStatusProducers::in($texts, $src.'/Throwing/ThrowAnalyzer.php'))
-        ->toContain('inDeclaringCallee', 'httpStatus');
+        // Two whose answer is a missing status with no alias in sight, one a shape and one a list…
+        ->and($producers)->toContain('statusForType', 'httpStatus')
+        // …and the one answering through the alias, which states a LIST of statuses — empty where it says
+        // nothing — and so admits no missing one. Only reading through the alias says so.
+        ->and($producers)->not->toContain('inDeclaringCallee');
 });

@@ -5,14 +5,16 @@ declare(strict_types=1);
 namespace Docuccino\Inference\PhpStan\Throwing;
 
 /**
- * The one status a SET of `throw` sites states — the rule behind
- * {@see ThrowAnalyzer::inDeclaringCallee()}, held apart from the walk that collects the readings so it can
- * be read (and tested) without a PHPStan scope anywhere near it.
+ * The statuses a SET of `throw` sites states — the rule behind {@see ThrowAnalyzer::inDeclaringCallee()},
+ * held apart from the walk that collects the readings so it can be read (and tested) without a PHPStan scope
+ * anywhere near it.
  *
- * It is {@see ConstructionStatus::agreedIn()} one level up. That rule is over the constructions ONE throw
- * makes; this one is over the throws one callee writes, and it answers the same way: they either all state
- * the same status or the set states none. What it adds is which of three ways a set can fail to speak, so
- * the caller can say whose code the fold gave up in.
+ * A set that folded whole states every status it folded to: two `throw`s at two statuses are two responses,
+ * and one call raises whichever ran, so the call answers with both. This is where it parts from
+ * {@see ConstructionStatus::agreedIn()} and from the class's own agreement, which speak for every
+ * construction of a class ANYWHERE and so may only state one they all share: these are the throws of the one
+ * callee this call reaches. A set that did not fold whole states none, and what this adds is which of three
+ * ways it can fail to speak, so the caller can say whose code the fold gave up in.
  *
  * A reading is what {@see ThrowAnalyzer::atThrowSite()} answered for one `throw`, plus the file that
  * `throw` is written in:
@@ -28,7 +30,7 @@ namespace Docuccino\Inference\PhpStan\Throwing;
  *     no argument at the site to read, so the fold was the CLASS's declarations and `read` stays null.
  *
  * @phpstan-type SiteReading array{status: int|null, spoke: bool, foldedHere: bool, file: string}
- * @phpstan-type StatedRead array{status: int|null, spoke: bool, read: string|null}
+ * @phpstan-type StatedRead array{statuses: list<int>, spoke: bool, read: string|null}
  *
  * @internal
  */
@@ -62,18 +64,19 @@ final class ThrowSiteStatus
             return self::silent(); // the callee throws this class nowhere the walk could see
         }
 
-        // Only a set that folded whole and agreed states a status. Two `throw`s at two statuses are two
-        // responses and one call raises whichever ran; one that folded nothing is a response the rest
-        // cannot speak for either. Deliberately not order-sensitive: a body pairing a construction that
-        // would not fold with one that did has two answers available, and reading them in arrival order
-        // would publish whichever the analyser happened to hand over first.
-        if ($gaveUp === [] && ! $forClass && count(array_unique($statuses)) === 1) {
-            return ['status' => $statuses[0], 'spoke' => true, 'read' => null];
+        // Only a set that folded whole states its statuses, sorted, so the answer is a function of the set
+        // and not of the order the analyser handed it over in. One `throw` that folded nothing is a response
+        // the rest cannot speak for: the call may raise it, at a status nobody read.
+        if ($gaveUp === [] && ! $forClass) {
+            $statuses = array_values(array_unique($statuses));
+            sort($statuses);
+
+            return ['statuses' => $statuses, 'spoke' => true, 'read' => null];
         }
 
         sort($gaveUp);
 
-        return ['status' => null, 'spoke' => true, 'read' => $gaveUp[0] ?? null];
+        return ['statuses' => [], 'spoke' => true, 'read' => $gaveUp[0] ?? null];
     }
 
     /**
@@ -81,6 +84,6 @@ final class ThrowSiteStatus
      */
     private static function silent(): array
     {
-        return ['status' => null, 'spoke' => false, 'read' => null];
+        return ['statuses' => [], 'spoke' => false, 'read' => null];
     }
 }

@@ -38,9 +38,6 @@ it('names the class whose HTTP status it could not read', function (string $meth
     // change — and the class's own agreement may not answer over the top of it.
     'a construction whose status is chosen at run time' => ['runtimeStatusAtThrowSite', 'App\\Exceptions\\ExportBlockedException'],
     'the same construction one assignment behind the throw' => ['heldRuntimeConstructionAtThrowSite', 'App\\Exceptions\\ExportBlockedException'],
-    // A class its base and its own factory build at two statuses, reached through a guard that declares
-    // it: the guard's own two `throw`s are read, and they name the two statuses rather than one.
-    'a class built two ways, reached through a guard that declares it' => ['inheritedAgreementStatus', 'App\\Exceptions\\ExportOfflineException'],
     // The same class reached by a RETHROW, which is the one shape left where nothing on the way to the
     // throw builds the exception and only the class could have answered.
     'a class built two ways, reached by a rethrow' => ['rethrownAgreementStatus', 'App\\Exceptions\\ExportOfflineException'],
@@ -118,6 +115,8 @@ it('says nothing where the status read, and nothing about a class the author doe
     'factoryHttpStatus',
     'factoryDefaultedStatus',
     'factoryOverriddenStatus',
+    // A guard declaring a class it builds at two statuses: both were read, and both are published.
+    'inheritedAgreementStatus',
     // The two vendor shapes: the status is unread in both, and the remedy the notice names is an edit to
     // `vendor/` — the non-actionable firing that trains a reader to ignore the channel.
     'vendorHttpStatusAtThrowSite',

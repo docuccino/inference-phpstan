@@ -217,13 +217,15 @@ final class ThrowAnalyzer
                 continue;
             }
 
-            $status = $this->statusForType($reflection->getName(), null, $thrown, $scope, $frame)['status'];
+            $statuses = $this->statusForType($reflection->getName(), null, $thrown, $scope, $frame)['statuses'];
 
             // One that carries a response is sent as that response, read as a `throw` of it would be.
             $before = count($this->carried);
             $responses = $this->carriesResponse($reflection->getName(), $thrown, $scope, $frame) ? array_slice($this->carried, $before) : [null];
-            foreach ($responses as $response) {
-                $results[] = new ThrownException($reflection->getName(), $status, [$frame], ThrowConfidence::Certain, ThrowDisposition::Signal, $response);
+            foreach ($statuses as $status) {
+                foreach ($responses as $response) {
+                    $results[] = new ThrownException($reflection->getName(), $status, [$frame], ThrowConfidence::Certain, ThrowDisposition::Signal, $response);
+                }
             }
         }
 
@@ -498,9 +500,12 @@ final class ThrowAnalyzer
         }
 
         // `from()` on a backed enum handed a constant throws only what that value can. The enum's cases
-        // decide it, so its files are dependencies even where nothing is left to publish.
+        // decide it, so its files are dependencies even where nothing is left to publish. Handed a value the
+        // application stored, it fails only where the application's own guarantee did.
         $certain = [];
-        $lookup = $explicit ? EnumLookup::of($node, $scope, $this->calleeResolver->reached($node, $scope)) : null;
+        $reached = $explicit ? $this->calleeResolver->reached($node, $scope) : null;
+        $lookup = $explicit ? EnumLookup::of($node, $scope, $reached) : null;
+        $asserted = $asserted || ($explicit && EnumLookup::readsStored($node, $scope, $reached));
         if ($lookup !== null) {
             [$enum, $outcomes] = $lookup;
             $this->dependOn(DeclarationFiles::of($enum));
@@ -747,15 +752,18 @@ final class ThrowAnalyzer
                 continue;
             }
 
+            // A callee raising one class at several statuses is several responses ({@see ThrowSiteStatus}).
             $resolution = $this->statusForType($class, $callee, $node, $scope, $frame);
             $fellBack = $resolution['fellBack'];
-            $results[] = new ThrownException(
-                $class,
-                $resolution['status'],
-                [...$priorChain, $frame],
-                $isLiteral || in_array($class, $certain, true) ? ThrowConfidence::Certain : ThrowConfidence::Declared,
-                ThrowSignal::disposition($isLiteral, $calleeIsApplication, $fellBack, $fellBack && ($asserted || $this->signalsDefect($class))),
-            );
+            foreach ($resolution['statuses'] as $status) {
+                $results[] = new ThrownException(
+                    $class,
+                    $status,
+                    [...$priorChain, $frame],
+                    $isLiteral || in_array($class, $certain, true) ? ThrowConfidence::Certain : ThrowConfidence::Declared,
+                    ThrowSignal::disposition($isLiteral, $calleeIsApplication, $fellBack, $fellBack && ($asserted || $this->signalsDefect($class))),
+                );
+            }
         }
 
         return $results;
@@ -1138,26 +1146,26 @@ final class ThrowAnalyzer
     }
 
     /**
-     * The status a thrown type carries, and whether that answer is the FALLBACK rather than something the
-     * code states. The two are separate because 500 is a real status a class may pin, and because "an HTTP
-     * error whose status did not fold" is a third answer again — a null status, which is not the same claim
-     * as "no HTTP status at all".
+     * The statuses a thrown type carries — one, unless the callee that declared it raises it at several —
+     * and whether that answer is the FALLBACK rather than something the code states. The two are separate
+     * because 500 is a real status a class may pin, and because "an HTTP error whose status did not fold" is
+     * a third answer again — a null status, which is not the same claim as "no HTTP status at all".
      *
-     * @return array{status: int|null, fellBack: bool}
+     * @return array{statuses: non-empty-list<int|null>, fellBack: bool}
      */
     private function statusForType(string $fqcn, ?Callee $callee, Node $node, Scope $scope, Frame $frame): array
     {
         // KnownThrowers is the single source: exact FQCN wins, else a subclass inherits its parent's status.
         $exact = $this->knownThrowers->statusForExceptionFqcn($fqcn);
         if ($exact !== null) {
-            return ['status' => $exact, 'fellBack' => false];
+            return ['statuses' => [$exact], 'fellBack' => false];
         }
 
         if ($this->reflectionProvider->hasClass($fqcn)) {
             $reflection = $this->reflectionProvider->getClass($fqcn);
             foreach ($this->knownThrowers->knownStatuses() as $known => $status) {
                 if ($reflection->is($known)) {
-                    return ['status' => $status, 'fellBack' => false];
+                    return ['statuses' => [$status], 'fellBack' => false];
                 }
             }
         }
@@ -1169,10 +1177,10 @@ final class ThrowAnalyzer
             // vendor plumbing, and calling it read would promote it to a Signal with nothing behind it.
             $read = $this->httpStatus($fqcn, $callee, $node, $scope, $frame);
 
-            return ['status' => $read, 'fellBack' => $read === null];
+            return ['statuses' => $read, 'fellBack' => $read === [null]];
         }
 
-        return ['status' => 500, 'fellBack' => true]; // internal / unhandled
+        return ['statuses' => [500], 'fellBack' => true]; // internal / unhandled
     }
 
     /**
@@ -1181,7 +1189,7 @@ final class ThrowAnalyzer
      * carries — the one the callee that declared it builds with ({@see inDeclaringCallee()}), and only then
      * the one every construction the class writes of itself agrees on ({@see SubclassStatus::agreed()}).
      * Where none of them reads, the answer is a recorded {@see UnreadStatus}, which is what
-     * {@see diagnostics()} reports from.
+     * {@see diagnostics()} reports from. Only the declaring callee can answer with more than one status.
      *
      * The order is what keeps the last two honest, and it runs from the most specific reading to the least.
      * A site that DID present a construction has already said what this response is, and a
@@ -1193,47 +1201,49 @@ final class ThrowAnalyzer
      * The reason each record carries is what happened at the SITE, while its actionability is the file the
      * fold that gave up was reading — the rule in docs/design/inference-embedding.md §6, which is also why
      * only the last branch here, where nothing but the class could speak, may answer `ForeignClass`.
+     *
+     * @return non-empty-list<int|null>
      */
-    private function httpStatus(string $fqcn, ?Callee $callee, Node $node, Scope $scope, Frame $frame): ?int
+    private function httpStatus(string $fqcn, ?Callee $callee, Node $node, Scope $scope, Frame $frame): array
     {
         // The class's own file now decides what this route publishes, so it joins the dependency set.
         $this->dependOn($this->httpExceptionStatus->filesFor($fqcn));
 
         $pinned = $this->httpExceptionStatus->pinned($fqcn);
         if ($pinned !== null) {
-            return $pinned;
+            return [$pinned];
         }
 
         $site = $this->atThrowSite($fqcn, $node, $scope);
         if ($site['status'] !== null) {
-            return $site['status'];
+            return [$site['status']];
         }
 
         if ($site['foldedHere']) {
-            return $this->unread(
+            return [$this->unread(
                 $fqcn,
                 UnreadStatusReason::DynamicConstruction,
                 $frame->location,
                 $this->appFilter->isProjectFile($scope->getFile()),
-            );
+            )];
         }
 
         $spoke = $site['spoke'];
         if (! $spoke) {
             $declared = $this->inDeclaringCallee($fqcn, $callee);
-            if ($declared['status'] !== null) {
-                return $declared['status'];
+            if ($declared['statuses'] !== []) {
+                return $declared['statuses'];
             }
 
             // A fold in the callee's own body gave up, so that is the file the notice is judged against —
             // the same rule the site branch above reads, one hop along.
             if ($declared['read'] !== null) {
-                return $this->unread(
+                return [$this->unread(
                     $fqcn,
                     UnreadStatusReason::DynamicConstruction,
                     $frame->location,
                     $this->appFilter->isProjectFile($declared['read']),
-                );
+                )];
             }
 
             $spoke = $declared['spoke'];
@@ -1243,7 +1253,7 @@ final class ThrowAnalyzer
             $agreement = $this->httpExceptionStatus->agreed($fqcn);
             $this->dependOn($agreement['files']);
             if ($agreement['status'] !== null) {
-                return $agreement['status'];
+                return [$agreement['status']];
             }
         }
 
@@ -1254,14 +1264,14 @@ final class ThrowAnalyzer
         // the document publishes the unplaced status either way.
         $ownClass = $this->declaredByApplication($fqcn);
 
-        return $this->unread(
+        return [$this->unread(
             $fqcn,
             $ownClass
                 ? ($spoke ? UnreadStatusReason::DynamicConstruction : UnreadStatusReason::UnstatedByClass)
                 : UnreadStatusReason::ForeignClass,
             $frame->location,
             $ownClass,
-        );
+        )];
     }
 
     /**

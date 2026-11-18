@@ -154,9 +154,18 @@ it('produces a missing status in one place only, and files a reason there', func
     // A walk that stopped finding the package would agree with everything below.
     expect(count($sources))->toBeGreaterThan(20);
 
-    // Every branch an expression can answer with, so a `null` tucked behind a `??`, a ternary or a
-    // match arm is read as the answer it is.
+    // Every branch an expression can answer with, so a `null` tucked behind a `??`, a ternary, a match arm
+    // or inside a list of statuses is read as the answer it is.
     $branches = static function (Node\Expr $expr) use (&$branches): array {
+        if ($expr instanceof Node\Expr\Array_ && $expr->items !== [] && array_filter($expr->items, static fn (Node\ArrayItem $item): bool => $item->key !== null || $item->unpack) === []) {
+            $items = [];
+            foreach ($expr->items as $item) {
+                $items = [...$items, ...$branches($item->value)];
+            }
+
+            return $items;
+        }
+
         if ($expr instanceof Node\Expr\BinaryOp\Coalesce) {
             return [...$branches($expr->left), ...$branches($expr->right)];
         }
@@ -234,7 +243,6 @@ it('produces a missing status in one place only, and files a reason there', func
         'atThrowSite' => 'intermediate',
         'foldStatusArg' => 'intermediate',
         'httpStatus' => 'terminal',
-        'inDeclaringCallee' => 'intermediate',
         'statusForType' => 'terminal',
         'unread' => 'recorder',
     ];
@@ -246,7 +254,8 @@ it('produces a missing status in one place only, and files a reason there', func
         $method = $producers[$name];
 
         if ($kind === 'terminal') {
-            // No `return null`, and no `null` in the `status` slot of an array shape one hands back.
+            // No `return null`, and no `null` in the `status` or `statuses` slot of an array shape one hands
+            // back — a list of statuses included.
             $written = [];
             foreach ($finder->find($method, static fn (Node $node): bool => $node instanceof Node\Stmt\Return_
                 && $node->expr !== null) as $return) {
@@ -256,7 +265,7 @@ it('produces a missing status in one place only, and files a reason there', func
 
             foreach ($finder->find($method, static fn (Node $node): bool => $node instanceof Node\ArrayItem
                 && $node->key instanceof Node\Scalar\String_
-                && $node->key->value === 'status') as $item) {
+                && in_array($node->key->value, ['status', 'statuses'], true)) as $item) {
                 /** @var Node\ArrayItem $item */
                 $written = [...$written, ...$branches($item->value)];
             }

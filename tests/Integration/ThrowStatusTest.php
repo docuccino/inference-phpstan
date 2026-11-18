@@ -107,9 +107,13 @@ it('publishes the status each construction shape writes', function (string $meth
     'a construction one assignment behind the throw' => ['heldConstructionAtThrowSite', ['ExportBlockedException@451']],
     'the same, with its status chosen at run time' => ['heldRuntimeConstructionAtThrowSite', ['ExportBlockedException@null']],
     // A class is built by its BASE too: `new static(503)` one class up builds this one, so a subclass
-    // adding nothing still has a status, and one adding a factory of its own has two and states neither.
+    // adding nothing still has a status, and one adding a factory of its own has two, which the class alone
+    // cannot choose between.
     'a factory the subclass inherits from its base' => ['inheritedFactoryStatus', ['ExportRelocatedException@503']],
-    'a class its own base and its own factory build differently' => ['inheritedAgreementStatus', ['ExportOfflineException@null']],
+    // Reached through a guard that declares it, though, the guard's own two `throw`s are what this call
+    // raises: one at 503 and one at 413, and the request gets whichever ran. Both are responses a client can
+    // receive, so both are published; the stand-in this once answered named neither.
+    'a class its own base and its own factory build differently' => ['inheritedAgreementStatus', ['ExportOfflineException@413', 'ExportOfflineException@503']],
     // …and the same class reached by a RETHROW, which builds nothing and has no declaring callee to read
     // either, so only the class could have answered and it agrees on neither of its two statuses.
     'the same class reached by a rethrow that builds nothing' => ['rethrownAgreementStatus', ['ExportOfflineException@null']],
@@ -183,9 +187,25 @@ it('publishes what a case lookup can throw for the value it is handed', function
     'a string for an int-backed enum, under strict_types' => ['enumFromString', ['TypeError certain signal']],
     // A value the request chooses may be any int, so either may happen and both stay as declared.
     'a value the request chooses' => ['enumFromRuntime', ['TypeError declared signal', 'ValueError declared signal']],
+    'a value read off the request as a property' => ['enumFromRequestProperty', ['TypeError declared signal', 'ValueError declared signal']],
+    // A value read off a model is one the application stored, and whatever wrote it is where it was checked:
+    // a lookup that fails there is the application's own guarantee failing, which no request decides.
+    'a value the application stored' => ['enumFromStoredAttribute', ['TypeError declared assertion', 'ValueError declared assertion']],
+    'the same lookup written in the model' => ['enumFromStoredThroughModel', ['TypeError declared assertion', 'ValueError declared assertion']],
     // `tryFrom()` answers null where `from()` would throw, and declares nothing.
     'tryFrom()' => ['enumTryFrom', []],
 ])->group('fixture');
+
+it('publishes what a from() that is no enum\'s declares, whatever it is handed', function (): void {
+    // An enum's lookup fails only on the value it is handed; a `from()` of the application's own fails
+    // wherever its body says, so a stored argument proves nothing about it.
+    $declared = array_map(
+        static fn (array $throw): string => $throw['exceptionFqcn'].' '.$throw['disposition'],
+        throwsAnalysis('valueObjectFromStoredAttribute')['throws'],
+    );
+
+    expect($declared)->toBe(['UnexpectedValueException signal']);
+})->group('fixture');
 
 it('publishes only what an operand that always throws lets out', function (string $method, array $expected): void {
     // PHP evaluates a call's arguments before it makes the call, and a construction's before it builds

@@ -8,6 +8,7 @@ use PhpParser\Node;
 use PHPStan\Analyser\Scope;
 use PHPStan\Reflection\ExtendedMethodReflection;
 use PHPStan\Reflection\FunctionReflection;
+use PHPStan\Type\ObjectType;
 use TypeError;
 use ValueError;
 
@@ -17,10 +18,34 @@ use ValueError;
  * the analyser pins the argument to, matched to the cases strictly, as its own `from()` return type matches
  * them — so the case a status read finds there is the case this read finds.
  *
+ * Where the argument is a value the application stored, what it throws stands, and is an assertion
+ * ({@see readsStored()}).
+ *
  * @internal
  */
 final class EnumLookup
 {
+    private const MODEL = 'Illuminate\\Database\\Eloquent\\Model';
+
+    /**
+     * Whether a call is `from()` on a backed enum handed a property read off an Eloquent model. That value is
+     * one the application stored, or is about to, and whatever wrote it is where it was checked — a column
+     * holding a case's value is a guarantee like the relation a foreign key keeps — so a lookup failing there
+     * is the application's own guarantee failing, which no request decides ({@see Assertions}). A value read
+     * off the request, a property of it included, is the request's to choose.
+     */
+    public static function readsStored(Node $node, Scope $scope, FunctionReflection|ExtendedMethodReflection|null $reached): bool
+    {
+        if (! $reached instanceof ExtendedMethodReflection || strtolower($reached->getName()) !== 'from' || ! $reached->getDeclaringClass()->isBackedEnum()) {
+            return false;
+        }
+
+        $argument = self::argument($node);
+
+        return $argument instanceof Node\Expr\PropertyFetch
+            && (new ObjectType(self::MODEL))->isSuperTypeOf($scope->getType($argument->var))->yes();
+    }
+
     /**
      * The enum a call looks a case up on, what the lookup can throw, each class with whether every value
      * throws it, and whether every value throws something; null where the call is not `from()` on a backed

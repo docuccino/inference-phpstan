@@ -76,7 +76,7 @@ use ReflectionParameter;
  * Priming is also why the reads below cost the replay layer nothing, which is worth recording so it is not
  * re-litigated: the adapter primes the application's whole PSR-4 tree at boot, so every one of its
  * exception classes is already in the analysed set and reading one cannot grow it. Measured over one build
- * of the fixture app's throw corpus when it held 58 (it holds 168 throw actions now, and every one added
+ * of the fixture app's throw corpus when it held 58 (it holds 172 throw actions now, and every one added
  * since depends only on files those already did, but for the nine helper rows, the seventeen reason-enum
  * rows, the twenty-five assertion rows and the four reading a framework parent, a transaction closure or
  * a private guard, whose enums, exception classes and services sit in the same primed tree, not
