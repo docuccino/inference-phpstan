@@ -7,6 +7,13 @@ User-facing changes to `docuccino/inference-phpstan` — features, fixes, perfor
 taken from the commit messages scoped `inference-phpstan`. Entries begin after v0.1.2; older history is in
 the [repository](https://github.com/docuccino/docuccino) git log.
 
+## v0.25.1
+
+### Bug fixes
+
+- publish every status a declared callee raises an exception at ([#817](https://github.com/docuccino/docuccino/pull/817))
+- file a backed enum's from() handed a stored model value as an assertion ([#816](https://github.com/docuccino/docuccino/pull/816))
+
 ## v0.25.0
 
 ### Breaking changes
