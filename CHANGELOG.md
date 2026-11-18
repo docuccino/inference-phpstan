@@ -7,6 +7,17 @@ User-facing changes to `docuccino/inference-phpstan` — features, fixes, perfor
 taken from the commit messages scoped `inference-phpstan`. Entries begin after v0.1.2; older history is in
 the [repository](https://github.com/docuccino/docuccino) git log.
 
+## v0.25.0
+
+### Breaking changes
+
+- a throw that only asserts what the application guarantees publishes no 500 ([#801](https://github.com/docuccino/docuccino/pull/801))
+  - an operation no longer publishes a `500` that came only from an exception with no HTTP status that the application raises to assert what it already guarantees. That means a class of PHP's `LogicException` family, or a throw reached only past a failed `instanceof`, `is_*()` or `null` test, whether the throw is written literally, in a helper, or handed to `throw_if()` or `throw_unless()`. `docuccino:diff` reports each removal as a breaking `response.removed`. An `#[IgnoreResponse(status: 500)]` written to hide one now drops nothing and is reported as `attribute.ignore-response-unmatched`. Regenerate committed documents after upgrading; see UPGRADING.md.
+
+### Bug fixes
+
+- read the status an exception states through its framework parent, a closure or a private guard ([#808](https://github.com/docuccino/docuccino/pull/808))
+
 ## v0.24.0
 
 ### Bug fixes
